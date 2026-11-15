@@ -119,6 +119,42 @@ def main():
             write(lib_path, lib)
             print("已注册 it_debug_log")
 
+        # 2d. 注册 Windows 系统字体枚举和剪贴板写入命令
+        lib = read(lib_path)
+        original = lib
+        if "it_list_system_fonts" not in lib or "it_write_clipboard_text" not in lib:
+            lib, _ = replace_once(
+                lib,
+                "it_window_action, it_debug_log, set_global_shortcut,",
+                "it_window_action, it_debug_log, it_list_system_fonts,\n"
+                "        it_write_clipboard_text, set_global_shortcut,",
+                "lib.rs 原生桌面命令导入",
+                required=False,
+            )
+            lib, _ = replace_once(
+                lib,
+                "            it_debug_log,\n        ])",
+                "            it_debug_log,\n"
+                "            it_list_system_fonts,\n"
+                "            it_write_clipboard_text,\n        ])",
+                "lib.rs 原生命令注册",
+                required=False,
+            )
+        setup_start = lib.find("    setup::{")
+        setup_end = lib.find("\n    },", setup_start)
+        if setup_start >= 0 and setup_end >= 0:
+            canonical_setup_import = (
+                "    setup::{\n"
+                "        it_debug_log, it_get_settings, it_list_system_fonts, it_save_settings,\n"
+                "        it_set_hotkeys_enabled, it_window_action, it_write_clipboard_text, set_global_shortcut,\n"
+                "        set_system_tray,\n"
+                "    },"
+            )
+            lib = lib[:setup_start] + canonical_setup_import + lib[setup_end + len("\n    },") :]
+        if lib != original:
+            write(lib_path, lib)
+            print("已注册系统字体与剪贴板命令")
+
         # 2c. 启动到托盘：构建期常量改由用户设置覆盖
         lib = read(lib_path)
         original = lib
@@ -178,6 +214,22 @@ def main():
             write(build_path, build)
             print("build.rs 已加入 it_debug_log")
 
+        # 3c. ACL 白名单增加系统字体枚举和剪贴板写入命令
+        build = read(build_path)
+        original = build
+        build, _ = replace_once(
+            build,
+            '            "it_debug_log",\n        ]),',
+            '            "it_debug_log",\n'
+            '            "it_list_system_fonts",\n'
+            '            "it_write_clipboard_text",\n        ]),',
+            "build.rs 原生命令 ACL",
+            required=False,
+        )
+        if build != original:
+            write(build_path, build)
+            print("build.rs 已加入系统字体与剪贴板命令 ACL")
+
         # 4. capabilities/default.json
         capability_path = os.path.join(tauri, "capabilities", "default.json")
         capability = read(capability_path)
@@ -222,6 +274,22 @@ def main():
             write(capability_path, capability)
             print("capabilities 已加入 allow-it-debug-log")
 
+        # 4c. capability 授权系统字体枚举和剪贴板写入
+        capability = read(capability_path)
+        original = capability
+        capability, _ = replace_once(
+            capability,
+            '    "allow-it-debug-log",',
+            '    "allow-it-debug-log",\n'
+            '    "allow-it-list-system-fonts",\n'
+            '    "allow-it-write-clipboard-text",',
+            "capabilities 原生命令权限",
+            required=False,
+        )
+        if capability != original:
+            write(capability_path, capability)
+            print("capabilities 已加入系统字体与剪贴板命令权限")
+
         # 5. Cargo.toml
         cargo_path = os.path.join(tauri, "Cargo.toml")
         cargo = read(cargo_path)
@@ -251,6 +319,7 @@ def main():
             )
         for feature in (
             "Win32_Graphics_Dwm",
+            "Win32_Graphics_Gdi",
             "Win32_Storage_FileSystem",
             "Win32_System_DataExchange",
             "Win32_System_Memory",
@@ -265,6 +334,26 @@ def main():
                     "Cargo.toml %s" % feature,
                     required=False,
                 )
+        setup_source = read(os.path.join(desktop, "patch", "setup.rs"))
+        lib = read(lib_path)
+        build = read(build_path)
+        capability = read(capability_path)
+        command_permissions = {
+            "it_list_system_fonts": "allow-it-list-system-fonts",
+            "it_write_clipboard_text": "allow-it-write-clipboard-text",
+        }
+        for command, permission in command_permissions.items():
+            if "pub fn %s(" % command not in setup_source:
+                raise RuntimeError("setup.rs 缺少原生命令：%s" % command)
+            if lib.count(command) < 2:
+                raise RuntimeError("lib.rs 未完整导入并注册原生命令：%s" % command)
+            if '"%s"' % command not in build:
+                raise RuntimeError("build.rs ACL 缺少原生命令：%s" % command)
+            if '"%s"' % permission not in capability:
+                raise RuntimeError("capability 缺少原生命令权限：%s" % permission)
+
+        print("系统字体与剪贴板命令的导入、ACL 和 capability 已验证")
+
         if cargo != original:
             write(cargo_path, cargo)
             print("已更新 Cargo.toml")

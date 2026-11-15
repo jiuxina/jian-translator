@@ -3,8 +3,8 @@
 Windows、Android 与网页共用的翻译界面。`web/` 是当前界面、主题和交互的源码；
 Windows 通过 Pake/Tauri 加载本地页面，Android 使用 WebView 加载同一份资源。
 
-当前发布包为 `output/笺-2.1.0.exe`、`output/笺-2.1.0.msi`、`output/笺-2.1.0.apk`。
-旧版包保留原文件名；发布包不纳入 Git，校验值见 `output/SHA256SUMS.txt`。
+当前源码版本为 `2.2.0`；既有发布包 `output/笺-2.1.0.exe`、`output/笺-2.1.0.msi`、
+`output/笺-2.1.0.apk` 保留不覆盖。新发布包使用版本化文件名，校验值见 `output/SHA256SUMS.txt`。
 点击界面左上角“笺”打开菜单，再进入“设置”即可调整三端共用的外观与翻译偏好。
 
 ## 本地验证
@@ -25,7 +25,7 @@ node tests/verify-motion.mjs
 回归使用本地桥接替身并拦截外部请求，不调用翻译接口。界面设计、验证记录和历史成品说明见
 [docs/ui-theme.md](docs/ui-theme.md)。
 `IT_CDP_ORIGIN` 可指定其他 Chrome 调试地址，`IT_PREVIEW_ORIGIN` 可指定其他本地预览地址。
-当前完整离线回归包含 66 项检查。
+完整离线回归覆盖连续动画、设置事务、窗口桥接契约与移动端触控；当前共 80 项检查。
 
 ## Windows 构建
 
@@ -56,7 +56,7 @@ Git Bash 安装位置因机器而异，使用本机实际路径。默认构建�
 ```
 
 历史 `syncWebAssets` 任务会删除目标目录，因此此处使用覆盖同步并跳过该任务。
-当前发布版本为 Android versionCode `4` / versionName `2.1.0`，Windows 安装包版本 `2.1.0`。
+当前版本为 Android versionCode `5` / versionName `2.2.0`，Windows 安装包版本 `2.2.0`。
 
 ## 版本管理
 

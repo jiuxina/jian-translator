@@ -1,4 +1,47 @@
-# 界面美学与动效：v7 个性化设置
+# 界面美学与动效：v9 主题与窗口
+
+## v9：应用内关于、正文排版与透明悬浮窗（2026-11-15）
+
+- 版本统一到 2.2.0；Android versionCode 为 5。主菜单只保留“设置…”和“关于”，关于信息使用
+  主题玻璃弹窗，支持 Escape、系统返回、焦点隔离与返回焦点恢复。
+- 主界面和悬浮窗卡片各自有 0–100% 透出度。0% 保持原有玻璃材质，100% 清除卡片材质和模糊；
+  图片本身的背景淡化、模糊和填充继续由主背景设置控制。
+- 原文、译文及悬浮窗正文增加字重与主题/自定义字体颜色；PC 字体下拉由 Windows GDI 实时枚举系统字体，
+  字体命令仅允许应用本地 origin 调用。
+- 悬浮窗背景默认跟随主窗口，可独立选图并一键恢复跟随；选图结果在内嵌预览更新，保存后才投影到真实悬浮窗。
+- 文本模型显示名称“2B 快”改为“2B”，接口模型标识不变。悬浮窗复制通过 Windows Unicode 剪贴板写入，
+  并为成功、空内容与失败显示明确状态。
+
+### v9 验证记录
+
+- `node tests/verify-motion.mjs`：**80/80 通过**，覆盖菜单/关于交互、设置保存与撤销、字体字段兼容、
+  PC 字体枚举桥模拟、悬浮窗选图与恢复跟随、透出度端点及浅深主题/三种材质/模糊降级。
+- `node --check`（前端与回归）、Rust `rustfmt --check`、补丁器 `py_compile`、Windows 目标离线
+  `cargo check` 均通过；Pake 模板 `cargo test` 为 **93/93**。
+- Android `assembleRelease` 成功，包名 `ink.jian.translate`、versionCode `5`、versionName `2.2.0`；
+  `apksigner verify` 确认 v2 签名有效，证书指纹与既有发布签名一致。Android 四项 assets 与 `web/`
+  SHA-256 一致。
+- Windows Release EXE/MSI 于 2026-11-15 18:38 重建；MSI ProductVersion 为 `2.2.0`。Pake 仍将 EXE 的 PE
+  FileVersion/ProductVersion 标为 `3.18.0`，应用关于页与 MSI 产品版本为 `2.2.0`。
+- Windows origin 限制测试已包含在模板 Rust 测试中：`cargo test --offline` **93/93 通过**；
+  Windows 目标 `cargo check --offline` 与维护源 `rustfmt --check` 通过。
+- 浏览器回归使用系统字体和剪贴板替身；Windows 实机的 DWM 顶边、实际 GDI 字体列表、浮窗全文复制
+  与不同 DPI 的截图验收尚未完成，不以编译和模拟桥测试替代原生画面验收。
+
+### v9 发布包（2.2.0）
+
+| 文件 | 字节数 | 构建时间（Asia/Shanghai） |
+| --- | ---: | --- |
+| `output/笺-2.2.0.exe` | 9,396,224 | 2026-11-15 18:38:06 |
+| `output/笺-2.2.0.msi` | 4,288,512 | 2026-11-15 18:38:02 |
+| `output/笺-2.2.0.apk` | 3,575,056 | 2026-11-15 17:43:35 |
+
+三个安装包使用独立版本文件名，保留 2.1.0 包；SHA-256 已追加到 `output/SHA256SUMS.txt`。
+Pake 构建写入隔离目录 `.build/release-stage-2.2.0/`。关于页和设置页静态浏览器截图为
+`output/preview-2.2.0-about.png` 与 `output/preview-2.2.0-settings.png`；截图用于 UI 检查，
+不代表原生 Windows 窗口边缘已验收。
+
+---
 
 ## v7：个性化设置与桌面边框（2026-11-15）
 
@@ -51,7 +94,7 @@ Android 签名凭据已外置到被忽略的 `android/signing.properties`，原�
 独立预览服务现位于 `tests/serve-preview.mjs`，不再依赖 `.build/` 中的临时脚本；
 Windows 模板版本固定使用 Pake 3.18.0。完整入口见根目录 README。
 
-> **当前源码：v7「个性化设置」**（2026-11-15，前端资源 v14）。当前自绘界面的样式与
+> **当前源码：v8「关于、正文排版与透明悬浮窗」**（2026-11-15，前端资源 v15）。当前自绘界面的样式与
 > 动效真源是 `web/theme.css`；Android WebView 共用这份资源。Windows 划词浮窗在
 > `desktop/patch/setup.rs` 中接收已保存的外观偏好。
 > v7 发布包采用独立文件名，保留 `output/` 中既有文件及正在运行的程序。

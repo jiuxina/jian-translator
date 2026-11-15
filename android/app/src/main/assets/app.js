@@ -106,6 +106,7 @@
   var motions = new Map();
   var closeMenuLayer = null;
   var closeSettingsLayer = null;
+  var closeAboutLayer = null;
   var closeInstructLayer = null;
 
   /* 动画只作用于真实控件。重定向前先读取屏幕上的状态，再取消上一段，
@@ -196,6 +197,7 @@
   /* 浏览器 Escape 与 Android 返回键共用；每次只回收最上面一层。 */
   window.__itHandleBack = function () {
     if (openSelect) { closeSelect(); return true; }
+    if (closeAboutLayer && closeAboutLayer()) return true;
     if (closeSettingsLayer && closeSettingsLayer()) return true;
     if (closeMenuLayer && closeMenuLayer()) return true;
     return !!(closeInstructLayer && closeInstructLayer());
@@ -666,10 +668,12 @@
     version: 1,
     appearance: {
       mode: 'light', palette: 'sakura', material: 'glass', glassStrength: 100,
-      radius: 'round', font: 'sans', fontScale: 100, layout: 'standard',
+      cardReveal: 0, radius: 'round', font: 'sans', systemFontFamily: '',
+      fontScale: 100, fontWeight: 400, fontColorMode: 'theme', fontColor: '#2E2A38', layout: 'standard',
       motion: 'system', ambientLight: true
     },
     background: { data: '', opacity: 34, blur: 0, fit: 'cover' },
+    popup: { cardReveal: 0, backgroundData: '' },
     translation: {
       defaultTab: 'text', sourceLanguage: 'auto', targetLanguage: 'zh',
       defaultModels: {
@@ -696,6 +700,7 @@
     var source = input && typeof input === 'object' ? input : {};
     var appearance = source.appearance || {};
     var background = source.background || {};
+    var popup = source.popup || {};
     var translation = source.translation || {};
     var savedModels = translation.defaultModels || {};
     var result = copyObject(DEFAULT_PREFERENCES);
@@ -706,24 +711,34 @@
     result.appearance.material = enumValue(appearance.material,
       ['glass', 'frosted', 'solid'], 'glass');
     result.appearance.glassStrength = boundedNumber(appearance.glassStrength, 0, 100, 100);
+    result.appearance.cardReveal = boundedNumber(appearance.cardReveal, 0, 100, 0);
     result.appearance.radius = enumValue(appearance.radius,
       ['round', 'standard', 'small'], 'round');
     result.appearance.font = enumValue(appearance.font,
       ['sans', 'serif', 'mono'], 'sans');
+    var systemFontFamily = typeof appearance.systemFontFamily === 'string' ?
+      appearance.systemFontFamily.replace(/[\u0000-\u001f\u007f]/g, '').slice(0, 128) : '';
+    result.appearance.systemFontFamily = systemFontFamily;
     result.appearance.fontScale = boundedNumber(appearance.fontScale, 90, 140, 100);
+    result.appearance.fontWeight = boundedNumber(appearance.fontWeight, 300, 700, 400);
+    result.appearance.fontWeight = Math.max(300, Math.min(700,
+      Math.round(result.appearance.fontWeight / 100) * 100));
+    result.appearance.fontColorMode = enumValue(appearance.fontColorMode, ['theme', 'custom'], 'theme');
+    result.appearance.fontColor = typeof appearance.fontColor === 'string' &&
+      /^#[0-9a-f]{6}$/i.test(appearance.fontColor) ? appearance.fontColor.toUpperCase() : '#2E2A38';
     result.appearance.layout = enumValue(appearance.layout,
       ['standard', 'compact'], 'standard');
     result.appearance.motion = enumValue(appearance.motion,
       ['system', 'reduced', 'off'], 'system');
     result.appearance.ambientLight = appearance.ambientLight !== false;
 
-    var image = typeof background.data === 'string' &&
-      /^data:image\/(png|jpeg|webp|gif);base64,/i.test(background.data) &&
-      background.data.length <= 6000000 ? background.data : '';
+    var image = normalizeImageData(background.data);
     result.background.data = image;
     result.background.opacity = boundedNumber(background.opacity, 0, 80, 34);
     result.background.blur = boundedNumber(background.blur, 0, 20, 0);
     result.background.fit = enumValue(background.fit, ['cover', 'contain'], 'cover');
+    result.popup.cardReveal = boundedNumber(popup.cardReveal, 0, 100, 0);
+    result.popup.backgroundData = normalizeImageData(popup.backgroundData);
 
     result.translation.defaultTab = enumValue(translation.defaultTab,
       ['text', 'syllable', 'doc', 'last'], 'text');
@@ -738,6 +753,11 @@
     result.translation.rememberLanguages = translation.rememberLanguages !== false;
     result.translation.rememberModels = translation.rememberModels !== false;
     return result;
+  }
+
+  function normalizeImageData(value) {
+    return typeof value === 'string' &&
+      /^data:image\/(png|jpeg|webp|gif);base64,/i.test(value) && value.length <= 6000000 ? value : '';
   }
 
   function readSavedPreferences() {
@@ -845,6 +865,8 @@
     var inkSub = dark ? '#BFB8C5' : '#6E687E';
     var inkFaint = dark ? '#908997' : '#A29CAC';
     var strength = appearance.glassStrength / 100;
+    var reveal = appearance.cardReveal / 100;
+    var cardFactor = 1 - reveal;
     function surfaceOpacity(base) {
       if (appearance.material === 'solid') return 1;
       var frosting = appearance.material === 'frosted' ? .2 : 0;
@@ -852,6 +874,10 @@
     }
     var blur = appearance.material === 'solid' ? 0 :
       appearance.material === 'frosted' ? (20 + 24 * strength) : 22 * strength;
+    var cardBlur = blur * cardFactor;
+    var cardSaturate = 1 + (strength * .7 * cardFactor);
+    var cardFilter = cardFactor === 0 || appearance.material === 'solid' ? 'none' :
+      'blur(' + cardBlur + 'px) saturate(' + cardSaturate.toFixed(2) + ')';
     var radius = appearance.radius === 'small' ? [12, 9, 7] :
       appearance.radius === 'standard' ? [19, 15, 11] : [26, 20, 14];
 
@@ -899,14 +925,29 @@
     root.style.setProperty('--lg-tint-popup', colorRgba(dark ? '#302C38' : '#FFFFFF', surfaceOpacity(.82)));
     root.style.setProperty('--lg-tint-field', colorRgba(dark ? '#302C38' : '#FFFFFF', surfaceOpacity(.62)));
     root.style.setProperty('--lg-tint-inset', colorRgba(dark ? '#25232C' : '#FFFFFF', surfaceOpacity(.36)));
+    root.style.setProperty('--it-card-src-bg', cardFactor === 0 ? 'transparent' :
+      colorRgba(dark ? '#302C38' : '#FFFFFF', surfaceOpacity(.24) * cardFactor));
+    root.style.setProperty('--it-card-out-bg', cardFactor === 0 ? 'transparent' :
+      colorRgba(dark ? '#35313F' : '#FFFFFF', surfaceOpacity(.44) * cardFactor));
+    root.style.setProperty('--it-card-filter', cardFilter);
+    root.style.setProperty('--it-card-src-shine', cardFactor === 0 ? 'none' : 'var(--lg-shine-soft)');
+    root.style.setProperty('--it-card-out-shine', cardFactor === 0 ? 'none' : 'var(--lg-shine)');
+    root.style.setProperty('--it-card-preview-glow', String(cardFactor));
     root.style.setProperty('--lg-r-lg', radius[0] + 'px');
     root.style.setProperty('--lg-r-md', radius[1] + 'px');
     root.style.setProperty('--lg-r-sm', radius[2] + 'px');
-    root.style.setProperty('--it-content-font', appearance.font === 'serif' ?
+    var genericFont = appearance.font === 'serif' ?
       '"Noto Serif", "Songti SC", serif' : appearance.font === 'mono' ?
         '"Cascadia Code", "Consolas", monospace' :
-        '"PingFang SC", "Microsoft YaHei UI", "Noto Sans SC", system-ui, sans-serif');
+        '"PingFang SC", "Microsoft YaHei UI", "Noto Sans SC", system-ui, sans-serif';
+    var selectedFont = Bridge.isDesktop && appearance.systemFontFamily ?
+      '"' + appearance.systemFontFamily.replace(/\\/g, '\\\\').replace(/"/g, '\\"') + '", ' + genericFont :
+      genericFont;
+    root.style.setProperty('--it-content-font', selectedFont);
     root.style.setProperty('--it-content-scale', String(appearance.fontScale / 100));
+    root.style.setProperty('--it-content-weight', String(appearance.fontWeight));
+    root.style.setProperty('--it-content-color', appearance.fontColorMode === 'custom' ?
+      appearance.fontColor : ink);
     root.style.setProperty('--lg-distance-scene', appearance.motion === 'reduced' ? '0px' : '28px');
     if (appearance.motion === 'reduced') {
       root.style.setProperty('--lg-duration-panel', '180ms');
@@ -1948,8 +1989,8 @@
       'background-position:center!important;background-repeat:no-repeat!important;' +
       'background-attachment:fixed!important;inset:var(--it-bg-inset)!important;' +
       'filter:blur(var(--it-bg-blur));}' +
-      '.card{background:var(--lg-tint-0)!important;}' +
-      '.card.out{background:var(--lg-tint-1)!important;}';
+      '.card{background:var(--it-card-src-bg)!important;}' +
+      '.card.out{background:var(--it-card-out-bg)!important;}';
   }
 
   function restoreBackground() {
@@ -1960,6 +2001,11 @@
     var menu = $('more-menu');
     var brand = $('brand');
     if (!menu || !brand) return;
+    var aboutMask = $('it-about-mask');
+    var aboutDialog = aboutMask && aboutMask.querySelector('.it-about');
+    var aboutReturnFocus = null;
+    var aboutOrigin = null;
+    var aboutBackgroundState = [];
     menu.setAttribute('aria-hidden', 'true');
     menu.inert = true;
     var menuOrigin = brand;
@@ -1973,6 +2019,60 @@
       return true;
     }
     closeMenuLayer = closeMenu;
+
+    function closeAbout() {
+      if (!aboutMask || !aboutMask.classList.contains('on')) return false;
+      aboutMask.classList.remove('on');
+      aboutMask.setAttribute('aria-hidden', 'true');
+      aboutMask.inert = true;
+      moveSurface(aboutDialog, aboutOrigin, false, function () {
+        aboutMask.classList.remove('it-surface-leave');
+      });
+      aboutBackgroundState.forEach(function (entry) { entry.el.inert = entry.inert; });
+      aboutBackgroundState = [];
+      if (aboutReturnFocus && aboutReturnFocus.isConnected) {
+        aboutReturnFocus.focus({ preventScroll: true });
+      }
+      return true;
+    }
+    closeAboutLayer = closeAbout;
+
+    function openAbout(origin) {
+      if (!aboutMask || !aboutDialog) return;
+      closeSelect();
+      aboutOrigin = origin || rectOf(document.activeElement);
+      aboutReturnFocus = brand;
+      aboutMask.inert = false;
+      aboutMask.setAttribute('aria-hidden', 'false');
+      aboutMask.classList.remove('it-surface-leave');
+      aboutMask.classList.add('on');
+      aboutBackgroundState = Array.prototype.slice.call(document.body.children).filter(function (el) {
+        return el !== aboutMask && !/^(SCRIPT|STYLE)$/.test(el.tagName);
+      }).map(function (el) {
+        var entry = { el: el, inert: el.inert };
+        el.inert = true;
+        return entry;
+      });
+      moveSurface(aboutDialog, aboutOrigin, true);
+      aboutDialog.querySelector('[data-close-about]').focus({ preventScroll: true });
+    }
+
+    on(aboutMask, 'click', function (e) {
+      if (e.target === aboutMask || (e.target.closest && e.target.closest('[data-close-about]'))) closeAbout();
+    });
+    on(aboutMask, 'keydown', function (e) {
+      if (e.key !== 'Tab' || !aboutMask.classList.contains('on')) return;
+      var focusable = Array.prototype.slice.call(aboutDialog.querySelectorAll('button, a, [tabindex]'))
+        .filter(function (el) { return !el.disabled && el.tabIndex >= 0 && el.getClientRects().length; });
+      if (!focusable.length) { e.preventDefault(); aboutDialog.focus(); return; }
+      var first = focusable[0];
+      var last = focusable[focusable.length - 1];
+      if (e.shiftKey && (document.activeElement === first || document.activeElement === aboutDialog)) {
+        e.preventDefault(); last.focus();
+      } else if (!e.shiftKey && document.activeElement === last) {
+        e.preventDefault(); first.focus();
+      }
+    });
 
     function openAt(x, y, origin) {
       closeSelect();
@@ -2029,19 +2129,16 @@
       closeMenu();
       var act = target.getAttribute('data-act');
 
-      if (act === 'bg' || act === 'bg-reset' || act === 'settings') {
+      if (act === 'settings') {
         if (window.__itOpenSettings) {
           window.__itOpenSettings({
-            section: act === 'bg' || act === 'bg-reset' ? 'background' : 'appearance',
-            resetBackground: act === 'bg-reset',
+            section: 'appearance',
             origin: origin,
             trigger: brand
           });
         }
       } else if (act === 'about') {
-        alert('笺 · 版本 2.1.0\n\n' +
-          '翻译由 bilibili Index-Translate 提供，通过官方公开 API 接入。\n' +
-          '本项目为非官方客户端，与哔哩哔哩无隶属关系。');
+        openAbout(origin);
       }
     });
   }
@@ -2246,17 +2343,34 @@
               </select></label>
               <label class="it-set-range"><span>玻璃强度 <output data-pref-output="appearance.glassStrength"></output></span>
                 <input type="range" min="0" max="100" step="5" data-pref="appearance.glassStrength" data-pref-type="number"></label>
+              <label class="it-set-range"><span>卡片透出 <output data-pref-output="appearance.cardReveal"></output></span>
+                <input type="range" min="0" max="100" step="5" data-pref="appearance.cardReveal" data-pref-type="number"></label>
               <label class="it-set-row"><span>卡片圆角</span><select data-pref="appearance.radius">
                 <option value="small">小</option><option value="standard">标准</option><option value="round">圆润</option>
               </select></label>
             </section>
             <section class="it-set-page" data-pref-section="reading" hidden>
               <h2>阅读与布局</h2>
-              <label class="it-set-row"><span>内容字体</span><select data-pref="appearance.font">
+              <label class="it-set-row"><span>字体类别</span><select data-pref="appearance.font">
                 <option value="sans">系统无衬线</option><option value="serif">系统衬线</option><option value="mono">等宽</option>
               </select></label>
+              <label class="it-set-row" id="it-pref-font-family-row" hidden><span>系统字体</span><select data-pref="appearance.systemFontFamily" id="it-pref-font-family">
+                <option value="">与字体类别相同</option>
+              </select></label>
+              <div class="it-set-note" id="it-pref-font-status" hidden></div>
               <label class="it-set-range"><span>内容字号 <output data-pref-output="appearance.fontScale"></output></span>
                 <input type="range" min="90" max="140" step="5" data-pref="appearance.fontScale" data-pref-type="number"></label>
+              <label class="it-set-row"><span>字体粗细</span><select data-pref="appearance.fontWeight">
+                <option value="300">300 · 纤细</option><option value="400">400 · 常规</option>
+                <option value="500">500 · 中等</option><option value="600">600 · 半粗</option>
+                <option value="700">700 · 粗体</option>
+              </select></label>
+              <div class="it-set-row it-set-color-row"><span>字体颜色</span>
+                <select data-pref="appearance.fontColorMode" aria-label="字体颜色模式">
+                  <option value="theme">跟随主题</option><option value="custom">自定义</option>
+                </select>
+                <input type="color" data-pref="appearance.fontColor" aria-label="自定义字体颜色">
+              </div>
               <label class="it-set-row"><span>内容间距</span><select data-pref="appearance.layout">
                 <option value="standard">标准</option><option value="compact">紧凑</option>
               </select></label>
@@ -2291,7 +2405,7 @@
               <label class="it-set-row"><span>默认源语言</span><select id="it-pref-source" data-pref="translation.sourceLanguage"></select></label>
               <label class="it-set-row"><span>默认目标语言</span><select id="it-pref-target" data-pref="translation.targetLanguage"></select></label>
               <label class="it-set-row"><span>文本默认模型</span><select data-pref="translation.defaultModels.text">
-                <option value="index-mt-2b">2B 快</option><option value="index-mt-9b">9B</option><option value="index-mt-35b">35B</option>
+                <option value="index-mt-2b">2B</option><option value="index-mt-9b">9B</option><option value="index-mt-35b">35B</option>
               </select></label>
               <label class="it-set-row"><span>音节默认模型</span><select data-pref="translation.defaultModels.syllable">
                 <option value="index-mt-2b-syllable">2B</option><option value="index-mt-9b-syllable">9B</option>
@@ -2312,6 +2426,21 @@
               <label class="it-set-row"><span>开机自动启动</span><input type="checkbox" class="it-set-check" id="it-set-autostart"></label>
               <label class="it-set-row"><span>启动后最小化到托盘</span><input type="checkbox" class="it-set-check" id="it-set-starttotray"></label>
               <div class="it-set-note">自启动和启动到托盘设置下次启动时生效。</div>
+              <div id="it-popup-settings">
+                <div class="it-set-divider"></div>
+                <h3>划词悬浮窗</h3>
+                <div class="it-popup-preview-scene" id="it-popup-preview-scene" aria-label="悬浮窗卡片预览">
+                  <div class="it-popup-preview-image" aria-hidden="true"></div>
+                  <div class="it-popup-preview-card">
+                    <b>原文 · 译文</b><span>清晰、舒适的阅读体验</span>
+                  </div>
+                </div>
+                <label class="it-set-range"><span>卡片透出 <output data-pref-output="popup.cardReveal"></output></span>
+                  <input type="range" min="0" max="100" step="5" data-pref="popup.cardReveal" data-pref-type="number"></label>
+                <div class="it-set-actions"><button type="button" class="ghost" id="it-popup-pick-background">选择悬浮窗背景</button>
+                  <button type="button" class="ghost" id="it-popup-follow-background">跟随主窗口背景</button></div>
+                <div class="it-set-note" id="it-popup-background-status">悬浮窗跟随主窗口背景。</div>
+              </div>
             </section>
           </div>
         </div>
@@ -2323,23 +2452,81 @@
 
     var recording = null;
     var dialog = modal.querySelector('.it-set');
+    var fontFamilyRow = $('it-pref-font-family-row');
+    var fontFamilySelect = $('it-pref-font-family');
+    var fontStatus = $('it-pref-font-status');
+    var popupPreviewScene = $('it-popup-preview-scene');
+    var popupPreviewImage = popupPreviewScene && popupPreviewScene.querySelector('.it-popup-preview-image');
     var settingsOrigin = null;
     var returnFocus = null;
     var backgroundState = [];
     var settingsSeq = 0;
     var backgroundPickSeq = 0;
+    var popupBackgroundPickSeq = 0;
+    var systemFonts = [];
+    var systemFontsReady = false;
+    var settingsLoaded = false;
+    var popupPreviewData = null;
     var settingsSaving = false;
     var activeSection = 'appearance';
 
     modal.querySelectorAll('[data-pref-tab="desktop"]').forEach(function (tab) {
       tab.hidden = !Bridge.isDesktop;
     });
+    if (fontFamilyRow) fontFamilyRow.hidden = !Bridge.isDesktop;
+    var popupSettings = modal.querySelector('#it-popup-settings');
+    if (popupSettings) popupSettings.hidden = !Bridge.isDesktop;
     var langOptions = '<option value="auto">自动检测</option>';
     Object.keys(LANGS).forEach(function (code) {
       langOptions += '<option value="' + code + '">' + langName(code) + '</option>';
     });
     $('it-pref-source').innerHTML = langOptions;
     $('it-pref-target').innerHTML = langOptions.replace('<option value="auto">自动检测</option>', '');
+
+    function populateSystemFonts(fonts) {
+      if (!fontFamilySelect) return;
+      fontFamilySelect.innerHTML = '<option value="">与字体类别相同</option>';
+      systemFonts = Array.from(new Set((Array.isArray(fonts) ? fonts : []).filter(function (font) {
+        return typeof font === 'string' && font.trim();
+      }))).sort(function (left, right) { return left.localeCompare(right); });
+      systemFonts.forEach(function (font) {
+        var option = document.createElement('option');
+        option.value = font;
+        option.textContent = font;
+        fontFamilySelect.appendChild(option);
+      });
+    }
+
+    function updatePopupPreview() {
+      if (!popupPreviewScene || !settingsState) return;
+      var preferences = settingsState.preferences;
+      var appearance = preferences.appearance;
+      var dark = resolvedAppearance(preferences) === 'dark';
+      var image = preferences.popup.backgroundData || preferences.background.data;
+      if (image !== popupPreviewData) {
+        popupPreviewImage.style.setProperty('--it-popup-preview-image', image ? 'url("' + image + '")' : 'none');
+        popupPreviewData = image;
+      }
+      var overlayAlpha = Math.max(0, Math.min(80, preferences.background.opacity)) / 100;
+      var popupBlur = appearance.material === 'frosted' ? 34 + 12 * appearance.glassStrength / 100 :
+        appearance.material === 'solid' ? 0 : 4 + 30 * appearance.glassStrength / 100;
+      var cardFactor = 1 - preferences.popup.cardReveal / 100;
+      var glassStrength = appearance.glassStrength / 100;
+      var tint = appearance.material === 'solid' ? .98 :
+        dark ? .78 + .16 * (1 - glassStrength) : .96 - .24 * glassStrength;
+      var popupCard = popupPreviewScene.querySelector('.it-popup-preview-card');
+      popupPreviewScene.style.setProperty('--it-popup-preview-overlay',
+        dark ? 'rgba(18,16,24,' + overlayAlpha + ')' : 'rgba(255,255,255,' + overlayAlpha + ')');
+      popupPreviewScene.style.setProperty('--it-popup-preview-fit', preferences.background.fit);
+      popupPreviewScene.style.setProperty('--it-popup-preview-blur', preferences.background.blur + 'px');
+      popupCard.style.setProperty('--it-popup-card-bg', cardFactor === 0 ? 'transparent' :
+        colorRgba(dark ? '#221F2A' : '#FFFFFF', tint * cardFactor));
+      popupCard.style.setProperty('--it-popup-card-filter',
+        cardFactor === 0 || popupBlur === 0 ? 'none' :
+          'blur(' + popupBlur * cardFactor + 'px) saturate(' +
+          (1 + .7 * glassStrength * cardFactor).toFixed(2) + ')');
+      popupCard.style.setProperty('--it-popup-card-shine', cardFactor === 0 ? 'none' : 'var(--lg-shine)');
+    }
 
     function fill() {
       if (!settingsState) return;
@@ -2363,12 +2550,60 @@
       $('it-set-starttotray').checked = settingsState.start_to_tray !== false;
       $('it-pref-background-status').textContent = settingsState.preferences.background.data ?
         '已选择背景图片，保存设置后保留。' : '未选择背景图片。';
+      if (fontFamilySelect) {
+        var selectedFamily = settingsState.preferences.appearance.systemFontFamily;
+        var hasSelectedFamily = Array.prototype.some.call(fontFamilySelect.options, function (option) {
+          return option.value === selectedFamily;
+        });
+        if (selectedFamily && !hasSelectedFamily && !systemFonts.some(function (font) { return font === selectedFamily; })) {
+          var unavailable = document.createElement('option');
+          unavailable.value = selectedFamily;
+          unavailable.textContent = '不可用：' + selectedFamily;
+          unavailable.disabled = true;
+          fontFamilySelect.appendChild(unavailable);
+        }
+        fontFamilySelect.value = selectedFamily;
+        if (fontStatus) {
+          fontStatus.hidden = systemFontsReady && systemFonts.length > 0;
+          fontStatus.textContent = systemFontsReady ? '未能读取系统字体列表，当前选择会回退到字体类别。' : '正在读取系统字体…';
+        }
+      }
+      var colorMode = settingsState.preferences.appearance.fontColorMode;
+      var colorControl = modal.querySelector('[data-pref="appearance.fontColor"]');
+      if (colorControl) colorControl.disabled = settingsSaving || colorMode !== 'custom';
+      if (fontFamilySelect) fontFamilySelect.disabled = settingsSaving || !systemFontsReady;
+      var popupStatus = $('it-popup-background-status');
+      if (popupStatus) popupStatus.textContent = settingsState.preferences.popup.backgroundData ?
+        '已选择独立图片，保存后悬浮窗将使用该图片。' : '悬浮窗跟随主窗口背景。';
+      updatePopupPreview();
       modal.querySelectorAll('[data-pref-section]').forEach(function (section) {
         section.hidden = section.getAttribute('data-pref-section') !== activeSection;
       });
       modal.querySelectorAll('[data-pref-tab]').forEach(function (tab) {
         tab.classList.toggle('on', tab.getAttribute('data-pref-tab') === activeSection);
         tab.setAttribute('aria-current', tab.getAttribute('data-pref-tab') === activeSection ? 'page' : 'false');
+      });
+    }
+
+    function loadSystemFonts(session) {
+      if (!Bridge.isDesktop || !fontFamilySelect) return;
+      systemFontsReady = false;
+      populateSystemFonts([]);
+      fill();
+      Bridge.invoke('it_list_system_fonts').then(function (fonts) {
+        if (session !== settingsSeq || !modal.classList.contains('on')) return;
+        populateSystemFonts(fonts);
+        systemFontsReady = true;
+        fill();
+        enableControls(true);
+      }).catch(function (error) {
+        if (session !== settingsSeq || !modal.classList.contains('on')) return;
+        populateSystemFonts([]);
+        systemFontsReady = true;
+        fill();
+        fontStatus.textContent = '无法读取系统字体列表：' + error;
+        fontStatus.hidden = false;
+        enableControls(true);
       });
     }
 
@@ -2406,8 +2641,13 @@
     }
 
     function enableControls(enabled) {
+      var controlsEnabled = enabled && (!Bridge.isDesktop || settingsLoaded);
       modal.querySelectorAll('.it-set-body input, .it-set-body select, .it-set-body button, #it-set-save, [data-reset-section]')
-        .forEach(function (control) { control.disabled = !enabled; });
+        .forEach(function (control) { control.disabled = !controlsEnabled; });
+      var colorControl = modal.querySelector('[data-pref="appearance.fontColor"]');
+      if (colorControl) colorControl.disabled = !controlsEnabled ||
+        settingsState.preferences.appearance.fontColorMode !== 'custom';
+      if (fontFamilySelect) fontFamilySelect.disabled = !controlsEnabled || !systemFontsReady;
     }
 
     function close() {
@@ -2416,6 +2656,8 @@
       stopRecord();
       closeSelect();
       settingsSeq++;
+      backgroundPickSeq++;
+      popupBackgroundPickSeq++;
       settingsState = committedSettings ? copyObject(committedSettings) : copyObject(DEFAULT_SETTINGS);
       applyPreferences(settingsState.preferences);
       fill();
@@ -2437,6 +2679,7 @@
       closeSelect();
       var seq = ++settingsSeq;
       activeSection = source && source.section ? source.section : 'appearance';
+      settingsLoaded = !Bridge.isDesktop;
       if (activeSection === 'desktop' && !Bridge.isDesktop) activeSection = 'appearance';
       returnFocus = (source && source.trigger) || document.activeElement;
       settingsOrigin = (source && source.origin) || rectOf(returnFocus);
@@ -2463,6 +2706,7 @@
         enableControls(false);
         $('it-set-status').textContent = '读取中';
         Bridge.invoke('it_set_hotkeys_enabled', { enabled: false }).catch(function () {});
+        loadSystemFonts(seq);
         Bridge.invoke('it_get_settings').then(function (saved) {
           if (seq !== settingsSeq || !modal.classList.contains('on')) return;
           settingsState = settingsFromSaved(saved, readSavedPreferences());
@@ -2471,6 +2715,7 @@
           applyPreferences(settingsState.preferences);
           fill();
           $('it-set-status').textContent = '';
+          settingsLoaded = true;
           enableControls(true);
         }).catch(function (error) {
           if (seq !== settingsSeq) return;
@@ -2497,15 +2742,20 @@
           var preservedPreferences = copyObject(settingsState.preferences);
           settingsState = copyObject(DEFAULT_SETTINGS);
           settingsState.preferences = preservedPreferences;
+          settingsState.preferences.popup = copyObject(defaults.popup);
         } else if (activeSection === 'reading') {
           settingsState.preferences.appearance.font = defaults.appearance.font;
+          settingsState.preferences.appearance.systemFontFamily = defaults.appearance.systemFontFamily;
           settingsState.preferences.appearance.fontScale = defaults.appearance.fontScale;
+          settingsState.preferences.appearance.fontWeight = defaults.appearance.fontWeight;
+          settingsState.preferences.appearance.fontColorMode = defaults.appearance.fontColorMode;
+          settingsState.preferences.appearance.fontColor = defaults.appearance.fontColor;
           settingsState.preferences.appearance.layout = defaults.appearance.layout;
         } else if (activeSection === 'motion') {
           settingsState.preferences.appearance.motion = defaults.appearance.motion;
           settingsState.preferences.appearance.ambientLight = defaults.appearance.ambientLight;
         } else if (activeSection === 'appearance') {
-          ['mode', 'palette', 'material', 'glassStrength', 'radius'].forEach(function (key) {
+          ['mode', 'palette', 'material', 'glassStrength', 'cardReveal', 'radius'].forEach(function (key) {
             settingsState.preferences.appearance[key] = defaults.appearance[key];
           });
         } else {
@@ -2536,6 +2786,25 @@
         backgroundPickSeq++;
         settingsState.preferences.background.data = '';
         applyPreferences(settingsState.preferences);
+        fill();
+      }
+      if (e.target.closest && e.target.closest('#it-popup-pick-background')) {
+        var popupSelection = ++popupBackgroundPickSeq;
+        var popupSession = settingsSeq;
+        Bridge.pickImage(function (dataUrl) {
+          if (!dataUrl || !settingsState || popupSession !== settingsSeq ||
+              popupSelection !== popupBackgroundPickSeq || !modal.classList.contains('on')) return;
+          shrinkImage(dataUrl, function (compressed) {
+            if (!settingsState || popupSession !== settingsSeq ||
+                popupSelection !== popupBackgroundPickSeq || !modal.classList.contains('on')) return;
+            settingsState.preferences.popup.backgroundData = compressed;
+            fill();
+          });
+        });
+      }
+      if (e.target.closest && e.target.closest('#it-popup-follow-background')) {
+        popupBackgroundPickSeq++;
+        settingsState.preferences.popup.backgroundData = '';
         fill();
       }
     });
@@ -2576,6 +2845,7 @@
       stopRecord();
       closeSelect();
       backgroundPickSeq++;
+      popupBackgroundPickSeq++;
       var submission = copyObject(settingsState);
       settingsSaving = true;
       var button = this;

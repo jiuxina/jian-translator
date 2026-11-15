@@ -69,6 +69,7 @@ impl Default for DesktopSettings {
 
 static SETTINGS: Mutex<Option<DesktopSettings>> = Mutex::new(None);
 static HOTKEYS_ENABLED: AtomicBool = AtomicBool::new(true);
+static CLIPBOARD_TRANSACTION: Mutex<()> = Mutex::new(());
 // 每次唤起悬浮窗换一个 id，JS 用它给重复投递的脚本去重
 static POPUP_SEQ: AtomicU64 = AtomicU64::new(0);
 // watchdog 代次：新翻译顶掉旧 watchdog，避免多个线程同时盯一个窗口
@@ -333,19 +334,90 @@ fn apply_window_border(window: &WebviewWindow) {
 #[cfg(not(target_os = "windows"))]
 fn apply_window_border(_window: &WebviewWindow) {}
 
-fn popup_appearance(settings: &DesktopSettings) -> serde_json::Value {
-    settings
-        .preferences
-        .get("appearance")
-        .cloned()
-        .unwrap_or(serde_json::Value::Null)
+#[cfg(target_os = "windows")]
+unsafe extern "system" fn remove_top_frame_inset(
+    hwnd: windows_sys::Win32::Foundation::HWND,
+    message: u32,
+    wparam: windows_sys::Win32::Foundation::WPARAM,
+    lparam: windows_sys::Win32::Foundation::LPARAM,
+    subclass_id: usize,
+    _reference: usize,
+) -> windows_sys::Win32::Foundation::LRESULT {
+    use windows_sys::Win32::UI::Shell::{DefSubclassProc, RemoveWindowSubclass};
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        NCCALCSIZE_PARAMS, WM_NCCALCSIZE, WM_NCDESTROY,
+    };
+
+    if message == WM_NCCALCSIZE && wparam != 0 && lparam != 0 {
+        // SAFETY: Windows supplies a live NCCALCSIZE_PARAMS for WM_NCCALCSIZE with wParam set.
+        let params = unsafe { &mut *(lparam as *mut NCCALCSIZE_PARAMS) };
+        let proposed_top = params.rgrc[0].top;
+        let result = DefSubclassProc(hwnd, message, wparam, lparam);
+        let added_top_inset = proposed_top - params.rgrc[0].top;
+        if (1..=8).contains(&added_top_inset) {
+            params.rgrc[0].top = proposed_top;
+        }
+        return result;
+    }
+
+    let result = DefSubclassProc(hwnd, message, wparam, lparam);
+    if message == WM_NCDESTROY {
+        let _ = RemoveWindowSubclass(hwnd, Some(remove_top_frame_inset), subclass_id);
+    }
+    result
 }
 
-fn popup_appearance_script(appearance: &serde_json::Value) -> String {
+#[cfg(target_os = "windows")]
+fn remove_main_window_top_frame_inset(window: &WebviewWindow) {
+    use windows_sys::Win32::UI::Shell::SetWindowSubclass;
+
+    const MAIN_WINDOW_SUBCLASS_ID: usize = 0x4954;
+    let Ok(hwnd) = window.hwnd() else {
+        return;
+    };
+    let result = unsafe {
+        SetWindowSubclass(
+            hwnd.0 as _,
+            Some(remove_top_frame_inset),
+            MAIN_WINDOW_SUBCLASS_ID,
+            0,
+        )
+    };
+    if result == 0 {
+        eprintln!("[IT] 修正 Windows 窗口顶部非客户区失败");
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn remove_main_window_top_frame_inset(_window: &WebviewWindow) {}
+
+fn popup_appearance(settings: &DesktopSettings) -> serde_json::Value {
+    let preferences = settings.preferences.as_object();
+    let appearance = preferences
+        .and_then(|preferences| preferences.get("appearance"))
+        .cloned()
+        .unwrap_or(serde_json::Value::Null);
+    let background = preferences
+        .and_then(|preferences| preferences.get("background"))
+        .cloned()
+        .unwrap_or(serde_json::Value::Null);
+    let popup = preferences
+        .and_then(|preferences| preferences.get("popup"))
+        .cloned()
+        .unwrap_or(serde_json::Value::Null);
+    serde_json::json!({
+        "appearance": appearance,
+        "background": background,
+        "popup": popup
+    })
+}
+
+fn popup_appearance_script(preferences: &serde_json::Value) -> String {
+    let preferences = serde_json::to_string(preferences).unwrap_or_else(|_| "null".to_string());
     format!(
-        "(function(){{var a={};window.__itPopupAppearance=a;\
-         if(window.__popupApplyPreferences)window.__popupApplyPreferences(a);}})();",
-        appearance
+        "(function(){{var p={};window.__itPopupAppearance=p;\
+         if(window.__popupApplyPreferences)window.__popupApplyPreferences(p);}})();",
+        preferences
     )
 }
 
@@ -794,6 +866,11 @@ document.documentElement.innerHTML = `
     --lg-duration-fast:140ms;--lg-duration-control:220ms;--lg-duration-panel:280ms;
     --lg-ease-enter:cubic-bezier(.18,.8,.22,1);
     --lg-shine:inset 1.5px 1.5px 1px rgba(255,255,255,.78),inset -1px -1px 1px rgba(255,255,255,.5);
+    --it-popup-bg-overlay:rgba(255,255,255,0);--it-popup-bg-blur:0px;--it-popup-bg-fit:cover;
+    --it-popup-card-fill:rgba(255,255,255,.72);--it-popup-card-filter:blur(34px) saturate(1.7);
+    --it-popup-card-shine:var(--lg-shine);--it-popup-card-surface:1;
+    --it-popup-content-color:var(--lg-ink);--it-popup-content-weight:400;
+    --it-popup-content-font:"PingFang SC","Microsoft YaHei UI","Noto Sans SC",system-ui,sans-serif;
     /* 悬浮窗是 436x282 的透明窗口，卡片四周只有 22px 留白。
        阴影必须收敛在这个范围内，否则超出窗口的部分会被硬切，
        看起来像「右边拖出一块渐变」。模糊 20px + 偏移 6px = 下方最多 16px，安全。 */
@@ -801,22 +878,28 @@ document.documentElement.innerHTML = `
   html,body{margin:0;padding:0;height:100%;background:transparent;overflow:hidden;
     font-family:"PingFang SC","Microsoft YaHei UI","Noto Sans SC",system-ui,sans-serif;
     -webkit-font-smoothing:antialiased;}
-  body{box-sizing:border-box;padding:22px;}
+  body{box-sizing:border-box;padding:22px;position:relative;isolation:isolate;}
+  #popup-background{position:absolute;z-index:0;inset:-40px;pointer-events:none;
+    background-position:center;background-repeat:no-repeat;background-size:var(--it-popup-bg-fit);
+    filter:blur(var(--it-popup-bg-blur));}
+  #popup-background::after{content:"";position:absolute;inset:0;background:var(--it-popup-bg-overlay);}
   #card{box-sizing:border-box;height:100%;display:flex;flex-direction:column;
-    position:relative;isolation:isolate;overflow:hidden;
-    background:var(--lg-tint-2);border:1px solid var(--lg-edge);border-radius:var(--lg-r-lg);
-    box-shadow:var(--lg-shine),var(--lg-shadow-strong);
-    -webkit-backdrop-filter:blur(var(--lg-blur-strong)) saturate(var(--lg-saturate));
-    backdrop-filter:blur(var(--lg-blur-strong)) saturate(var(--lg-saturate));
+    position:relative;z-index:1;isolation:isolate;overflow:hidden;
+    background:var(--it-popup-card-fill);border:1px solid var(--lg-edge);border-radius:var(--lg-r-lg);
+    box-shadow:var(--it-popup-card-shine),var(--lg-shadow-strong);
+    -webkit-backdrop-filter:var(--it-popup-card-filter);
+    backdrop-filter:var(--it-popup-card-filter);
     transform-origin:center;animation:popup-arrive var(--lg-duration-panel) var(--lg-ease-enter) both;}
   #card::before{content:"";position:absolute;inset:0;pointer-events:none;z-index:0;
+    opacity:var(--it-popup-card-surface);
     background:linear-gradient(150deg,rgba(255,255,255,.34),var(--lg-accent-wash) 48%,transparent 72%);}
   #card>*{position:relative;z-index:1;}
   .head{display:flex;align-items:center;justify-content:space-between;gap:8px;
     padding:10px 14px 8px;font-size:11.5px;color:var(--lg-ink-sub);}
   .head b{font-weight:600;color:var(--lg-accent-deep);}
   .body{flex:1;overflow-y:auto;padding:2px 14px 12px;font-size:calc(14px * var(--user-font-scale));line-height:1.8;
-    letter-spacing:.02em;color:var(--lg-ink);white-space:pre-wrap;word-break:break-word;}
+    letter-spacing:.02em;color:var(--it-popup-content-color);font-weight:var(--it-popup-content-weight);
+    font-family:var(--it-popup-content-font);white-space:pre-wrap;word-break:break-word;}
   .body::-webkit-scrollbar{width:6px}
   .body::-webkit-scrollbar-thumb{background:var(--lg-scrollbar-thumb);border-radius:99px}
   .ph{color:var(--lg-ink-faint);font-size:13px;}
@@ -848,7 +931,7 @@ document.documentElement.innerHTML = `
   html[data-font="mono"],html[data-font="mono"] body{font-family:ui-monospace,"Cascadia Mono",monospace;}
   @media(prefers-reduced-motion:reduce){#card,.stream-segment,.foot button{animation:none!important;transition:none!important}}
 </style></head>
-<body><div id="card">
+<body><div id="popup-background" aria-hidden="true"></div><div id="card">
   <div class="head"><b id="meta">翻译中</b><span id="badge"></span></div>
   <div class="body" id="out"><span class="ph">正在翻译…</span></div>
   <div class="foot"><span>Esc 或点击别处关闭</span><button id="copy" type="button">复制</button></div>
@@ -859,6 +942,8 @@ document.documentElement.innerHTML = `
   var meta = document.getElementById('meta');
   var badge = document.getElementById('badge');
   var copy = document.getElementById('copy');
+  var popupBackground = document.getElementById('popup-background');
+  var copyFeedbackTimer = 0;
   var lastId = 0;
   var controller = null;
   var paintQueue = '';
@@ -988,30 +1073,60 @@ document.documentElement.innerHTML = `
       });
   };
 
-  copy.addEventListener('click', function () {
+  copy.addEventListener('click', async function () {
     var value = output.innerText || '';
-    if (!value || !navigator.clipboard) return;
-    navigator.clipboard.writeText(value).then(function () {
+    if (!value.trim()) {
+      copy.textContent = '没有可复制内容';
+      clearTimeout(copyFeedbackTimer);
+      copyFeedbackTimer = setTimeout(function () { copy.textContent = '复制'; }, 1600);
+      return;
+    }
+    copy.disabled = true;
+    try {
+      var internals = window.__TAURI_INTERNALS__;
+      if (internals && typeof internals.invoke === 'function') {
+        await internals.invoke('it_write_clipboard_text', { text: value }, {});
+      } else if (window.__TAURI__ && window.__TAURI__.core && window.__TAURI__.core.invoke) {
+        await window.__TAURI__.core.invoke('it_write_clipboard_text', { text: value });
+      } else if (navigator.clipboard && navigator.clipboard.writeText) {
+        await navigator.clipboard.writeText(value);
+      } else {
+        throw new Error('剪贴板接口不可用');
+      }
       copy.textContent = '已复制';
-      setTimeout(function () { copy.textContent = '复制'; }, 1200);
-    });
+    } catch (error) {
+      copy.textContent = '复制失败';
+      copy.title = String(error && error.message || error || '无法写入系统剪贴板');
+    } finally {
+      copy.disabled = false;
+      clearTimeout(copyFeedbackTimer);
+      copyFeedbackTimer = setTimeout(function () {
+        copy.textContent = '复制';
+        copy.title = '';
+      }, 1800);
+    }
   });
 
-  var activePopupAppearance = null;
+  var activePopupPreferences = null;
+  var activePopupBackgroundData = null;
 
   function popupSystemDark() {
     return !!(window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches);
   }
 
   function popupMotionDisabled() {
-    var motion = activePopupAppearance && activePopupAppearance.motion || 'system';
+    var motion = activePopupPreferences && activePopupPreferences.appearance &&
+      activePopupPreferences.appearance.motion || 'system';
     return motion === 'off' || !!(window.matchMedia &&
       window.matchMedia('(prefers-reduced-motion: reduce)').matches);
   }
 
-  function applyPopupPreferences(appearance) {
-    if (!appearance) return;
-    activePopupAppearance = appearance;
+  function applyPopupPreferences(preferences) {
+    if (!preferences) return;
+    var appearance = preferences.appearance || {};
+    var background = preferences.background || {};
+    var popup = preferences.popup || {};
+    activePopupPreferences = preferences;
     var root = document.documentElement;
     var mode = appearance.mode || 'system';
     var dark = mode === 'dark' || (mode === 'system' && popupSystemDark());
@@ -1030,6 +1145,31 @@ document.documentElement.innerHTML = `
     var material = appearance.material || 'glass';
     var blur = material === 'frosted' ? 34 + 12 * strength : 4 + 30 * strength;
     var tint = material === 'solid' ? .98 : (dark ? .78 + .16 * (1 - strength) : .96 - .24 * strength);
+    var revealValue = Number(popup.cardReveal);
+    var reveal = Number.isFinite(revealValue) ? Math.max(0, Math.min(100, revealValue)) / 100 : 0;
+    var surface = 1 - reveal;
+    var fontWeightValue = Number(appearance.fontWeight);
+    var fontWeight = Number.isFinite(fontWeightValue)
+      ? Math.max(300, Math.min(700, fontWeightValue)) : 400;
+    var fontColor = appearance.fontColorMode === 'custom' &&
+      /^#[0-9a-f]{6}$/i.test(appearance.fontColor || '')
+      ? appearance.fontColor : (dark ? '#F1EEF5' : '#2E2A38');
+    var customFont = typeof appearance.systemFontFamily === 'string'
+      ? appearance.systemFontFamily.trim() : '';
+    var genericFont = appearance.font === 'serif'
+      ? 'ui-serif,"Noto Serif CJK SC",serif'
+      : appearance.font === 'mono' ? 'ui-monospace,"Cascadia Mono",monospace'
+        : '"PingFang SC","Microsoft YaHei UI","Noto Sans SC",system-ui,sans-serif';
+    var fontFamily = customFont ? JSON.stringify(customFont) + ',' + genericFont : genericFont;
+    var backgroundOpacityValue = Number(background.opacity);
+    var backgroundOpacity = Number.isFinite(backgroundOpacityValue)
+      ? Math.max(0, Math.min(80, backgroundOpacityValue)) / 100 : .34;
+    var backgroundBlurValue = Number(background.blur);
+    var backgroundBlur = Number.isFinite(backgroundBlurValue)
+      ? Math.max(0, Math.min(20, backgroundBlurValue)) : 0;
+    var backgroundFit = background.fit === 'contain' ? 'contain' : 'cover';
+    var backgroundData = typeof popup.backgroundData === 'string' && popup.backgroundData
+      ? popup.backgroundData : (typeof background.data === 'string' ? background.data : '');
 
     root.dataset.themeMode = mode;
     root.dataset.themeScheme = dark ? 'dark' : 'light';
@@ -1057,6 +1197,26 @@ document.documentElement.innerHTML = `
     root.style.setProperty('--lg-r-lg', (radius === 'small' ? 10 : radius === 'standard' ? 18 : 26) + 'px');
     root.style.setProperty('--lg-control-radius', radius === 'small' ? '7px' : radius === 'standard' ? '10px' : '999px');
     root.style.setProperty('--user-font-scale', String(fontScale));
+    root.style.setProperty('--it-popup-content-weight', String(fontWeight));
+    root.style.setProperty('--it-popup-content-color', fontColor);
+    root.style.setProperty('--it-popup-content-font', fontFamily);
+    root.style.setProperty('--it-popup-card-fill', 'rgba(' + (dark ? '34,31,42' : '255,255,255') + ',' + (tint * surface) + ')');
+    root.style.setProperty('--it-popup-card-filter', reveal >= 1 ? 'none' :
+      'blur(' + (blur * surface) + 'px) saturate(' + (1 + .7 * surface) + ')');
+    root.style.setProperty('--it-popup-card-shine', reveal >= 1 ? 'none' :
+      (dark
+        ? 'inset 1.5px 1.5px 1px rgba(255,255,255,' + (.12 * surface) + '),inset -1px -1px 1px rgba(255,255,255,' + (.06 * surface) + ')'
+        : 'inset 1.5px 1.5px 1px rgba(255,255,255,' + (.78 * surface) + '),inset -1px -1px 1px rgba(255,255,255,' + (.5 * surface) + ')'));
+    root.style.setProperty('--it-popup-card-surface', String(surface));
+    root.style.setProperty('--it-popup-bg-overlay', dark
+      ? 'rgba(18,16,24,' + backgroundOpacity + ')'
+      : 'rgba(255,255,255,' + backgroundOpacity + ')');
+    root.style.setProperty('--it-popup-bg-blur', backgroundBlur + 'px');
+    root.style.setProperty('--it-popup-bg-fit', backgroundFit);
+    if (backgroundData !== activePopupBackgroundData) {
+      popupBackground.style.backgroundImage = backgroundData ? 'url("' + backgroundData + '")' : 'none';
+      activePopupBackgroundData = backgroundData;
+    }
     root.style.setProperty('--lg-shine', dark
       ? 'inset 1.5px 1.5px 1px rgba(255,255,255,.12),inset -1px -1px 1px rgba(255,255,255,.06)'
       : 'inset 1.5px 1.5px 1px rgba(255,255,255,.78),inset -1px -1px 1px rgba(255,255,255,.5)');
@@ -1068,8 +1228,9 @@ document.documentElement.innerHTML = `
   var colorSchemeQuery = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)');
   if (colorSchemeQuery) {
     var onColorSchemeChange = function () {
-      if (activePopupAppearance && activePopupAppearance.mode === 'system') {
-        applyPopupPreferences(activePopupAppearance);
+      if (activePopupPreferences && activePopupPreferences.appearance &&
+          activePopupPreferences.appearance.mode === 'system') {
+        applyPopupPreferences(activePopupPreferences);
       }
     };
     if (colorSchemeQuery.addEventListener) colorSchemeQuery.addEventListener('change', onColorSchemeChange);
@@ -1084,6 +1245,108 @@ document.documentElement.innerHTML = `
 // ---------------------------------------------------------------------------
 // 划词、快捷键、设置命令
 // ---------------------------------------------------------------------------
+
+#[cfg(target_os = "windows")]
+struct SystemFontFamilies {
+    names: Vec<String>,
+    seen: std::collections::HashSet<String>,
+}
+
+fn is_local_app_origin(url: &tauri::Url) -> bool {
+    let host = url.host_str().unwrap_or_default();
+    url.port().is_none()
+        && ((url.scheme() == "tauri" && host == "localhost")
+            || (matches!(url.scheme(), "http" | "https") && host == "tauri.localhost"))
+}
+
+fn is_blank_popup_url(url: &tauri::Url) -> bool {
+    url.as_str() == "about:blank"
+}
+
+#[cfg(target_os = "windows")]
+unsafe extern "system" fn collect_system_font_family(
+    font: *const windows_sys::Win32::Graphics::Gdi::LOGFONTW,
+    _metric: *const windows_sys::Win32::Graphics::Gdi::TEXTMETRICW,
+    _font_type: u32,
+    data: windows_sys::Win32::Foundation::LPARAM,
+) -> i32 {
+    if font.is_null() || data == 0 {
+        return 1;
+    }
+    // SAFETY: GDI invokes this callback with a valid LOGFONTW and our live enumeration context.
+    let font = unsafe { &*font };
+    let end = font
+        .lfFaceName
+        .iter()
+        .position(|character| *character == 0)
+        .unwrap_or(font.lfFaceName.len());
+    if end == 0 {
+        return 1;
+    }
+
+    let name = String::from_utf16_lossy(&font.lfFaceName[..end]);
+    // SAFETY: LPARAM was passed from it_list_system_fonts while that stack value remains alive.
+    let families = unsafe { &mut *(data as *mut SystemFontFamilies) };
+    if families.seen.insert(name.to_lowercase()) {
+        families.names.push(name);
+    }
+    1
+}
+
+#[tauri::command(async)]
+pub fn it_list_system_fonts(window: WebviewWindow) -> Result<Vec<String>, String> {
+    let url = window
+        .url()
+        .map_err(|error| format!("无法读取窗口地址：{error}"))?;
+    if window.label() != APP_WINDOW_LABEL || !is_local_app_origin(&url) {
+        return Err("系统字体列表仅允许应用设置窗口读取".to_string());
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        use windows_sys::Win32::Graphics::Gdi::{
+            EnumFontFamiliesExW, GetDC, ReleaseDC, DEFAULT_CHARSET, LOGFONTW,
+        };
+
+        // SAFETY: GetDC accepts a null HWND to acquire the desktop DC.
+        let hdc = unsafe { GetDC(std::ptr::null_mut()) };
+        if hdc.is_null() {
+            return Err("无法读取 Windows 系统字体".to_string());
+        }
+
+        let font = LOGFONTW {
+            lfCharSet: DEFAULT_CHARSET,
+            ..Default::default()
+        };
+        let mut families = SystemFontFamilies {
+            names: Vec::new(),
+            seen: std::collections::HashSet::new(),
+        };
+        // SAFETY: `hdc`, `font`, and the stack-backed callback context stay valid for the call.
+        unsafe {
+            EnumFontFamiliesExW(
+                hdc,
+                &font,
+                Some(collect_system_font_family),
+                &mut families as *mut SystemFontFamilies as isize,
+                0,
+            );
+            let _ = ReleaseDC(std::ptr::null_mut(), hdc);
+        }
+
+        families.names.sort_by_key(|name| name.to_lowercase());
+        if families.names.is_empty() {
+            return Err("Windows 未返回可用字体".to_string());
+        }
+        Ok(families.names)
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = window;
+        Err("系统字体列表仅支持 Windows".to_string())
+    }
+}
 
 #[cfg(target_os = "windows")]
 fn read_clipboard_text() -> String {
@@ -1116,6 +1379,92 @@ fn read_clipboard_text() -> String {
         }
         let _ = CloseClipboard();
         text
+    }
+}
+
+#[tauri::command(async)]
+pub fn it_write_clipboard_text(window: WebviewWindow, text: String) -> Result<(), String> {
+    let url = window
+        .url()
+        .map_err(|error| format!("无法读取悬浮窗地址：{error}"))?;
+    if !is_translate_app(window.app_handle())
+        || window.label() != POPUP_LABEL
+        || !is_blank_popup_url(&url)
+    {
+        return Err("剪贴板写入仅允许悬浮窗调用".to_string());
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        use windows_sys::Win32::Foundation::GlobalFree;
+        use windows_sys::Win32::System::DataExchange::{
+            CloseClipboard, EmptyClipboard, OpenClipboard, SetClipboardData,
+        };
+        use windows_sys::Win32::System::Memory::{
+            GlobalAlloc, GlobalLock, GlobalUnlock, GMEM_MOVEABLE,
+        };
+        use windows_sys::Win32::System::Ole::CF_UNICODETEXT;
+
+        let _transaction = CLIPBOARD_TRANSACTION
+            .lock()
+            .map_err(|_| "剪贴板操作暂时不可用".to_string())?;
+        let hwnd = window
+            .hwnd()
+            .map_err(|error| format!("无法获取窗口句柄：{error}"))?;
+        let wide: Vec<u16> = text.encode_utf16().chain(std::iter::once(0)).collect();
+        let bytes = wide.len() * std::mem::size_of::<u16>();
+        // SAFETY: A movable global allocation is required by SetClipboardData(CF_UNICODETEXT).
+        let memory = unsafe { GlobalAlloc(GMEM_MOVEABLE, bytes) };
+        if memory.is_null() {
+            return Err("分配剪贴板文本内存失败".to_string());
+        }
+
+        // SAFETY: `memory` is a valid allocation returned by GlobalAlloc above.
+        let pointer = unsafe { GlobalLock(memory) } as *mut u16;
+        if pointer.is_null() {
+            unsafe { GlobalFree(memory) };
+            return Err("锁定剪贴板文本内存失败".to_string());
+        }
+        // SAFETY: The allocation is locked and has room for every UTF-16 code unit plus NUL.
+        unsafe {
+            std::ptr::copy_nonoverlapping(wide.as_ptr(), pointer, wide.len());
+            let _ = GlobalUnlock(memory);
+        }
+
+        let opened = (0..8).any(|_| {
+            // SAFETY: The invoking popup HWND remains alive for the duration of this command.
+            if unsafe { OpenClipboard(hwnd.0 as _) } != 0 {
+                true
+            } else {
+                std::thread::sleep(Duration::from_millis(12));
+                false
+            }
+        });
+        if !opened {
+            unsafe { GlobalFree(memory) };
+            return Err("系统剪贴板正被占用".to_string());
+        }
+
+        // SAFETY: This command owns the opened clipboard until CloseClipboard below.
+        let emptied = unsafe { EmptyClipboard() } != 0;
+        let transferred =
+            emptied && !unsafe { SetClipboardData(CF_UNICODETEXT as u32, memory) }.is_null();
+        unsafe { CloseClipboard() };
+        if !emptied {
+            unsafe { GlobalFree(memory) };
+            return Err("清空系统剪贴板失败".to_string());
+        }
+        if !transferred {
+            unsafe { GlobalFree(memory) };
+            return Err("写入系统剪贴板失败".to_string());
+        }
+        Ok(())
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = (window, text);
+        Err("系统剪贴板命令仅支持 Windows".to_string())
     }
 }
 
@@ -1195,6 +1544,9 @@ fn send_copy_shortcut() {
 #[cfg(target_os = "windows")]
 fn capture_selection() -> String {
     wait_hotkey_release();
+    let Ok(_transaction) = CLIPBOARD_TRANSACTION.lock() else {
+        return String::new();
+    };
     let before = read_clipboard_text();
     let sequence = clipboard_sequence();
     send_copy_shortcut();
@@ -1535,6 +1887,7 @@ pub fn set_global_shortcut(
     if enhanced {
         // 隐藏系统边框，标题栏由页面自绘；窗口动作走 it_window_action 命令
         if let Some(window) = app.get_webview_window(APP_WINDOW_LABEL) {
+            remove_main_window_top_frame_inset(&window);
             if let Err(error) = window.set_decorations(false) {
                 eprintln!("[IT] 隐藏系统边框失败：{error}");
             }
@@ -1625,4 +1978,56 @@ pub fn set_global_shortcut(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod local_origin_tests {
+    use super::{is_blank_popup_url, is_local_app_origin};
+    use tauri::Url;
+
+    #[test]
+    fn accepts_tauri_local_origins() {
+        for origin in [
+            "tauri://localhost/index.html",
+            "http://tauri.localhost/index.html",
+            "https://tauri.localhost/index.html",
+        ] {
+            let url = Url::parse(origin).expect("test URL should parse");
+            assert!(is_local_app_origin(&url), "expected local origin: {origin}");
+        }
+    }
+
+    #[test]
+    fn rejects_remote_and_non_app_origins() {
+        for origin in [
+            "https://example.com/",
+            "tauri://example.com/",
+            "https://tauri.localhost.example.com/",
+            "http://localhost:5173/",
+            "http://tauri.localhost:5173/",
+            "file:///index.html",
+        ] {
+            let url = Url::parse(origin).expect("test URL should parse");
+            assert!(
+                !is_local_app_origin(&url),
+                "expected non-app origin: {origin}"
+            );
+        }
+    }
+
+    #[test]
+    fn only_allows_the_blank_popup_document_for_clipboard_access() {
+        for (address, expected) in [
+            ("about:blank", true),
+            ("https://example.com/", false),
+            ("tauri://localhost/index.html", false),
+        ] {
+            let url = Url::parse(address).expect("test URL should parse");
+            assert_eq!(
+                is_blank_popup_url(&url),
+                expected,
+                "unexpected popup document acceptance: {address}"
+            );
+        }
+    }
 }
