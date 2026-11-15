@@ -5,6 +5,7 @@
 .agents/
 **/__pycache__/
 *.py[cod]
+desktop/patch/setup.rs.orig
 
 # Android machine configuration, caches and signing credentials
 android/.gradle/
