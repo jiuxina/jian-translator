@@ -72,6 +72,7 @@
   --lg-duration-dialog: 240ms;
   --lg-duration-model: 420ms;
   --lg-duration-stream: 200ms;
+  --it-settings-switch-duration: 140ms;
   --lg-reel-row-height: 20px;
   --lg-duration-reel-base: 240ms;
   --lg-duration-reel-step: 34ms;
@@ -511,6 +512,7 @@ main {
 }
 .sel-item:hover, .sel-item.active { background: var(--lg-tint-1); color: var(--lg-ink); }
 .sel-item.on { color: var(--lg-accent-deep); font-weight: 500; }
+.sel-item:disabled { opacity: .45; cursor: default; }
 
 .sel-empty {
   padding: 16px 12px;
@@ -1094,12 +1096,15 @@ textarea.src::placeholder { color: var(--lg-ink-faint); }
 .it-about-x:hover { background: var(--lg-tint-1); color: var(--lg-ink); }
 .it-about-brand { width: 58px; height: 58px; margin: 0 auto 15px; }
 .it-about-brand svg { display: block; width: 100%; height: 100%; }
-.it-about-eyebrow { margin: 0; color: var(--lg-ink-faint); font-size: 9px; font-weight: 600; }
-.it-about h1 { margin: 3px 0 0; color: var(--lg-ink); font-size: 24px; font-weight: 600; }
+.it-about h1 { margin: 0; color: var(--lg-ink); font-size: 24px; font-weight: 600; }
 .it-about-version { margin: 4px 0 19px; color: var(--lg-ink-sub); font-size: 12px; }
 .it-about-rule { height: 1px; margin: 0 0 17px; background: var(--lg-edge-dark); }
 .it-about-copy { margin: 0; color: var(--lg-ink); font-size: 12.5px; line-height: 1.8; }
 .it-about-note { margin: 11px 0 0; color: var(--lg-ink-faint); font-size: 11px; line-height: 1.7; }
+.it-about-source-label { margin: 17px 0 3px; color: var(--lg-ink-faint); font-size: 10px; }
+.it-about-repository { display: block; margin: 0 auto; color: var(--lg-accent-deep); font-size: 11px;
+  line-height: 1.6; overflow-wrap: anywhere; text-decoration: none; }
+.it-about-repository:hover { color: var(--lg-ink); text-decoration: underline; }
 
 /* ---------- 16. 桌面端设置面板 ---------- */
 .it-set-mask {
@@ -1142,6 +1147,7 @@ textarea.src::placeholder { color: var(--lg-ink-faint); }
   transform-origin: top left;
 }
 .it-set-mask.on .it-set { transform: translateY(0) scale(1); }
+.it-set [hidden] { display: none !important; }
 
 .it-set-head {
   display: flex;
@@ -1152,14 +1158,28 @@ textarea.src::placeholder { color: var(--lg-ink-faint); }
 }
 .it-set-head > span { margin-left: auto; margin-right: 12px; font-size: 11.5px; color: var(--lg-ink-faint); }
 .it-set-layout { min-height: 0; flex: 1 1 auto; display: grid; grid-template-columns: 148px minmax(0, 1fr); }
-.it-set-nav { display: flex; flex-direction: column; gap: 4px; padding: 8px 10px 12px 14px;
+.it-set-nav { position: relative; display: flex; flex-direction: column; gap: 4px; padding: 8px 10px 12px 14px;
   border-right: 1px solid var(--lg-edge-dark); }
-.it-set-nav button { min-height: 36px; padding: 7px 10px; border-radius: var(--lg-r-sm);
-  text-align: left; font-size: 12.5px; color: var(--lg-ink-sub); }
-.it-set-nav button:hover { background: var(--lg-tint-1); color: var(--lg-ink); }
-.it-set-nav button.on { color: var(--lg-accent-deep); background: var(--lg-accent-wash); }
+.it-set-nav-thumb { position: absolute; z-index: 0; top: 0; left: 0; border-radius: var(--lg-r-sm);
+  background: var(--lg-accent-wash); box-shadow: var(--lg-shine-soft); pointer-events: none; opacity: 0;
+  transition: transform var(--it-settings-switch-duration) var(--lg-ease-spring),
+              width var(--it-settings-switch-duration) var(--lg-ease-spring),
+              height var(--it-settings-switch-duration) var(--lg-ease-spring),
+              opacity var(--lg-duration-fast) ease; }
+.it-set-nav-thumb.ready { opacity: 1; }
+.it-set-nav button { position: relative; z-index: 1; min-height: 36px; padding: 7px 10px; border-radius: var(--lg-r-sm);
+  text-align: left; font-size: 12.5px; color: var(--lg-ink-sub); background: transparent;
+  transition: color var(--lg-duration-fast) var(--lg-ease); }
+.it-set-nav button:hover:not(.on) { background: var(--lg-tint-1); color: var(--lg-ink); }
+.it-set-nav button.on { color: var(--lg-accent-deep); }
 .it-set-nav button[hidden] { display: none; }
 .it-set-page[hidden] { display: none; }
+.it-set-page { opacity: 1; transform: translateY(0);
+  transition: opacity var(--it-settings-switch-duration) var(--lg-ease-enter),
+              transform var(--it-settings-switch-duration) var(--lg-ease-enter); }
+.it-set-page.is-leaving { opacity: 0; transform: translateY(-4px); pointer-events: none; }
+.it-set-page.is-entering { opacity: 0; transform: translateY(5px); pointer-events: none; }
+.it-set-page.is-entered { opacity: 1; transform: translateY(0); }
 .it-set-page h2 { margin: 4px 0 12px; font-size: 14px; font-weight: 550; color: var(--lg-ink); }
 .it-set-head b { font-weight: 500; }
 .it-set-x {
@@ -1212,6 +1232,14 @@ textarea.src::placeholder { color: var(--lg-ink-faint); }
 }
 .it-set-row input[type="color"]:disabled { cursor: default; opacity: .5; }
 .it-set-color-row select { flex: 0 0 142px; }
+.it-set-row > .it-set-select-wrap { flex: 0 0 190px; width: 190px; min-width: 0; }
+.it-set-row > .it-set-select-wrap .sel-btn { width: 100%; max-width: none; justify-content: space-between;
+  padding: 6px 28px 6px 10px; border-radius: var(--lg-r-sm); background: var(--lg-tint-field); box-shadow: none; }
+.it-set-row > .it-set-select-wrap .sel-btn:hover,
+.it-set-row > .it-set-select-wrap .sel-btn[aria-expanded="true"] { background: var(--lg-tint-2); }
+.it-set-row > .it-set-select-wrap .sel-value { width: 100% !important; max-width: none; }
+.it-set-row > .it-set-select-wrap .sel-btn:disabled { opacity: .52; cursor: default; }
+.it-set-color-row > .it-set-select-wrap { flex-basis: 142px; width: 142px; }
 .it-set-row input.recording {
   border-color: var(--lg-accent);
   background: var(--lg-accent-wash);
@@ -1305,13 +1333,15 @@ textarea.src::placeholder { color: var(--lg-ink-faint); }
 
 html[data-it-theme="dark"] { color-scheme: dark; }
 html[data-it-theme="light"] { color-scheme: light; }
+html[data-it-motion="reduced"] { --it-settings-switch-duration: 80ms; }
+html[data-it-motion="reduced"] .it-set-page { transform: none; }
 html[data-it-theme="dark"] body::after { opacity: .15; }
 html[data-it-ambient="false"] body::before { animation: none; }
 html[data-it-motion="reduced"] body::before { animation: none; }
 html[data-it-motion="off"] *, html[data-it-motion="off"] *::before,
 html[data-it-motion="off"] *::after { animation-duration: 0s !important; transition-duration: 0s !important; }
 html[data-it-material="solid"] .bar, html[data-it-material="solid"] .tabs,
-html[data-it-material="solid"] .sel-wrap select, html[data-it-material="solid"] .sel-pop,
+html[data-it-material="solid"] .sel-btn, html[data-it-material="solid"] .sel-pop,
 html[data-it-material="solid"] .card, html[data-it-material="solid"] .btn-secondary,
 html[data-it-material="solid"] .menu, html[data-it-material="solid"] .it-set,
 html[data-it-material="solid"] .it-pref-preview-card { -webkit-backdrop-filter: none; backdrop-filter: none; }
@@ -1341,6 +1371,9 @@ html[data-it-layout="compact"] .it-set-row { padding-top: 5px; padding-bottom: 5
   .it-set-nav { flex-direction: row; gap: 4px; padding: 4px 12px 8px; overflow-x: auto;
     border-right: 0; border-bottom: 1px solid var(--lg-edge-dark); }
   .it-set-nav button { min-height: 48px; flex: 0 0 auto; padding: 8px 11px; text-align: center; }
+  .it-set-row > .it-set-select-wrap { flex-basis: min(55%, 210px); width: min(55%, 210px); }
+  .it-set-color-row > .it-set-select-wrap { flex-basis: min(40%, 142px); width: min(40%, 142px); }
+  .it-set-row > .it-set-select-wrap .sel-btn { min-height: 48px; }
   .it-set-body { flex: 1 1 auto; padding: 14px 18px; }
   .it-set-row { min-height: 48px; }
   .it-set-range { min-height: 48px; padding: 10px 0; }
@@ -1352,7 +1385,8 @@ html[data-it-layout="compact"] .it-set-row { padding-top: 5px; padding-bottom: 5
 /* ---------- 17. 低端机降级 ---------- */
 .no-lg-blur .card,
 .no-lg-blur .bar,
-.no-lg-blur .sel-wrap select,
+.no-lg-blur .sel-btn,
+.no-lg-blur .sel-pop,
 .no-lg-blur .btn-secondary {
   -webkit-backdrop-filter: none;
   backdrop-filter: none;
@@ -1370,6 +1404,7 @@ html[data-it-layout="compact"] .it-set-row { padding-top: 5px; padding-bottom: 5
   .pane { transition: none !important; }
   .pane.on { visibility: visible; opacity: 1; transform: none; }
   .pane:not(.on) { visibility: hidden; }
+  .it-set-page { opacity: 1; transform: none; }
   /* 即时展开时保留内容布局，关闭状态由 <details> 的 open 属性控制。 */
   .instruct-body { height: auto; opacity: 1; transform: none; }
 }

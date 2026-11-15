@@ -108,6 +108,17 @@ class Cdp {
   }
 
   async click(selector) {
+    await this.until(`(() => {
+      const element = document.querySelector(${JSON.stringify(selector)});
+      if (!element) return false;
+      for (let node = element; node && node !== document.body; node = node.parentElement) {
+        const moving = node.getAnimations().some((animation) =>
+          animation.effect.getComputedTiming().iterations !== Infinity &&
+          animation.effect.getKeyframes().some((frame) => frame.transform));
+        if (moving) return false;
+      }
+      return true;
+    })()`);
     const point = await this.evaluate(`(() => {
       const element = document.querySelector(${JSON.stringify(selector)});
       if (!element) return null;
@@ -175,7 +186,10 @@ const desktopScript = `
         auto_start: false, start_to_tray: true,
         preferences: JSON.parse(localStorage.getItem('it-preferences') || 'null')
       });
-      if (command === 'it_list_system_fonts') return Promise.resolve(['Arial', 'Microsoft YaHei UI']);
+      if (command === 'it_list_system_fonts') return Promise.resolve([
+        'Arial', 'Microsoft YaHei UI',
+        ...Array.from({ length: 15 }, (_, index) => 'Offline Test Font ' + index)
+      ]);
       if (command === 'it_write_clipboard_text') return Promise.resolve(true);
       if (command === 'it_save_settings') {
         const submitted = JSON.parse(JSON.stringify(args.settings));
@@ -241,6 +255,27 @@ async function settle(connection, tab) {
 async function selectTab(connection, tab) {
   await connection.evaluate(`document.querySelector('[data-tab="${tab}"]').click()`);
   await settle(connection, tab);
+}
+
+async function selectSettingsSection(connection, section) {
+  await connection.until(`document.querySelector('.it-set').getAnimations().length === 0`);
+  await connection.click(`[data-pref-tab="${section}"]`);
+  try {
+    await connection.until(`(() => {
+      const page = document.querySelector('[data-pref-section="${section}"]');
+      return !!page && !page.hidden && !page.inert &&
+        !page.classList.contains('is-entering') && !page.classList.contains('is-leaving');
+    })()`);
+  } catch (error) {
+    const state = await connection.evaluate(`(() => ({
+      open: document.querySelector('.it-set-mask')?.getAttribute('aria-hidden'),
+      active: document.querySelector('.it-set-nav .on')?.getAttribute('data-pref-tab'),
+      pages: [...document.querySelectorAll('[data-pref-section]')].map((page) => ({
+        id: page.dataset.prefSection, hidden: page.hidden, inert: page.inert, classes: page.className
+      }))
+    }))()`);
+    throw new Error(`${error.message} ${JSON.stringify(state)}`);
+  }
 }
 
 async function directionAndShells(connection, from, to, direction) {
@@ -691,6 +726,17 @@ try {
         check('手机设置导航、选项和底栏按钮均达到48px触控高度',
           mobileControlHeights.length > 0 && mobileControlHeights.every((control) => control.height >= 48),
           JSON.stringify(mobileControlHeights));
+        await selectSettingsSection(page, 'reading');
+        check('手机设置横向滑块对齐且PC字体控件不显示', await page.evaluate(`(() => {
+          const tab = document.querySelector('[data-pref-tab="reading"]').getBoundingClientRect();
+          const thumb = document.querySelector('.it-set-nav-thumb').getBoundingClientRect();
+          return Math.abs(tab.x - thumb.x) < 1 && Math.abs(tab.y - thumb.y) < 1 &&
+            getComputedStyle(document.getElementById('it-pref-font-family-row')).display === 'none' &&
+            getComputedStyle(document.getElementById('it-pref-font-status')).display === 'none' &&
+            document.querySelector('.it-set-body').scrollWidth <= document.querySelector('.it-set-body').clientWidth;
+        })()`));
+        const mobileSettings = await page.send('Page.captureScreenshot', { format: 'png' });
+        await writeFile('output/preview-settings-polish-mobile.png', Buffer.from(mobileSettings.data, 'base64'));
         await page.key('Escape');
         await page.until(`document.querySelector('.it-set-mask')?.getAttribute('aria-hidden') === 'true'`);
       }
@@ -724,7 +770,7 @@ try {
     await page.click('#brand');
     await page.click('#more-menu [data-act="settings"]');
     await page.until(`document.querySelector('.it-set-mask')?.getAttribute('aria-hidden') === 'false'`);
-    await page.evaluate(`document.querySelector('[data-pref-tab="background"]').click()`);
+    await selectSettingsSection(page, 'background');
     await page.click('#it-pref-reset-background');
     const backgroundResetState = await page.evaluate(`(() => ({
       status: document.getElementById('it-pref-background-status').textContent,
@@ -931,6 +977,7 @@ try {
     await pause(350);
     const settingsScreenshot = await desktop.send('Page.captureScreenshot', { format: 'png' });
     await writeFile('output/preview-2.2.0-settings.png', Buffer.from(settingsScreenshot.data, 'base64'));
+    await writeFile('output/preview-settings-polish-dark.png', Buffer.from(settingsScreenshot.data, 'base64'));
     check('桌面设置将焦点带入对话框',
       await desktop.evaluate(`document.querySelector('.it-set').contains(document.activeElement)`));
     check('桌面设置隔离背景输入焦点',
@@ -1000,6 +1047,85 @@ try {
     check('设置下拉关闭后焦点返回触发控件', await desktop.evaluate(`(() =>
       document.activeElement === document.querySelector('[data-pref="appearance.mode"]')?.parentElement?.querySelector('.sel-btn'))()`));
     await desktop.evaluate(`(() => {
+      const select = document.querySelector('[data-pref="appearance.mode"]');
+      select.value = 'light';
+      select.dispatchEvent(new Event('change', { bubbles: true }));
+      select.parentElement.querySelector('.sel-btn').click();
+    })()`);
+    await desktop.key('ArrowDown');
+    await desktop.key(' ');
+    check('设置下拉方向键后按空格选择当前高亮项', await desktop.evaluate(`(() => {
+      const select = document.querySelector('[data-pref="appearance.mode"]');
+      return select.value === 'dark' && !document.querySelector('.sel-pop[aria-hidden="false"]') &&
+        document.activeElement === select.parentElement.querySelector('.sel-btn');
+    })()`));
+    await desktop.evaluate(`(() => {
+      const select = document.querySelector('[data-pref="appearance.mode"]');
+      select.value = 'light';
+      select.dispatchEvent(new Event('change', { bubbles: true }));
+    })()`);
+    await desktop.until(`document.querySelector('.it-set').getAnimations({ subtree: true })
+      .every((animation) => animation.effect.getComputedTiming().iterations === Infinity)`);
+    const lightSettings = await desktop.send('Page.captureScreenshot', { format: 'png' });
+    await writeFile('output/preview-settings-polish-light.png', Buffer.from(lightSettings.data, 'base64'));
+    await desktop.evaluate(`document.querySelector('[data-pref="appearance.mode"]').parentElement.querySelector('.sel-btn').click()`);
+    await desktop.until(`document.querySelector('.sel-pop[aria-hidden="false"]').getAnimations().length === 0`);
+    const lightDropdown = await desktop.send('Page.captureScreenshot', { format: 'png' });
+    await writeFile('output/preview-settings-polish-dropdown.png', Buffer.from(lightDropdown.data, 'base64'));
+    await desktop.key('Escape');
+    await desktop.evaluate(`(() => {
+      const select = document.querySelector('[data-pref="appearance.mode"]');
+      select.value = 'dark';
+      select.dispatchEvent(new Event('change', { bubbles: true }));
+    })()`);
+    const rapidSettings = await desktop.evaluate(`(async () => {
+      document.querySelector('[data-pref-tab="background"]').click();
+      await new Promise((resolve) => setTimeout(resolve, 45));
+      const before = getComputedStyle(document.querySelector('[data-pref-section="appearance"]')).opacity;
+      document.querySelector('[data-pref-tab="reading"]').click();
+      const after = getComputedStyle(document.querySelector('[data-pref-section="appearance"]')).opacity;
+      return { before, after, skipped: document.querySelector('[data-pref-section="background"]').hidden };
+    })()`);
+    check('设置连续切换保留当前淡出状态并跳过中间页',
+      Math.abs(Number(rapidSettings.before) - Number(rapidSettings.after)) < .05 && rapidSettings.skipped);
+    await desktop.until(`!document.querySelector('[data-pref-section="reading"]').hidden &&
+      !document.querySelector('[data-pref-section="reading"]').inert`);
+    await desktop.evaluate(`document.querySelector('[data-pref="appearance.systemFontFamily"]').parentElement.querySelector('.sel-btn').click()`);
+    await desktop.until(`!!document.querySelector('.sel-pop[aria-hidden="false"] .sel-search')`);
+    await desktop.evaluate(`(() => {
+      const search = document.querySelector('.sel-pop[aria-hidden="false"] .sel-search');
+      search.value = 'Arial';
+      search.dispatchEvent(new Event('input', { bubbles: true }));
+    })()`);
+    await desktop.key('ArrowDown');
+    await desktop.key('Enter');
+    check('系统字体晚加载后可在统一下拉中搜索并选择', await desktop.evaluate(`(() => {
+      const select = document.querySelector('[data-pref="appearance.systemFontFamily"]');
+      return select.value === 'Arial' &&
+        getComputedStyle(document.documentElement).getPropertyValue('--it-content-font').includes('"Arial"') &&
+        !document.querySelector('.sel-pop[aria-hidden="false"]');
+    })()`));
+    await desktop.evaluate(`(() => {
+      const select = document.querySelector('[data-pref="appearance.systemFontFamily"]');
+      select.value = '';
+      select.dispatchEvent(new Event('change', { bubbles: true }));
+    })()`);
+    await desktop.evaluate(`document.querySelector('[data-pref-tab="background"]').click()`);
+    await desktop.send('Emulation.setEmulatedMedia', {
+      features: [{ name: 'prefers-reduced-motion', value: 'reduce' }],
+    });
+    await desktop.evaluate(`new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)))`);
+    check('设置切换中开启系统减少动态效果立即收束', await desktop.evaluate(`(() => {
+      const pages = [...document.querySelectorAll('[data-pref-section]')].filter((page) => !page.hidden);
+      return pages.length === 1 && pages[0].dataset.prefSection === 'background' &&
+        !pages[0].classList.contains('is-leaving') && !pages[0].classList.contains('is-entering') &&
+        getComputedStyle(pages[0]).opacity === '1';
+    })()`));
+    await desktop.send('Emulation.setEmulatedMedia', {
+      features: [{ name: 'prefers-reduced-motion', value: 'no-preference' }],
+    });
+    await selectSettingsSection(desktop, 'appearance');
+    await desktop.evaluate(`(() => {
       const select = document.querySelector('[data-pref="appearance.material"]');
       const strength = document.querySelector('[data-pref="appearance.glassStrength"]');
       window.__motionTest.glassStrengthBefore = strength.value;
@@ -1012,7 +1138,7 @@ try {
     })()`));
     await desktop.evaluate(`document.querySelector('[data-pref="appearance.material"]').value = 'glass';
       document.querySelector('[data-pref="appearance.material"]').dispatchEvent(new Event('change', { bubbles: true }));`);
-    await desktop.click('[data-pref-tab="desktop"]');
+    await selectSettingsSection(desktop, 'desktop');
     await desktop.click('#it-popup-pick-background');
     check('模拟文件选择器已打开', await desktop.evaluate('window.__motionTest.filePickerOpens === 1'));
     await desktop.until(`document.getElementById('it-popup-background-status')?.textContent.includes('已选择独立图片')`);
@@ -1092,7 +1218,7 @@ try {
       setPreference('appearance.motion', 'reduced');
       setPreference('appearance.ambientLight', false);
     })()`);
-    await desktop.click('[data-pref-tab="appearance"]');
+    await selectSettingsSection(desktop, 'appearance');
     await desktop.click('[data-reset-section]');
     check('恢复外观默认值保留阅读布局与动效分组草稿', await desktop.evaluate(`(() => {
       const value = (path) => document.querySelector('[data-pref="' + path + '"]').value;

@@ -1,4 +1,50 @@
-# 界面美学与动效：v9 主题与窗口
+# 界面美学与动效：v10 设置切换与控件
+
+## v10：设置连贯切换、统一下拉与开源入口（2026-11-15）
+
+- 设置导航采用独立选中滑块，兼容桌面竖排和手机横排；右侧设置项按默认 140ms 淡出、
+  140ms 淡入交接。淡出时连续选择只更新最终目标，入场期间可再次重定向；关闭、缩放、
+  动态开启系统减少动态效果均会清理旧计时器并收束到当前选择。
+- “减少”使用 80ms 的淡入淡出并取消位移；“关闭”或系统减少动态效果直接呈现目标页。
+  离场与入场过程中隔离旧控件焦点，返回与保存仍沿用现有草稿事务。
+- 设置下拉复用 `.sel-btn` / `.sel-pop`，与主界面共用玻璃材质、主题配色、圆角和箭头；
+  支持键盘、搜索、禁用态、焦点返回，以及 Windows 系统字体异步返回后的列表刷新。
+  手机下拉按钮至少 48px 高，PC 字体行及加载提示在手机隐藏。
+- 关于页移除“译”和 `TRANSLATION CLIENT`，标识文字使用“笺”，新增开源仓库地址
+  `https://github.com/jiuxina/jian-translator`。Windows 沿用 Pake 既有外链出口；
+  Android 让 HTTP(S) 导航进入既有 `ACTION_VIEW` 拦截，网页使用新标签打开。
+- 完成六组设置消费关系检查，见 [设置项关系简报](settings-audit.md)。
+  纯色材质下禁用不生效的玻璃强度滑块并保留原值；切回玻璃或磨砂后恢复。
+  本轮不删除具有独立用途的配置。
+
+### v10 验证记录
+
+- `node tests/verify-motion.mjs`：**92/92 通过**，增加关于页仓库、导航滑块、
+  淡出/淡入、快速连续切页、系统减少动态效果两帧内收束、键盘方向键和空格选择、
+  动态字体搜索、纯色依赖禁用、手机横排滑块与 PC 控件隐藏等验证。
+- JavaScript 语法与 `git diff --check` 通过。独立代码审查发现的快速切页跳帧、
+  下拉空格提交旧焦点和系统减少动态效果未立即收束问题均已修复并复核。
+- 实际浏览器截图：`output/preview-settings-polish-light.png`、
+  `output/preview-settings-polish-dark.png`、`output/preview-settings-polish-dropdown.png`、
+  `output/preview-settings-polish-mobile.png` 与 `output/preview-2.2.0-about.png`。
+  字体和剪贴板仍使用离线替身，原生窗口与实际字体列表验收限制见 v9 记录。
+
+### v10 构建交付
+
+版本保持 `2.2.0`，Android versionCode 保持 `5`。为保留本轮之前的包，新增以下文件名：
+
+| 文件 | 字节数 | 构建时间（Asia/Shanghai） |
+| --- | ---: | --- |
+| `output/笺-2.2.0-界面优化.exe` | 9,400,320 | 2026-11-15 20:02:15 |
+| `output/笺-2.2.0-界面优化.msi` | 4,292,608 | 2026-11-15 20:02:11 |
+| `output/笺-2.2.0-界面优化.apk` | 3,577,484 | 2026-11-15 19:57:10 |
+
+Windows 构建写入 `.build/release-stage-settings-2.2.0/`，随后复制到以上独立文件名。
+Android 四项 assets 用覆盖同步后跳过历史删除任务，离线 `assembleRelease` 成功，
+APK 内资源哈希与 `web/` 一致，v2 签名有效。发布 SHA-256 已追加到 `output/SHA256SUMS.txt`。
+Windows 的 MSI 版本与 EXE 模板元数据差异继续沿用 v9 中记录的限制。
+
+---
 
 ## v9：应用内关于、正文排版与透明悬浮窗（2026-11-15）
 
@@ -94,7 +140,7 @@ Android 签名凭据已外置到被忽略的 `android/signing.properties`，原�
 独立预览服务现位于 `tests/serve-preview.mjs`，不再依赖 `.build/` 中的临时脚本；
 Windows 模板版本固定使用 Pake 3.18.0。完整入口见根目录 README。
 
-> **当前源码：v8「关于、正文排版与透明悬浮窗」**（2026-11-15，前端资源 v15）。当前自绘界面的样式与
+> **当前源码：v10「设置连贯切换、统一下拉与开源入口」**（2026-11-15，前端资源 v16）。当前自绘界面的样式与
 > 动效真源是 `web/theme.css`；Android WebView 共用这份资源。Windows 划词浮窗在
 > `desktop/patch/setup.rs` 中接收已保存的外观偏好。
 > v7 发布包采用独立文件名，保留 `output/` 中既有文件及正在运行的程序。

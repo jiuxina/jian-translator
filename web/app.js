@@ -108,6 +108,7 @@
   var closeSettingsLayer = null;
   var closeAboutLayer = null;
   var closeInstructLayer = null;
+  var settleSettingsSection = null;
 
   /* 动画只作用于真实控件。重定向前先读取屏幕上的状态，再取消上一段，
      不克隆输入区，也不把正在翻译的内容换成截图。 */
@@ -153,6 +154,7 @@
   function finishMotions() {
     Array.from(motions.values()).forEach(function (track) { track.finish(); });
     settleTabs();
+    if (settleSettingsSection) settleSettingsSection();
   }
 
   function rectOf(origin) {
@@ -330,10 +332,11 @@
       if (node.tagName === 'OPTGROUP') {
         for (var j = 0; j < node.children.length; j++) {
           var opt = node.children[j];
-          out.push({ value: opt.value, label: opt.textContent, group: node.label });
+          out.push({ value: opt.value, label: opt.textContent, group: node.label,
+            disabled: opt.disabled || node.disabled });
         }
       } else if (node.tagName === 'OPTION') {
-        out.push({ value: node.value, label: node.textContent, group: '' });
+        out.push({ value: node.value, label: node.textContent, group: '', disabled: node.disabled });
       }
     }
     return out;
@@ -355,14 +358,26 @@
     select.dataset.enhanced = '1';
 
     var wrap = select.parentNode;
+    if (!wrap.classList.contains('sel-wrap')) {
+      var fieldWrap = document.createElement('span');
+      fieldWrap.className = 'sel-wrap it-set-select-wrap';
+      wrap.insertBefore(fieldWrap, select);
+      fieldWrap.appendChild(select);
+      wrap = fieldWrap;
+    }
     var items = collectOptions(select);
     var searchable = items.length > 12;
+    var labelText = select.getAttribute('aria-label') || '';
+    var settingsRow = select.closest('.it-set-row');
+    var labelNode = settingsRow && settingsRow.querySelector(':scope > span:not(.sel-wrap)');
+    if (!labelText && labelNode) labelText = labelNode.textContent.trim();
 
     var button = document.createElement('button');
     button.type = 'button';
     button.className = 'sel-btn';
     button.setAttribute('aria-haspopup', 'listbox');
     button.setAttribute('aria-expanded', 'false');
+    if (labelText) button.setAttribute('aria-label', labelText);
     var valueEl = document.createElement('span');
     valueEl.className = 'sel-value';
     var reelEl = document.createElement('span');
@@ -373,8 +388,10 @@
 
     var pop = document.createElement('div');
     pop.className = 'sel-pop';
+    pop.id = 'it-select-pop-' + (enhancedSelects.length + 1);
     pop.setAttribute('aria-hidden', 'true');
     pop.inert = true;
+    button.setAttribute('aria-controls', pop.id);
     pop.innerHTML = (searchable
       ? '<input class="sel-search" type="text" placeholder="搜索…" aria-label="搜索">'
       : '') + '<div class="sel-list" role="listbox"></div>';
@@ -400,7 +417,7 @@
       measure.textContent = text;
       return measure.getBoundingClientRect().width;
     }
-    function clampWidth(w) { return Math.max(16, Math.min(124, Math.ceil(w))); }
+    function clampWidth(w) { return Math.max(16, Math.min(settingsRow ? 156 : 124, Math.ceil(w))); }
 
     var currentLabel = '';
     var currentValue = select.value;   // 记住旧值，才能算出它在列表里的位置
@@ -503,7 +520,25 @@
       }, duration + 30);
     }
 
-    function syncButton(animate) { setLabel(labelOf(), animate !== false); }
+    function syncButton(animate) {
+      button.disabled = select.disabled;
+      setLabel(labelOf(), animate !== false);
+    }
+
+    function updateSearchControl() {
+      if (searchable && !searchEl) {
+        searchEl = document.createElement('input');
+        searchEl.className = 'sel-search';
+        searchEl.type = 'text';
+        searchEl.placeholder = '搜索…';
+        searchEl.setAttribute('aria-label', '搜索');
+        pop.insertBefore(searchEl, listEl);
+        searchEl.addEventListener('input', function () { render(this.value); });
+      } else if (!searchable && searchEl) {
+        searchEl.remove();
+        searchEl = null;
+      }
+    }
 
     function render(filter) {
       var query = (filter || '').trim().toLowerCase();
@@ -528,13 +563,16 @@
         row.className = 'sel-item';
         row.textContent = item.label;
         row.dataset.value = item.value;
+        row.disabled = !!item.disabled;
+        row.setAttribute('role', 'option');
+        row.setAttribute('aria-selected', item.value === select.value ? 'true' : 'false');
         if (item.value === select.value) {
           row.classList.add('on');
-          activeIndex = visibleItems.length;
+          if (!item.disabled) activeIndex = visibleItems.length;
         }
         row.addEventListener('click', function () { choose(item.value); });
         listEl.appendChild(row);
-        visibleItems.push(row);
+        if (!item.disabled) visibleItems.push(row);
         matched++;
       });
 
@@ -543,6 +581,18 @@
         empty.className = 'sel-empty';
         empty.textContent = '没有匹配的项';
         listEl.appendChild(empty);
+      }
+    }
+
+    function refreshOptions() {
+      items = collectOptions(select);
+      searchable = items.length > 12;
+      updateSearchControl();
+      render(searchEl ? searchEl.value : '');
+      syncButton(false);
+      if (openSelect && openSelect.select === select) {
+        position();
+        if (searchEl) searchEl.focus({ preventScroll: true });
       }
     }
 
@@ -555,6 +605,7 @@
       var row = visibleItems[activeIndex];
       row.classList.add('active');
       if (row.scrollIntoView) row.scrollIntoView({ block: 'nearest' });
+      if (!searchEl) row.focus({ preventScroll: true });
     }
 
     function position() {
@@ -575,6 +626,7 @@
     }
 
     function open() {
+      if (select.disabled) return;
       if (openSelect && openSelect.select === select) { closeSelect(); return; }
       closeSelect();
       pop.inert = false;
@@ -585,10 +637,15 @@
       position();
       moveSurface(pop, button, true);
       if (searchEl) { searchEl.value = ''; searchEl.focus(); }
-      else highlight(activeIndex);
+      else {
+        highlight(activeIndex < 0 ? 0 : activeIndex);
+        if (visibleItems[activeIndex]) visibleItems[activeIndex].focus({ preventScroll: true });
+      }
     }
 
     function choose(value) {
+      var option = items.find(function (item) { return item.value === value; });
+      if (select.disabled || !option || option.disabled) return;
       if (select.value !== value) {
         select.value = value;
         select.dispatchEvent(new Event('change', { bubbles: true }));
@@ -610,15 +667,15 @@
       }
     });
 
-    if (searchEl) {
-      searchEl.addEventListener('input', function () { render(this.value); });
-    }
+    if (searchEl) searchEl.addEventListener('input', function () { render(this.value); });
 
     pop.addEventListener('keydown', function (e) {
       if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); closeSelect(); return; }
       if (e.key === 'ArrowDown') { e.preventDefault(); highlight(activeIndex + 1); return; }
       if (e.key === 'ArrowUp') { e.preventDefault(); highlight(activeIndex - 1); return; }
-      if (e.key === 'Enter') {
+      if (e.key === 'Home' && e.target !== searchEl) { e.preventDefault(); highlight(0); return; }
+      if (e.key === 'End' && e.target !== searchEl) { e.preventDefault(); highlight(visibleItems.length - 1); return; }
+      if (e.key === 'Enter' || (e.key === ' ' && e.target !== searchEl)) {
         e.preventDefault();
         var row = visibleItems[activeIndex];
         if (row) choose(row.dataset.value);
@@ -630,6 +687,7 @@
     syncButton(false);
     /* 外部（如语言互换、恢复上次选择）改了值，按钮要跟着转 */
     select.addEventListener('change', function () { syncButton(true); });
+    select.__itRefreshDropdown = refreshOptions;
     enhancedSelects.push(syncButton);
   }
 
@@ -2003,6 +2061,8 @@
     if (!menu || !brand) return;
     var aboutMask = $('it-about-mask');
     var aboutDialog = aboutMask && aboutMask.querySelector('.it-about');
+    var repositoryLink = aboutDialog && aboutDialog.querySelector('.it-about-repository');
+    if (Bridge.isAndroid && repositoryLink) repositoryLink.target = '_self';
     var aboutReturnFocus = null;
     var aboutOrigin = null;
     var aboutBackgroundState = [];
@@ -2318,6 +2378,7 @@
           <button type="button" class="it-set-x" data-close="1" aria-label="关闭设置" title="关闭">×</button></div>
         <div class="it-set-layout">
           <nav class="it-set-nav" aria-label="设置类别">
+            <span class="it-set-nav-thumb" aria-hidden="true"></span>
             <button type="button" class="on" data-pref-tab="appearance">外观</button>
             <button type="button" data-pref-tab="background">背景</button>
             <button type="button" data-pref-tab="reading">阅读与布局</button>
@@ -2342,7 +2403,8 @@
                 <option value="glass">玻璃</option><option value="frosted">磨砂</option><option value="solid">纯色</option>
               </select></label>
               <label class="it-set-range"><span>玻璃强度 <output data-pref-output="appearance.glassStrength"></output></span>
-                <input type="range" min="0" max="100" step="5" data-pref="appearance.glassStrength" data-pref-type="number"></label>
+                <input type="range" min="0" max="100" step="5" id="it-pref-glass-strength" data-pref="appearance.glassStrength" data-pref-type="number"></label>
+              <div class="it-set-note" id="it-pref-glass-strength-note" hidden>纯色材质不使用玻璃强度；当前值会保留。</div>
               <label class="it-set-range"><span>卡片透出 <output data-pref-output="appearance.cardReveal"></output></span>
                 <input type="range" min="0" max="100" step="5" data-pref="appearance.cardReveal" data-pref-type="number"></label>
               <label class="it-set-row"><span>卡片圆角</span><select data-pref="appearance.radius">
@@ -2469,6 +2531,12 @@
     var popupPreviewData = null;
     var settingsSaving = false;
     var activeSection = 'appearance';
+    var shownSection = 'appearance';
+    var sectionTransitionTarget = '';
+    var sectionTransitionPhase = '';
+    var sectionTransitionSeq = 0;
+    var sectionTransitionTimer = 0;
+    var sectionTransitionFrame = 0;
 
     modal.querySelectorAll('[data-pref-tab="desktop"]').forEach(function (tab) {
       tab.hidden = !Bridge.isDesktop;
@@ -2482,6 +2550,7 @@
     });
     $('it-pref-source').innerHTML = langOptions;
     $('it-pref-target').innerHTML = langOptions.replace('<option value="auto">自动检测</option>', '');
+    modal.querySelectorAll('select').forEach(enhanceSelect);
 
     function populateSystemFonts(fonts) {
       if (!fontFamilySelect) return;
@@ -2495,6 +2564,7 @@
         option.textContent = font;
         fontFamilySelect.appendChild(option);
       });
+      if (fontFamilySelect.__itRefreshDropdown) fontFamilySelect.__itRefreshDropdown();
     }
 
     function updatePopupPreview() {
@@ -2526,6 +2596,119 @@
           'blur(' + popupBlur * cardFactor + 'px) saturate(' +
           (1 + .7 * glassStrength * cardFactor).toFixed(2) + ')');
       popupCard.style.setProperty('--it-popup-card-shine', cardFactor === 0 ? 'none' : 'var(--lg-shine)');
+    }
+
+    function updateSettingsNavigation(animate) {
+      var nav = modal.querySelector('.it-set-nav');
+      var thumb = nav && nav.querySelector('.it-set-nav-thumb');
+      var activeTab = nav && nav.querySelector('[data-pref-tab="' + activeSection + '"]');
+      modal.querySelectorAll('[data-pref-tab]').forEach(function (tab) {
+        var selected = tab.getAttribute('data-pref-tab') === activeSection;
+        tab.classList.toggle('on', selected);
+        tab.setAttribute('aria-current', selected ? 'page' : 'false');
+      });
+      if (!thumb || !activeTab || !activeTab.offsetWidth) return;
+      if (!animate) thumb.style.transition = 'none';
+      thumb.style.width = activeTab.offsetWidth + 'px';
+      thumb.style.height = activeTab.offsetHeight + 'px';
+      thumb.style.transform = 'translate3d(' + activeTab.offsetLeft + 'px,' + activeTab.offsetTop + 'px,0)';
+      thumb.classList.add('ready');
+      if (!animate) {
+        void thumb.offsetWidth;
+        thumb.style.transition = '';
+      }
+    }
+
+    function setSettingsSection(section) {
+      modal.querySelectorAll('[data-pref-section]').forEach(function (page) {
+        var selected = page.getAttribute('data-pref-section') === section;
+        page.hidden = !selected;
+        page.inert = !selected;
+        page.setAttribute('aria-hidden', selected ? 'false' : 'true');
+        page.classList.remove('is-leaving', 'is-entering', 'is-entered');
+      });
+      shownSection = section;
+      sectionTransitionTarget = '';
+      sectionTransitionPhase = '';
+      var body = modal.querySelector('.it-set-body');
+      if (body) body.removeAttribute('aria-busy');
+    }
+
+    function cancelSettingsSectionTransition(section) {
+      clearTimeout(sectionTransitionTimer);
+      sectionTransitionTimer = 0;
+      if (sectionTransitionFrame) cancelAnimationFrame(sectionTransitionFrame);
+      sectionTransitionFrame = 0;
+      sectionTransitionSeq++;
+      setSettingsSection(section || sectionTransitionTarget || shownSection);
+    }
+    settleSettingsSection = function () {
+      if (sectionTransitionTarget) cancelSettingsSectionTransition(activeSection);
+      updateSettingsNavigation(false);
+    };
+
+    function switchSettingsSection(section) {
+      var target = modal.querySelector('[data-pref-section="' + section + '"]');
+      if (!target || section === activeSection) return;
+      closeSelect();
+      activeSection = section;
+      updateSettingsNavigation(true);
+      var body = modal.querySelector('.it-set-body');
+      var duration = motionReduced() ? 0 : cssDuration('--it-settings-switch-duration', 140);
+      if (!modal.classList.contains('on') || duration <= 0 || section === shownSection) {
+        cancelSettingsSectionTransition(section);
+        if (body) body.scrollTop = 0;
+        return;
+      }
+      sectionTransitionTarget = section;
+      if (sectionTransitionPhase === 'leave') return;
+      clearTimeout(sectionTransitionTimer);
+      if (sectionTransitionFrame) cancelAnimationFrame(sectionTransitionFrame);
+      sectionTransitionFrame = 0;
+
+      var leaving = modal.querySelector('[data-pref-section="' + shownSection + '"]');
+      if (!leaving) {
+        setSettingsSection(section);
+        if (body) body.scrollTop = 0;
+        return;
+      }
+      var sequence = ++sectionTransitionSeq;
+      sectionTransitionPhase = 'leave';
+      if (body) body.setAttribute('aria-busy', 'true');
+      leaving.inert = true;
+      leaving.setAttribute('aria-hidden', 'true');
+      leaving.classList.remove('is-entering', 'is-entered');
+      leaving.classList.add('is-leaving');
+
+      sectionTransitionTimer = setTimeout(function () {
+        if (sequence !== sectionTransitionSeq || !modal.classList.contains('on')) return;
+        target = modal.querySelector('[data-pref-section="' + activeSection + '"]');
+        leaving.hidden = true;
+        leaving.classList.remove('is-leaving');
+        target.hidden = false;
+        target.inert = true;
+        target.setAttribute('aria-hidden', 'true');
+        target.classList.add('is-entering');
+        shownSection = activeSection;
+        sectionTransitionPhase = 'enter';
+        if (body) body.scrollTop = 0;
+        void target.offsetWidth;
+        sectionTransitionFrame = requestAnimationFrame(function () {
+          if (sequence !== sectionTransitionSeq || !modal.classList.contains('on')) return;
+          target.classList.add('is-entered');
+          sectionTransitionTimer = setTimeout(function () {
+            if (sequence !== sectionTransitionSeq || !modal.classList.contains('on')) return;
+            target.inert = false;
+            target.setAttribute('aria-hidden', 'false');
+            target.classList.remove('is-entering', 'is-entered');
+            sectionTransitionTarget = '';
+            sectionTransitionPhase = '';
+            sectionTransitionTimer = 0;
+            sectionTransitionFrame = 0;
+            if (body) body.removeAttribute('aria-busy');
+          }, duration + 24);
+        });
+      }, duration + 24);
     }
 
     function fill() {
@@ -2561,28 +2744,30 @@
           unavailable.textContent = '不可用：' + selectedFamily;
           unavailable.disabled = true;
           fontFamilySelect.appendChild(unavailable);
+          if (fontFamilySelect.__itRefreshDropdown) fontFamilySelect.__itRefreshDropdown();
         }
         fontFamilySelect.value = selectedFamily;
         if (fontStatus) {
-          fontStatus.hidden = systemFontsReady && systemFonts.length > 0;
-          fontStatus.textContent = systemFontsReady ? '未能读取系统字体列表，当前选择会回退到字体类别。' : '正在读取系统字体…';
+          fontStatus.hidden = !Bridge.isDesktop || (systemFontsReady && systemFonts.length > 0);
+          fontStatus.textContent = systemFontsReady ? '未读取到系统字体列表；已保存的字体选择仍会保留。' : '正在读取系统字体…';
         }
       }
       var colorMode = settingsState.preferences.appearance.fontColorMode;
+      var controlsReady = !Bridge.isDesktop || settingsLoaded;
       var colorControl = modal.querySelector('[data-pref="appearance.fontColor"]');
-      if (colorControl) colorControl.disabled = settingsSaving || colorMode !== 'custom';
-      if (fontFamilySelect) fontFamilySelect.disabled = settingsSaving || !systemFontsReady;
+      if (colorControl) colorControl.disabled = settingsSaving || !controlsReady || colorMode !== 'custom';
+      if (fontFamilySelect) fontFamilySelect.disabled = settingsSaving || !controlsReady || !systemFontsReady;
+      var glassStrength = modal.querySelector('#it-pref-glass-strength');
+      var glassStrengthNote = modal.querySelector('#it-pref-glass-strength-note');
+      var solidMaterial = settingsState.preferences.appearance.material === 'solid';
+      if (glassStrength) glassStrength.disabled = settingsSaving || !controlsReady || solidMaterial;
+      if (glassStrengthNote) glassStrengthNote.hidden = !solidMaterial;
       var popupStatus = $('it-popup-background-status');
       if (popupStatus) popupStatus.textContent = settingsState.preferences.popup.backgroundData ?
         '已选择独立图片，保存后悬浮窗将使用该图片。' : '悬浮窗跟随主窗口背景。';
       updatePopupPreview();
-      modal.querySelectorAll('[data-pref-section]').forEach(function (section) {
-        section.hidden = section.getAttribute('data-pref-section') !== activeSection;
-      });
-      modal.querySelectorAll('[data-pref-tab]').forEach(function (tab) {
-        tab.classList.toggle('on', tab.getAttribute('data-pref-tab') === activeSection);
-        tab.setAttribute('aria-current', tab.getAttribute('data-pref-tab') === activeSection ? 'page' : 'false');
-      });
+      if (!sectionTransitionTarget) updateSettingsNavigation(false);
+      refreshSelectButtons(false);
     }
 
     function loadSystemFonts(session) {
@@ -2648,6 +2833,10 @@
       if (colorControl) colorControl.disabled = !controlsEnabled ||
         settingsState.preferences.appearance.fontColorMode !== 'custom';
       if (fontFamilySelect) fontFamilySelect.disabled = !controlsEnabled || !systemFontsReady;
+      var glassStrength = modal.querySelector('#it-pref-glass-strength');
+      if (glassStrength) glassStrength.disabled = !controlsEnabled ||
+        settingsState.preferences.appearance.material === 'solid';
+      refreshSelectButtons(false);
     }
 
     function close() {
@@ -2655,6 +2844,7 @@
       if (settingsSaving) return true;
       stopRecord();
       closeSelect();
+      cancelSettingsSectionTransition(activeSection);
       settingsSeq++;
       backgroundPickSeq++;
       popupBackgroundPickSeq++;
@@ -2681,6 +2871,8 @@
       activeSection = source && source.section ? source.section : 'appearance';
       settingsLoaded = !Bridge.isDesktop;
       if (activeSection === 'desktop' && !Bridge.isDesktop) activeSection = 'appearance';
+      if (!modal.querySelector('[data-pref-section="' + activeSection + '"]')) activeSection = 'appearance';
+      cancelSettingsSectionTransition(activeSection);
       returnFocus = (source && source.trigger) || document.activeElement;
       settingsOrigin = (source && source.origin) || rectOf(returnFocus);
       settingsState = settingsFromSaved(null, activePreferences);
@@ -2733,8 +2925,7 @@
       if (e.target === modal || (e.target.closest && e.target.closest('[data-close]'))) close();
       var tab = e.target.closest && e.target.closest('[data-pref-tab]');
       if (tab && !tab.disabled) {
-        activeSection = tab.getAttribute('data-pref-tab');
-        fill();
+        switchSettingsSection(tab.getAttribute('data-pref-tab'));
       }
       if (e.target.closest && e.target.closest('[data-reset-section]')) {
         var defaults = copyObject(DEFAULT_PREFERENCES);
@@ -2808,10 +2999,25 @@
         fill();
       }
     });
-    on(modal, 'keydown', function (e) {
+    on(document, 'keydown', function (e) {
       if (e.key !== 'Tab' || !modal.classList.contains('on')) return;
       var focusable = Array.prototype.slice.call(dialog.querySelectorAll('button, input, select, [tabindex]'))
-        .filter(function (el) { return !el.disabled && !el.hidden && el.tabIndex >= 0 && el.getClientRects().length; });
+        .filter(function (el) { return !el.disabled && !el.hidden && !el.closest('[inert]') &&
+          el.tabIndex >= 0 && el.getClientRects().length; });
+      if (openSelect && dialog.contains(openSelect.select)) {
+        var focusInPopup = openSelect.pop.contains(document.activeElement);
+        var trigger = openSelect.button;
+        closeSelect();
+        if (focusInPopup) {
+          e.preventDefault();
+          if (!focusable.length) { dialog.focus(); return; }
+          var triggerIndex = focusable.indexOf(trigger);
+          var nextIndex = triggerIndex < 0 ? (e.shiftKey ? focusable.length - 1 : 0) :
+            (triggerIndex + (e.shiftKey ? -1 : 1) + focusable.length) % focusable.length;
+          focusable[nextIndex].focus({ preventScroll: true });
+          return;
+        }
+      }
       if (!focusable.length) { e.preventDefault(); dialog.focus(); return; }
       var first = focusable[0];
       var last = focusable[focusable.length - 1];
@@ -2821,6 +3027,10 @@
         e.preventDefault(); first.focus();
       }
     });
+    on(window, 'resize', function () { updateSettingsNavigation(false); });
+    on(modal.querySelector('.it-set-body'), 'scroll', function () {
+      if (openSelect && dialog.contains(openSelect.select)) closeSelect();
+    }, { passive: true });
     on($('it-set-selection'), 'click', function () { startRecord(this, 'selection_shortcut'); });
     on($('it-set-activation'), 'click', function () { startRecord(this, 'activation_shortcut'); });
     on($('it-set-mode'), 'change', function () { settingsState.open_main_window = this.value === 'main'; });
