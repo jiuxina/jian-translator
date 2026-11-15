@@ -1,0 +1,18 @@
+<resources>
+    <!-- 与 app/theme-liquid-glass.css 的 lg 系列令牌保持一致 -->
+    <color name="bg">#F3EFF6</color>
+    <color name="surface">#FFFFFF</color>
+    <color name="pink">#E28BA6</color>
+    <color name="pink_deep">#C96F90</color>
+    <color name="ink">#2E2A38</color>
+    <color name="ink_sub">#6E687E</color>
+    <color name="line">#EBE7F0</color>
+    <color name="lilac">#9A9BE6</color>
+
+    <!-- 液态玻璃材质：原生 View 用 GradientDrawable 半透明 tint + 白色镜面边模拟 -->
+    <color name="glass_strong">#AAFFFFFF</color>
+    <color name="glass_regular">#61FFFFFF</color>
+    <color name="glass_subtle">#33FFFFFF</color>
+    <color name="glass_edge">#9EFFFFFF</color>
+    <color name="glass_line">#12463460</color>
+</resources>

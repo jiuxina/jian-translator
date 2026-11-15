@@ -1,0 +1,23 @@
+# Local dependencies, caches and personal session data
+.build/
+.workbuddy/
+.codex/
+.agents/
+**/__pycache__/
+*.py[cod]
+
+# Android machine configuration, caches and signing credentials
+android/.gradle/
+android/build/
+android/app/build/
+android/local.properties
+android/signing.properties
+android/keystore/
+*.keystore
+*.jks
+.env
+.env.local
+
+# Keep release checksums, but not generated packages or preview media
+output/*
+!output/SHA256SUMS.txt

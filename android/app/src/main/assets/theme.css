@@ -1,0 +1,1213 @@
+/* ==========================================================================
+   笺 · 自绘前端主题（薄樱玻璃 · 一镜到底）
+   --------------------------------------------------------------------------
+   本文件是当前自绘前端与动效令牌的唯一真源；Windows / Android WebView 共用 web/。
+
+   与注入版主题的区别：那一份是在官网 DOM（.atcard / .panes / .pane）上
+   做覆盖，这一份直接为自绘 DOM 定义材质、布局与状态。
+   官网注入版保留仅作回退，不再被新前端引用。
+
+   真模糊仅在支持 backdrop-filter 的 WebView / WebView2 中启用；其他平台使用纯 CSS tint。
+   ========================================================================== */
+
+/* ---------- 1. 令牌 ---------- */
+:root {
+  --lg-bg:            #F3EFF6;
+  --lg-bg-warm:       #FCF8FB;
+  --lg-glow-a:        rgba(226, 139, 166, .28);
+  --lg-glow-b:        rgba(154, 155, 230, .24);
+  --lg-glow-c:        rgba(255, 255, 255, .48);
+
+  --lg-tint-0:        rgba(255, 255, 255, .24);
+  --lg-tint-1:        rgba(255, 255, 255, .44);
+  --lg-tint-2:        rgba(255, 255, 255, .72);
+  --lg-tint-popup:    rgba(255, 255, 255, .82);
+  --lg-tint-field:    rgba(255, 255, 255, .62);
+  --lg-tint-inset:    rgba(255, 255, 255, .36);
+  --lg-blur:          22px;
+  --lg-blur-strong:   34px;
+  --lg-saturate:      1.7;
+
+  --lg-shine:         inset 1.5px 1.5px 1px rgba(255,255,255,.78),
+                      inset -1px -1px 1px rgba(255,255,255,.5);
+  --lg-shine-soft:    inset 1px 1px 1px rgba(255,255,255,.68),
+                      inset -1px -1px 1px rgba(255,255,255,.34);
+  --lg-edge:          rgba(255, 255, 255, .74);
+  --lg-edge-dark:     rgba(70, 52, 96, .09);
+  --lg-shadow:        0 12px 34px rgba(70,52,96,.13), 0 3px 10px rgba(70,52,96,.06);
+  --lg-shadow-strong: 0 24px 60px rgba(70,52,96,.20), 0 5px 14px rgba(70,52,96,.08);
+  --lg-shadow-soft:   0 5px 16px rgba(70,52,96,.09);
+
+  --lg-r-lg:          26px;
+  --lg-r-md:          20px;
+  --lg-r-sm:          14px;
+  --lg-r-pill:        999px;
+
+  --lg-ink:           #2E2A38;
+  --lg-ink-sub:       #6E687E;
+  --lg-ink-faint:     #A29CAC;
+  --lg-accent:        #E28BA6;
+  --lg-accent-deep:   #C96F90;
+  --lg-lilac:         #9A9BE6;
+  --lg-accent-wash:   rgba(226, 139, 166, .14);
+  --lg-accent-wash-2: rgba(226, 139, 166, .24);
+
+  --lg-ease:          cubic-bezier(.22, .8, .28, 1);
+  --lg-ease-enter:    cubic-bezier(.18, .8, .22, 1);
+  --lg-ease-reel:     cubic-bezier(.16, .84, .28, 1);
+  --lg-ease-spring:   cubic-bezier(.34, 1.22, .48, 1);
+  --lg-ease-scene:    cubic-bezier(.22, .78, .18, 1);
+  --lg-distance-scene: 28px;
+  --lg-duration-fast: 140ms;
+  --lg-duration-control: 220ms;
+  --lg-duration-panel: 420ms;
+  --lg-duration-dialog: 240ms;
+  --lg-duration-model: 420ms;
+  --lg-duration-stream: 200ms;
+  --lg-reel-row-height: 20px;
+  --lg-duration-reel-base: 240ms;
+  --lg-duration-reel-step: 34ms;
+  --lg-dur:           var(--lg-duration-control);
+
+  --bar-h:            52px;
+  --pad:              22px;
+  --lg-mobile-tab-height: 58px;
+}
+
+/* ---------- 2. 基础 ---------- */
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  background: var(--lg-bg);
+  color: var(--lg-ink);
+  font-family: "PingFang SC", "Microsoft YaHei UI", "Noto Sans SC", system-ui, -apple-system, sans-serif;
+  font-size: 14px;
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+  overscroll-behavior: none;
+}
+
+html { overflow: hidden; }
+
+body {
+  height: 100dvh;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  position: relative;
+  isolation: isolate;
+}
+
+/* 环境柔光：两层极淡的色斑，让玻璃有东西可透 */
+body::before {
+  content: "";
+  position: fixed;
+  inset: -2%;
+  z-index: -2;
+  pointer-events: none;
+  background:
+    radial-gradient(52vw 42vw at 12% 8%, var(--lg-glow-a), transparent 68%),
+    radial-gradient(48vw 40vw at 88% 92%, var(--lg-glow-b), transparent 70%),
+    linear-gradient(168deg, var(--lg-bg-warm), var(--lg-bg) 46%, #EBE5F4);
+  animation: lgAmbientDrift 64s ease-in-out infinite;
+}
+
+@keyframes lgAmbientDrift {
+  0%, 100% { transform: translate3d(-.3%, -.2%, 0) scale(1.01); }
+  50%      { transform: translate3d(.3%, .2%, 0) scale(1.02); }
+}
+
+/* 细微的颗粒感，避免大面积渐变出现色带 */
+body::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  opacity: .5;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='120' height='120'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='2'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='120' height='120' filter='url(%23n)' opacity='.035'/%3E%3C/svg%3E");
+}
+
+::selection { background: var(--lg-accent-wash-2); color: var(--lg-ink); }
+
+/* pake 给「自定义标题栏」注入了一条铺在顶部约 25px 高的拖动条：
+   <div id="pake-top-dom"></div>
+   它盖在页面内容之上，会吞掉标签按钮上半部分的点击，并让光标变成抓手。
+   窗口拖动已经由 .bar 自己调 it_window_action("drag") 处理，这里直接去掉。 */
+#pake-top-dom {
+  display: none !important;
+  pointer-events: none !important;
+}
+
+button, input, select, textarea {
+  font: inherit;
+  color: inherit;
+}
+button { cursor: pointer; border: none; background: none; }
+button:disabled { cursor: default; }
+
+:focus-visible {
+  outline: 2px solid var(--lg-accent);
+  outline-offset: 2px;
+}
+
+/* ---------- 3. 顶栏（桌面端同时就是标题栏） ---------- */
+.bar {
+  flex: 0 0 auto;
+  height: 46px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 0 var(--pad);
+  position: sticky;
+  top: 0;
+  z-index: 40;
+  background: var(--lg-tint-1);
+  -webkit-backdrop-filter: blur(var(--lg-blur)) saturate(var(--lg-saturate));
+  backdrop-filter: blur(var(--lg-blur)) saturate(var(--lg-saturate));
+  border-bottom: 1px solid var(--lg-edge-dark);
+  box-shadow: var(--lg-shine-soft);
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+/* 桌面端：这一行就是标题栏，右侧不留内边距，让窗口按钮贴边 */
+html.it-desktop .bar {
+  height: 40px;
+  padding-right: 0;
+  position: static;
+}
+
+.brand {
+  flex: 0 0 auto;
+  font-size: 14px;
+  font-weight: 500;
+  letter-spacing: .14em;
+  color: var(--lg-accent-deep);
+  padding: 2px;
+  cursor: default;
+  transition: color var(--lg-dur) var(--lg-ease);
+}
+.brand:hover { color: var(--lg-ink); }
+html.it-desktop .brand { font-size: 13.5px; }
+
+.tabs {
+  position: relative;
+  display: flex;
+  gap: 2px;
+  padding: 3px;
+  border-radius: var(--lg-r-pill);
+  border: 1px solid var(--lg-edge);
+  background: var(--lg-tint-1);
+  box-shadow: var(--lg-shine-soft), var(--lg-shadow-soft);
+  -webkit-backdrop-filter: blur(var(--lg-blur)) saturate(var(--lg-saturate));
+  backdrop-filter: blur(var(--lg-blur)) saturate(var(--lg-saturate));
+  flex: 0 1 auto;
+}
+
+.tabs button {
+  position: relative;
+  z-index: 1;
+  flex: 0 1 auto;
+  padding: 5px 14px;
+  border-radius: var(--lg-r-pill);
+  font-size: 12.5px;
+  font-weight: 400;
+  color: var(--lg-ink-sub);
+  transition: background var(--lg-dur) var(--lg-ease), color var(--lg-dur) var(--lg-ease);
+  white-space: nowrap;
+}
+
+.tabs button:hover { color: var(--lg-ink); }
+
+.tabs button.on {
+  font-weight: 500;
+  color: var(--lg-ink);
+  background: transparent;
+  box-shadow: none;
+}
+
+.bar-right {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  height: 100%;
+}
+
+/* 桌面端窗口按钮：紧贴右上角，与标题栏等高 */
+.win-actions {
+  display: flex;
+  align-items: stretch;
+  height: 100%;
+}
+.win-actions[hidden] { display: none; }
+
+.win-actions button {
+  width: 46px;
+  height: 100%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--lg-ink-sub);
+  transition: background var(--lg-dur) var(--lg-ease), color var(--lg-dur) var(--lg-ease);
+}
+.win-actions button:hover { background: var(--lg-tint-2); color: var(--lg-ink); }
+.win-actions .win-close:hover { background: #E24B4A; color: #fff; }
+
+/* ---------- 4. 主体 ---------- */
+main {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
+  padding: 18px var(--pad) 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: auto minmax(0, 1fr);
+}
+
+.pane-stack {
+  grid-row: 2;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
+  min-width: 0;
+  min-height: 0;
+  position: relative;
+  isolation: isolate;
+}
+
+.pane {
+  grid-area: 1 / 1;
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  flex-direction: column;
+  visibility: hidden;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.pane.on {
+  visibility: visible;
+  opacity: 1;
+  pointer-events: auto;
+}
+
+/* 明确工具栏的状态，避免 WebView 在取消填充动画后沿用隐藏页的继承缓存。 */
+.pane.on > .langbar > :not(.models) {
+  visibility: visible;
+  pointer-events: auto;
+}
+.pane.it-tab-leave > .langbar > :not(.models) {
+  visibility: visible;
+  pointer-events: none;
+}
+
+/* 卡壳在同一空间承接，只有内容沿导航方向流动。退场页保留真实 DOM，
+   但移除第二层玻璃，避免交接时材质叠深；几何和内容由 WAAPI 连续重定向。 */
+.pane .models,
+.pane .card { transform-origin: top left; }
+.pane.it-tab-leave {
+  visibility: visible;
+  opacity: 1;
+  pointer-events: none;
+  z-index: 2;
+}
+.pane.it-tab-leave .card,
+.pane.it-tab-leave .models {
+  background: transparent !important;
+  border-color: transparent;
+  box-shadow: none;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+.pane.it-tab-leave .card { overflow: hidden; }
+
+.it-surface-leave {
+  visibility: visible !important;
+  pointer-events: none !important;
+}
+
+/* ---------- 5. 语言与模型条 ---------- */
+.langbar {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+  flex-wrap: wrap;
+}
+
+.sel-wrap {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+}
+
+/* 原生 select 只作数据源，视觉全部由 .sel-btn / .sel-pop 接管。
+   原生弹层由系统绘制，CSS 无法改，这是唯一能统一材质的路子。 */
+.sel-wrap select { display: none; }
+
+.sel-btn {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  max-width: 168px;
+  padding: 6px 30px 6px 14px;
+  border: 1px solid var(--lg-edge);
+  border-radius: var(--lg-r-pill);
+  background: var(--lg-tint-1);
+  -webkit-backdrop-filter: blur(var(--lg-blur)) saturate(var(--lg-saturate));
+  backdrop-filter: blur(var(--lg-blur)) saturate(var(--lg-saturate));
+  box-shadow: var(--lg-shine-soft);
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--lg-ink);
+  cursor: pointer;
+  transition: background var(--lg-dur) var(--lg-ease), border-color var(--lg-dur) var(--lg-ease);
+}
+.sel-btn:hover { background: var(--lg-tint-2); }
+.sel-btn[aria-expanded="true"] { background: var(--lg-tint-2); border-color: var(--lg-accent); }
+
+/* 当前选定文字：一条竖向「轮盘」条带，切换时滚过若干候选再落在新值上 */
+.sel-value {
+  display: inline-block;
+  position: relative;
+  height: var(--lg-reel-row-height);
+  line-height: var(--lg-reel-row-height);
+  vertical-align: middle;
+  overflow: hidden;
+  white-space: nowrap;
+  max-width: 124px;
+  transition: width var(--lg-duration-panel) var(--lg-ease-enter);
+}
+.sel-reel {
+  display: block;
+  will-change: transform;
+  transition: transform var(--lg-duration-model) var(--lg-ease-reel);
+}
+.sel-reel-row {
+  display: block;
+  height: var(--lg-reel-row-height);
+  line-height: var(--lg-reel-row-height);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.sel-value.rolling .sel-reel { filter: blur(.35px); }
+.sel-value.rolling {
+  animation: itReelGlow .5s ease-out;
+}
+@keyframes itReelGlow {
+  0%   { opacity: .55; }
+  55%  { opacity: .9; }
+  100% { opacity: 1; }
+}
+
+.sel-btn::after {
+  content: "";
+  position: absolute;
+  right: 13px;
+  top: 50%;
+  width: 6px;
+  height: 6px;
+  margin-top: -4px;
+  border-right: 1.2px solid var(--lg-ink-sub);
+  border-bottom: 1.2px solid var(--lg-ink-sub);
+  transform: rotate(45deg);
+  transition: transform var(--lg-dur) var(--lg-ease), margin-top var(--lg-dur) var(--lg-ease);
+  pointer-events: none;
+}
+.sel-btn[aria-expanded="true"]::after {
+  transform: rotate(225deg);
+  margin-top: -1px;
+}
+
+/* 弹层挂到 body 上、用 fixed 定位，避免被卡片的 overflow 裁掉 */
+.sel-pop {
+  position: fixed;
+  z-index: 120;
+  display: flex;
+  flex-direction: column;
+  min-width: 190px;
+  max-width: 280px;
+  max-height: 320px;
+  border-radius: var(--lg-r-md);
+  border: 1px solid var(--lg-edge);
+  background: var(--lg-tint-popup);
+  -webkit-backdrop-filter: blur(var(--lg-blur-strong)) saturate(var(--lg-saturate));
+  backdrop-filter: blur(var(--lg-blur-strong)) saturate(var(--lg-saturate));
+  box-shadow: var(--lg-shine), var(--lg-shadow-strong);
+  overflow: hidden;
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transform-origin: top left;
+}
+.sel-pop.on {
+  opacity: 1;
+  visibility: visible;
+  pointer-events: auto;
+  transform: translateY(0) scale(1);
+  transition-delay: 0s;
+}
+.sel-pop[data-placement="above"] { transform-origin: top left; }
+.sel-pop.on[data-placement="above"] { transform: translateY(0) scale(1); }
+
+.sel-search {
+  flex: 0 0 auto;
+  width: 100%;
+  border: none;
+  outline: none;
+  background: transparent;
+  padding: 10px 14px;
+  font-size: 13px;
+  color: var(--lg-ink);
+  border-bottom: 1px solid var(--lg-edge-dark);
+}
+.sel-search::placeholder { color: var(--lg-ink-faint); }
+
+.sel-list {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 4px;
+}
+.sel-list::-webkit-scrollbar { width: 6px; }
+.sel-list::-webkit-scrollbar-thumb { background: rgba(70, 52, 96, .14); border-radius: 99px; }
+
+.sel-group {
+  padding: 8px 10px 4px;
+  font-size: 10.5px;
+  letter-spacing: .06em;
+  color: var(--lg-ink-faint);
+}
+
+.sel-item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 7px 10px;
+  border-radius: var(--lg-r-sm);
+  font-size: 13px;
+  color: var(--lg-ink-sub);
+  transition: background var(--lg-duration-fast) var(--lg-ease),
+              color var(--lg-duration-fast) var(--lg-ease);
+}
+.sel-item:hover, .sel-item.active { background: var(--lg-tint-1); color: var(--lg-ink); }
+.sel-item.on { color: var(--lg-accent-deep); font-weight: 500; }
+
+.sel-empty {
+  padding: 16px 12px;
+  font-size: 12.5px;
+  color: var(--lg-ink-faint);
+  text-align: center;
+}
+
+.swap {
+  width: 28px;
+  height: 28px;
+  border-radius: var(--lg-r-pill);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--lg-ink-sub);
+  transition: background var(--lg-dur) var(--lg-ease), color var(--lg-dur) var(--lg-ease), transform var(--lg-dur) var(--lg-ease);
+  flex: 0 0 auto;
+}
+.swap:hover { background: var(--lg-tint-2); color: var(--lg-ink); }
+.swap:active { transform: rotate(180deg); }
+
+/* 模型分段：一块独立的玻璃滑块在按钮底下平移，按钮本身保持透明 */
+.models {
+  position: relative;
+  margin-left: auto;
+  display: flex;
+  gap: 2px;
+  padding: 3px;
+  border-radius: var(--lg-r-pill);
+  background: var(--lg-tint-1);
+  box-shadow: var(--lg-shine-soft);
+}
+
+.models-thumb,
+.tabs-thumb {
+  position: absolute;
+  top: 3px;
+  left: 0;
+  height: calc(100% - 6px);
+  border-radius: var(--lg-r-pill);
+  background: var(--lg-tint-2);
+  box-shadow: var(--lg-shine);
+  z-index: 0;
+  pointer-events: none;
+  opacity: 0;
+  /* 轻微过冲，滑块落位时有「推一下」的手感 */
+  transition: transform var(--lg-duration-model) var(--lg-ease-spring),
+              width var(--lg-duration-model) var(--lg-ease-spring),
+              opacity var(--lg-duration-fast) ease;
+}
+.models-thumb.ready,
+.tabs-thumb.ready { opacity: 1; }
+
+.models button {
+  position: relative;
+  z-index: 1;
+  padding: 5px 12px;
+  border-radius: var(--lg-r-pill);
+  background: transparent;
+  font-size: 12.5px;
+  color: var(--lg-ink-sub);
+  transition: color var(--lg-dur) var(--lg-ease);
+  white-space: nowrap;
+}
+.models button.on {
+  color: var(--lg-ink);
+  font-weight: 500;
+}
+
+/* ---------- 6. 双栏 ---------- */
+.panes {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
+  gap: 14px;
+  padding-bottom: 76px;
+}
+
+.card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  border-radius: var(--lg-r-lg);
+  border: 1px solid var(--lg-edge);
+  background: var(--lg-tint-0);
+  -webkit-backdrop-filter: blur(var(--lg-blur)) saturate(var(--lg-saturate));
+  backdrop-filter: blur(var(--lg-blur)) saturate(var(--lg-saturate));
+  box-shadow: var(--lg-shine-soft), var(--lg-shadow-soft);
+  overflow: hidden;
+}
+
+/* 译文卡片用 regular 档 + 强阴影，视觉上比原文卡浮起一层 */
+.card.out {
+  background: var(--lg-tint-1);
+  box-shadow: var(--lg-shine), var(--lg-shadow);
+}
+
+.card-head {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 11px 16px 6px;
+  font-size: 11.5px;
+  color: var(--lg-ink-faint);
+  letter-spacing: .04em;
+}
+
+.card-head .spacer { margin-left: auto; }
+
+.card-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+}
+
+.card-foot {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px 10px;
+  min-height: 40px;
+}
+
+/* ---------- 7. 输入 / 输出 ---------- */
+textarea.src, .out {
+  flex: 1 1 auto;
+  min-height: 0;
+  width: 100%;
+  border: none;
+  outline: none;
+  background: transparent;
+  resize: none;
+  padding: 4px 16px 8px;
+  font-size: 15px;
+  line-height: 1.75;
+  color: var(--lg-ink);
+  font-family: inherit;
+}
+
+textarea.src::placeholder { color: var(--lg-ink-faint); }
+
+.out {
+  overflow-y: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: 15px;
+  line-height: 1.8;
+}
+.out.empty { color: var(--lg-ink-faint); font-size: 13.5px; }
+.out .cursor::after {
+  content: "";
+  display: inline-block;
+  width: 2px;
+  height: 1em;
+  margin-left: 2px;
+  vertical-align: -2px;
+  background: var(--lg-accent);
+  animation: blink 1s steps(2) infinite;
+}
+@keyframes blink { 50% { opacity: 0; } }
+
+/* 流式输出：每帧新揭示的一小段文字淡入，animationend 后拆成纯文本节点。
+   片段是 inline（中文要在任意字符处换行），所以只做 opacity，不用 transform。 */
+.out .st-seg {
+  animation: itStreamIn var(--lg-duration-stream) ease-out both;
+}
+@keyframes itStreamIn {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
+/* 滚动条 */
+.out::-webkit-scrollbar, .doc-list::-webkit-scrollbar { width: 6px; }
+.out::-webkit-scrollbar-thumb, .doc-list::-webkit-scrollbar-thumb {
+  background: rgba(70, 52, 96, .14);
+  border-radius: 99px;
+}
+
+/* ---------- 8. 小药丸按钮 ---------- */
+.pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 13px;
+  border-radius: var(--lg-r-pill);
+  border: 1px solid var(--lg-edge);
+  background: var(--lg-tint-1);
+  box-shadow: var(--lg-shine-soft);
+  font-size: 12.5px;
+  color: var(--lg-ink-sub);
+  transition: background var(--lg-dur) var(--lg-ease), color var(--lg-dur) var(--lg-ease);
+  white-space: nowrap;
+}
+.pill:hover { background: var(--lg-tint-2); color: var(--lg-ink); }
+.pill.ghost { border-color: transparent; background: transparent; box-shadow: none; }
+.pill.ghost:hover { background: var(--lg-tint-1); }
+
+/* ---------- 9. 吸底按钮组：没有底板，只负责定位 ---------- */
+.dock {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 30;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 0 var(--pad) 20px;
+  pointer-events: none;
+  background: none;
+}
+.dock.on { display: flex; }
+.dock > * { pointer-events: auto; }
+
+.btn-primary {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 9px 26px;
+  border-radius: var(--lg-r-pill);
+  background: linear-gradient(135deg, var(--lg-accent), var(--lg-accent-deep));
+  color: #fff;
+  font-size: 13.5px;
+  font-weight: 500;
+  letter-spacing: .02em;
+  box-shadow: 0 10px 24px rgba(201, 111, 144, .30), inset 1px 1px 1px rgba(255,255,255,.42);
+  transition: transform var(--lg-dur) var(--lg-ease), box-shadow var(--lg-dur) var(--lg-ease), opacity var(--lg-dur);
+}
+/* 悬浮只提亮阴影，不做位移；按下时保留轻微缩放反馈 */
+.btn-primary:hover { transform: none; box-shadow: 0 14px 30px rgba(201,111,144,.36), inset 1px 1px 1px rgba(255,255,255,.45); }
+.btn-primary:active { transform: translateY(0) scale(.985); }
+.btn-primary:disabled { opacity: .55; transform: none; cursor: default; box-shadow: 0 6px 16px rgba(201,111,144,.18); }
+
+.btn-secondary {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 9px 20px;
+  border-radius: var(--lg-r-pill);
+  background: var(--lg-tint-2);
+  border: 1px solid var(--lg-edge);
+  -webkit-backdrop-filter: blur(var(--lg-blur)) saturate(var(--lg-saturate));
+  backdrop-filter: blur(var(--lg-blur)) saturate(var(--lg-saturate));
+  box-shadow: var(--lg-shine), var(--lg-shadow-soft);
+  font-size: 13px;
+  color: var(--lg-ink-sub);
+  transition: background var(--lg-dur) var(--lg-ease), color var(--lg-dur) var(--lg-ease);
+}
+.btn-secondary:hover { color: var(--lg-ink); background: var(--lg-tint-2); }
+
+/* ---------- 10. 指令区 ---------- */
+.instruct {
+  flex: 0 0 auto;
+  margin: 0 12px 8px;
+  border-radius: var(--lg-r-sm);
+  background: var(--lg-tint-inset);
+  box-shadow: var(--lg-shine-soft);
+  overflow: hidden;
+}
+.instruct[open] { background: var(--lg-tint-1); }
+
+.instruct summary {
+  list-style: none;
+  cursor: pointer;
+  padding: 7px 12px;
+  font-size: 12px;
+  color: var(--lg-ink-sub);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  user-select: none;
+}
+.instruct summary::-webkit-details-marker { display: none; }
+.instruct summary::after {
+  content: "";
+  margin-left: auto;
+  width: 6px;
+  height: 6px;
+  border-right: 1.2px solid currentColor;
+  border-bottom: 1.2px solid currentColor;
+  transform: rotate(45deg) translateY(-2px);
+  transition: transform var(--lg-dur) var(--lg-ease);
+}
+.instruct[data-expanded="true"] summary::after { transform: rotate(225deg) translateY(-1px); }
+.instruct summary .badge {
+  font-size: 10.5px;
+  padding: 1px 6px;
+  border-radius: var(--lg-r-pill);
+  background: var(--lg-accent-wash);
+  color: var(--lg-accent-deep);
+}
+
+/* 展开 / 收起：高度由 JS 量出并过渡，内容同时做纵向位移 + 淡入淡出。
+   <details> 的 open 属性等到收起动画结束才移除，避免内容瞬间消失。 */
+.instruct-body {
+  height: 0;
+  overflow: hidden;
+  opacity: 0;
+  transform: translateY(-8px);
+}
+.instruct-body.show {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+.instruct textarea {
+  display: block;
+  width: 100%;
+  border: none;
+  outline: none;
+  background: transparent;
+  resize: none;
+  min-height: 62px;
+  max-height: 150px;
+  padding: 0 12px 10px;
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--lg-ink);
+  font-family: inherit;
+}
+
+/* ---------- 11. 图片预览 ---------- */
+.img-preview {
+  flex: 0 0 auto;
+  height: 0;
+  opacity: 0;
+  visibility: hidden;
+  margin: 0 12px;
+  border-radius: var(--lg-r-sm);
+  overflow: hidden;
+  position: relative;
+  background: var(--lg-tint-field);
+  box-shadow: var(--lg-shine-soft);
+}
+.img-preview.on { height: auto; opacity: 1; visibility: visible; margin-bottom: 8px; }
+.img-preview img { display: block; width: 100%; max-height: 180px; object-fit: contain; }
+.img-preview .del {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: rgba(46, 42, 56, .55);
+  color: #fff;
+  font-size: 14px;
+  line-height: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  -webkit-backdrop-filter: blur(8px);
+  backdrop-filter: blur(8px);
+}
+
+/* ---------- 12. 长文本 ---------- */
+.doc-toolbar {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+  flex-wrap: wrap;
+}
+
+.progress {
+  flex: 0 0 auto;
+  height: 3px;
+  border-radius: 99px;
+  background: rgba(70, 52, 96, .08);
+  overflow: hidden;
+  margin: 0 16px 8px;
+}
+.progress > i {
+  display: block;
+  height: 100%;
+  width: 0;
+  border-radius: 99px;
+  background: linear-gradient(90deg, var(--lg-accent), var(--lg-lilac));
+  transition: width var(--lg-duration-panel) var(--lg-ease-enter);
+}
+
+/* ---------- 13. 提示 ---------- */
+.toast {
+  position: fixed;
+  left: 50%;
+  bottom: 96px;
+  transform: translate(-50%, 8px);
+  z-index: 90;
+  padding: 8px 18px;
+  border-radius: var(--lg-r-pill);
+  background: rgba(46, 42, 56, .82);
+  color: #fff;
+  font-size: 12.5px;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--lg-dur) var(--lg-ease), transform var(--lg-dur) var(--lg-ease);
+  -webkit-backdrop-filter: blur(12px);
+  backdrop-filter: blur(12px);
+  max-width: 80vw;
+  text-align: center;
+}
+.toast.on { opacity: 1; transform: translate(-50%, 0); }
+.toast.error { background: rgba(163, 45, 45, .9); }
+
+/* ---------- 14. 窄屏 ---------- */
+@media (max-width: 760px) {
+  :root { --pad: 14px; }
+
+  .bar { height: 48px; gap: 10px; }
+  .bar {
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+  }
+  .brand { font-size: 14px; letter-spacing: .1em; }
+  .tabs {
+    position: fixed;
+    left: var(--pad);
+    right: var(--pad);
+    bottom: calc(10px + env(safe-area-inset-bottom, 0px));
+    z-index: 45;
+    min-height: var(--lg-mobile-tab-height);
+    padding: 4px;
+    gap: 3px;
+    flex: none;
+    justify-content: space-between;
+    background: var(--lg-tint-popup);
+    box-shadow: var(--lg-shine), var(--lg-shadow);
+  }
+  .tabs button {
+    flex: 1 1 0;
+    min-width: 0;
+    min-height: 48px;
+    padding: 6px 8px;
+    font-size: 13px;
+    text-align: center;
+  }
+  .tabs-thumb {
+    top: 4px;
+    height: calc(100% - 8px);
+  }
+
+  main {
+    padding: 12px var(--pad) calc(var(--lg-mobile-tab-height) + 76px + env(safe-area-inset-bottom, 0px));
+  }
+
+  .panes {
+    grid-template-columns: 1fr;
+    grid-auto-rows: minmax(0, 1fr);
+    gap: 10px;
+    padding-bottom: 12px;
+  }
+
+  textarea.src, .out { font-size: 14.5px; padding: 2px 14px 6px; }
+  .card-head { padding: 8px 14px 4px; }
+  .card-foot { padding: 4px 10px 8px; min-height: 36px; }
+
+  .models { margin-left: 0; width: 100%; justify-content: center; }
+  .models button { flex: 1 1 0; text-align: center; padding: 5px 6px; }
+
+  .dock {
+    bottom: calc(var(--lg-mobile-tab-height) + 18px + env(safe-area-inset-bottom, 0px));
+    z-index: 35;
+    padding-bottom: 10px;
+  }
+  .btn-primary { padding: 8px 22px; font-size: 13px; }
+  .toast { bottom: calc(var(--lg-mobile-tab-height) + 114px + env(safe-area-inset-bottom, 0px)); }
+
+  html.it-keyboard-open .tabs,
+  html.it-keyboard-open .dock { display: none; }
+  html.it-keyboard-open main { padding-bottom: 12px; }
+  html.it-keyboard-open .panes { padding-bottom: 12px; }
+  html.it-keyboard-open .toast { bottom: 14px; }
+}
+
+@media (max-width: 760px) and (max-height: 720px) {
+  .pane { overflow-y: auto; }
+  .panes {
+    flex: 0 0 auto;
+    grid-template-rows: repeat(2, minmax(180px, auto));
+  }
+}
+
+/* ---------- 15. 更多菜单 ---------- */
+.menu {
+  position: fixed;
+  top: 46px;
+  left: var(--pad);
+  z-index: 80;
+  min-width: 148px;
+  padding: 5px;
+  border-radius: var(--lg-r-md);
+  border: 1px solid var(--lg-edge);
+  background: var(--lg-tint-popup);
+  -webkit-backdrop-filter: blur(var(--lg-blur-strong)) saturate(var(--lg-saturate));
+  backdrop-filter: blur(var(--lg-blur-strong)) saturate(var(--lg-saturate));
+  box-shadow: var(--lg-shine), var(--lg-shadow-strong);
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transform-origin: top left;
+}
+.menu.on {
+  opacity: 1;
+  visibility: visible;
+  pointer-events: auto;
+  transform: translateY(0) scale(1);
+  transition-delay: 0s;
+}
+.menu[hidden] { display: none; }
+
+.menu button {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 8px 12px;
+  border-radius: var(--lg-r-sm);
+  font-size: 13px;
+  color: var(--lg-ink-sub);
+  transition: background var(--lg-dur) var(--lg-ease), color var(--lg-dur) var(--lg-ease);
+}
+.menu button:hover { background: var(--lg-tint-1); color: var(--lg-ink); }
+
+/* ---------- 16. 桌面端设置面板 ---------- */
+.it-set-mask {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: rgba(46, 42, 56, .18);
+  -webkit-backdrop-filter: blur(3px);
+  backdrop-filter: blur(3px);
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transition: opacity var(--lg-duration-dialog) var(--lg-ease-enter),
+              visibility 0s linear var(--lg-duration-dialog);
+}
+.it-set-mask.on {
+  opacity: 1;
+  visibility: visible;
+  pointer-events: auto;
+  transition-delay: 0s;
+}
+
+.it-set {
+  width: min(400px, 100%);
+  max-height: 100%;
+  display: flex;
+  flex-direction: column;
+  border-radius: var(--lg-r-lg);
+  border: 1px solid var(--lg-edge);
+  background: var(--lg-tint-popup);
+  -webkit-backdrop-filter: blur(var(--lg-blur-strong)) saturate(var(--lg-saturate));
+  backdrop-filter: blur(var(--lg-blur-strong)) saturate(var(--lg-saturate));
+  box-shadow: var(--lg-shine), var(--lg-shadow-strong);
+  overflow: hidden;
+  transform-origin: top left;
+}
+.it-set-mask.on .it-set { transform: translateY(0) scale(1); }
+
+.it-set-head {
+  display: flex;
+  align-items: center;
+  padding: 14px 18px 10px;
+  font-size: 14px;
+}
+.it-set-head b { font-weight: 500; }
+.it-set-x {
+  margin-left: auto;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  font-size: 17px;
+  line-height: 1;
+  color: var(--lg-ink-faint);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.it-set-x:hover { background: var(--lg-tint-1); color: var(--lg-ink); }
+
+.it-set-body { padding: 4px 18px 12px; overflow-y: auto; }
+
+.it-set-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 0;
+  font-size: 13px;
+  color: var(--lg-ink-sub);
+}
+.it-set-row > span { flex: 1 1 auto; }
+
+.it-set-row input[type="text"],
+.it-set-row select {
+  flex: 0 0 156px;
+  border: 1px solid var(--lg-edge);
+  background: var(--lg-tint-field);
+  border-radius: var(--lg-r-sm);
+  padding: 6px 10px;
+  font-size: 12.5px;
+  color: var(--lg-ink);
+  outline: none;
+}
+.it-set-row input[type="text"][readonly] { cursor: pointer; }
+.it-set-row input.recording {
+  border-color: var(--lg-accent);
+  background: var(--lg-accent-wash);
+  color: var(--lg-accent-deep);
+}
+
+.it-set-check {
+  flex: 0 0 auto;
+  width: 16px;
+  height: 16px;
+  accent-color: var(--lg-accent-deep);
+  cursor: pointer;
+}
+
+.it-set-note {
+  margin-top: 8px;
+  font-size: 11.5px;
+  line-height: 1.6;
+  color: var(--lg-ink-faint);
+}
+.it-set-note.warn { color: var(--lg-accent-deep); }
+
+.it-set-foot {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 18px 14px;
+  border-top: 1px solid var(--lg-edge-dark);
+}
+.it-set-foot .sp { flex: 1 1 auto; }
+.it-set-foot button {
+  padding: 7px 16px;
+  border-radius: var(--lg-r-pill);
+  font-size: 12.5px;
+  color: var(--lg-ink-sub);
+  transition: background var(--lg-dur) var(--lg-ease);
+}
+.it-set-foot button.ghost:hover { background: var(--lg-tint-1); }
+.it-set-foot button.primary {
+  background: linear-gradient(135deg, var(--lg-accent), var(--lg-accent-deep));
+  color: #fff;
+  font-weight: 500;
+  box-shadow: 0 6px 16px rgba(201, 111, 144, .26);
+}
+.it-set-foot button:disabled { opacity: .55; }
+
+/* ---------- 17. 低端机降级 ---------- */
+.no-lg-blur .card,
+.no-lg-blur .bar,
+.no-lg-blur .sel-wrap select,
+.no-lg-blur .btn-secondary {
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+.no-lg-blur .card { background: var(--lg-tint-field); }
+.no-lg-blur .card.out { background: var(--lg-tint-popup); }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation: none !important;
+    transition: none !important;
+    scroll-behavior: auto !important;
+  }
+  body::before { animation: none !important; }
+  .pane { transition: none !important; }
+  .pane.on { visibility: visible; opacity: 1; transform: none; }
+  .pane:not(.on) { visibility: hidden; }
+  /* 即时展开时保留内容布局，关闭状态由 <details> 的 open 属性控制。 */
+  .instruct-body { height: auto; opacity: 1; transform: none; }
+}
+
+/* ---------- 18. 桌面端边缘缩放热区 ---------- */
+/* 无边框窗口没有系统边框，边缘 5px 内由这些热区接管，mousedown 调 start_resize_dragging */
+.rz { display: none; }
+
+html.it-desktop .rz {
+  display: block;
+  position: fixed;
+  z-index: 96;
+}
+
+html.it-desktop .rz-n { top: 0; left: 12px; right: 12px; height: 5px; cursor: ns-resize; }
+html.it-desktop .rz-s { bottom: 0; left: 12px; right: 12px; height: 5px; cursor: ns-resize; }
+html.it-desktop .rz-w { left: 0; top: 12px; bottom: 12px; width: 5px; cursor: ew-resize; }
+html.it-desktop .rz-e { right: 0; top: 12px; bottom: 12px; width: 5px; cursor: ew-resize; }
+
+html.it-desktop .rz-nw { top: 0; left: 0; width: 12px; height: 12px; cursor: nwse-resize; }
+html.it-desktop .rz-ne { top: 0; right: 0; width: 12px; height: 12px; cursor: nesw-resize; }
+html.it-desktop .rz-sw { bottom: 0; left: 0; width: 12px; height: 12px; cursor: nesw-resize; }
+html.it-desktop .rz-se { bottom: 0; right: 0; width: 12px; height: 12px; cursor: nwse-resize; }
+
+/* 下拉打开时，热区要让位给弹层 */
+html.it-desktop .sel-pop.on ~ .rz { display: none; }

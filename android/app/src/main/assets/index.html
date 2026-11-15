@@ -1,0 +1,225 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="light">
+<link rel="icon" href="data:,">
+<title>笺</title>
+<link rel="stylesheet" href="theme.css?v=13">
+</head>
+<body>
+
+<header class="bar" id="appbar">
+  <div class="brand" id="brand" role="button" tabindex="0" title="右键打开菜单">笺</div>
+
+  <nav class="tabs" role="tablist">
+    <button type="button" id="tab-text" data-tab="text" class="on" role="tab" aria-selected="true" aria-controls="pane-text">文本</button>
+    <button type="button" id="tab-syllable" data-tab="syllable" role="tab" aria-selected="false" aria-controls="pane-syllable" tabindex="-1">音节</button>
+    <button type="button" id="tab-doc" data-tab="doc" role="tab" aria-selected="false" aria-controls="pane-doc" tabindex="-1">长文</button>
+  </nav>
+
+  <div class="bar-right">
+    <div class="win-actions" id="win-actions" hidden>
+      <button type="button" data-act="minimize" title="最小化" aria-label="最小化">
+        <svg width="11" height="11" viewBox="0 0 11 11" fill="none" stroke="currentColor" stroke-width="1.2"><path d="M1.5 5.5h8"/></svg>
+      </button>
+      <button type="button" data-act="maximize" title="最大化 / 还原" aria-label="最大化">
+        <svg width="11" height="11" viewBox="0 0 11 11" fill="none" stroke="currentColor" stroke-width="1.2"><rect x="1.8" y="1.8" width="7.4" height="7.4" rx="1"/></svg>
+      </button>
+      <button type="button" class="win-close" data-act="close" title="关闭（隐藏到托盘）" aria-label="关闭">
+        <svg width="11" height="11" viewBox="0 0 11 11" fill="none" stroke="currentColor" stroke-width="1.2"><path d="M2 2l7 7M9 2l-7 7"/></svg>
+      </button>
+    </div>
+  </div>
+</header>
+
+<main>
+  <!-- 共享语言条 -->
+  <div class="langbar" id="langbar">
+    <span class="sel-wrap"><select id="src-lang" aria-label="源语言"></select></span>
+    <button type="button" class="swap" id="btn-swap" aria-label="交换语言">⇄</button>
+    <span class="sel-wrap"><select id="tgt-lang" aria-label="目标语言"></select></span>
+  </div>
+
+  <!-- ============ 文本 / 图片 ============ -->
+  <div class="pane-stack">
+  <section class="pane on" id="pane-text" role="tabpanel" aria-labelledby="tab-text">
+    <div class="langbar" style="margin-bottom:10px">
+      <div class="models" id="model-text">
+        <button type="button" data-model="index-mt-2b" class="on">2B 快</button>
+        <button type="button" data-model="index-mt-9b">9B</button>
+        <button type="button" data-model="index-mt-35b">35B</button>
+      </div>
+    </div>
+
+    <div class="panes">
+      <div class="card">
+        <div class="card-head">
+          <span>原文</span>
+          <span class="spacer"></span>
+          <span id="count">0 / 8000</span>
+        </div>
+        <div class="card-body">
+          <textarea class="src" id="src" placeholder="输入或粘贴要翻译的内容，也可以直接贴一张图。"></textarea>
+          <div class="img-preview" id="img-preview">
+            <img id="img-thumb" alt="待翻译图片">
+            <button type="button" class="del" id="img-del" aria-label="移除图片">×</button>
+          </div>
+          <details class="instruct" id="instruct-box">
+            <summary><span>翻译要求</span><span class="badge" id="instruct-badge" hidden>已启用</span></summary>
+            <div class="instruct-body" id="instruct-body">
+              <textarea id="instruct" placeholder="例如：用自然口语表达 / 保留 Markdown / 术语：碳纤维→carbon fiber"></textarea>
+            </div>
+          </details>
+        </div>
+        <div class="card-foot">
+          <button type="button" class="pill" id="btn-pick-img">图片</button>
+          <button type="button" class="pill" id="btn-paste">粘贴</button>
+          <span class="spacer" style="margin-left:auto"></span>
+          <span id="src-meta" style="font-size:11.5px;color:var(--lg-ink-faint)"></span>
+        </div>
+      </div>
+
+      <div class="card out">
+        <div class="card-head">
+          <span>译文</span>
+          <span class="spacer"></span>
+          <span id="meta-text"></span>
+        </div>
+        <div class="card-body">
+          <div class="out empty" id="out-text">译文将在这里呈现</div>
+        </div>
+        <div class="card-foot">
+          <button type="button" class="pill" id="btn-copy">复制</button>
+        </div>
+      </div>
+    </div>
+
+  </section>
+
+  <!-- ============ 音节控制 ============ -->
+  <section class="pane" id="pane-syllable" role="tabpanel" aria-labelledby="tab-syllable">
+    <div class="langbar" style="margin-bottom:10px">
+      <div class="models" id="model-syllable">
+        <button type="button" data-model="index-mt-2b-syllable" class="on">2B</button>
+        <button type="button" data-model="index-mt-9b-syllable">9B</button>
+      </div>
+      <label class="sel-wrap" style="margin-left:auto">
+        <select id="syl-count" aria-label="音节数">
+          <option value="8">8 音节</option>
+          <option value="12">12 音节</option>
+          <option value="16" selected>16 音节</option>
+          <option value="24">24 音节</option>
+          <option value="32">32 音节</option>
+        </select>
+      </label>
+    </div>
+
+    <div class="panes">
+      <div class="card">
+        <div class="card-head"><span>原文</span><span class="spacer"></span><span id="syl-count-label">0 字</span></div>
+        <div class="card-body">
+          <textarea class="src" id="syl-src" placeholder="输入要压缩到指定音节数的译文原文，适合字幕、配音台词。"></textarea>
+        </div>
+        <div class="card-foot">
+          <span style="font-size:11.5px;color:var(--lg-ink-faint)">译文会严格控制在选定音节数附近</span>
+        </div>
+      </div>
+
+      <div class="card out">
+        <div class="card-head"><span>译文</span><span class="spacer"></span><span id="meta-syllable"></span></div>
+        <div class="card-body">
+          <div class="out empty" id="out-syllable">译文将在这里呈现</div>
+        </div>
+        <div class="card-foot">
+          <button type="button" class="pill" id="btn-copy-syllable">复制</button>
+        </div>
+      </div>
+    </div>
+
+  </section>
+
+  <!-- ============ 长文本 ============ -->
+  <section class="pane" id="pane-doc" role="tabpanel" aria-labelledby="tab-doc">
+    <div class="langbar" style="margin-bottom:10px">
+      <div class="models" id="model-doc">
+        <button type="button" data-model="index-nailong-2b" class="on">2B</button>
+        <button type="button" data-model="index-nailong-9b">9B</button>
+      </div>
+      <span class="sel-wrap" style="margin-left:auto">
+        <select id="doc-chunk" aria-label="分块大小">
+          <option value="4000" selected>每块 4000 字</option>
+          <option value="8000">每块 8000 字</option>
+          <option value="16000">每块 16000 字</option>
+        </select>
+      </span>
+      <button type="button" class="pill" id="btn-doc-file">打开文件</button>
+      <input type="file" id="doc-file" accept=".txt,.md,text/plain,text/markdown" hidden>
+    </div>
+
+    <div class="panes">
+      <div class="card">
+        <div class="card-head">
+          <span id="doc-name">原文</span>
+          <span class="spacer"></span>
+          <span id="doc-stat"></span>
+        </div>
+        <div class="card-body">
+          <textarea class="src" id="doc-src" placeholder="粘贴长文，或打开 .txt / .md 文件。会按分块大小逐块翻译并自动拼接。"></textarea>
+        </div>
+        <div class="card-foot">
+          <span style="font-size:11.5px;color:var(--lg-ink-faint)">长文按块顺序翻译，块间保持术语一致</span>
+        </div>
+      </div>
+
+      <div class="card out">
+        <div class="card-head">
+          <span>译文</span>
+          <span class="spacer"></span>
+          <span id="meta-doc"></span>
+        </div>
+        <div class="card-body">
+          <div class="progress"><i id="doc-bar"></i></div>
+          <div class="out empty" id="out-doc">译文将在这里呈现</div>
+        </div>
+        <div class="card-foot">
+          <button type="button" class="pill" id="btn-copy-doc">复制</button>
+          <button type="button" class="pill" id="btn-dl">下载 .txt</button>
+        </div>
+      </div>
+    </div>
+  </section>
+  </div>
+</main>
+
+<!-- 吸底操作区：挂在 body 上，避免被面板的 flex 高度计算挤走 -->
+<div class="dock on" data-pane="text">
+  <button type="button" class="btn-secondary" id="btn-clear">清空</button>
+  <button type="button" class="btn-primary" id="btn-go">开始翻译</button>
+</div>
+
+<div class="dock" data-pane="syllable">
+  <button type="button" class="btn-secondary" id="btn-clear-syllable">清空</button>
+  <button type="button" class="btn-primary" id="btn-go-syllable">开始翻译</button>
+</div>
+
+<div class="dock" data-pane="doc">
+  <button type="button" class="btn-secondary" id="btn-clear-doc">清空</button>
+  <button type="button" class="btn-primary" id="btn-go-doc">开始翻译</button>
+</div>
+
+<!-- 更多菜单 -->
+<div class="menu" id="more-menu" hidden>
+  <button type="button" data-act="bg">更换背景</button>
+  <button type="button" data-act="bg-reset">恢复默认背景</button>
+  <button type="button" data-act="settings">设置…</button>
+  <button type="button" data-act="about">关于</button>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script src="langs.js?v=13"></script>
+<script src="app.js?v=13"></script>
+</body>
+</html>

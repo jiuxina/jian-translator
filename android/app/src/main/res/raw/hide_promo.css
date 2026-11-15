@@ -1,0 +1,819 @@
+/* ==========================================================================
+   Index-Translate 桌面版 · 隐藏"翻译无关"的宣传样式
+   --------------------------------------------------------------------------
+   这个应用仍然实时加载官网 https://index-translate.bilibili.com/site/translate.html?lang=zh
+   本文件只做 display:none，不改任何功能、配色、字号、布局结构、脚本行为，
+   因此官网更新后翻译功能与外观会自动同步，无需重新打包。
+   注入方式：pake ... --inject ./hide-promo.css
+   ========================================================================== */
+
+/* ---------- 1. 首屏营销文案（整块） ----------
+   "把意思说清，把语气留下。" 标语、副标题，以及
+   "现已开放 35B 免费公网 API" 横幅                                      */
+header.phero,
+.phero,
+.api-hero-badge {
+  display: none !important;
+}
+
+/* ---------- 2. 免费 API 脚本推广 ----------
+   顶部导航的「免费 API 脚本 ↗」与翻译卡下方提示行的
+   「免费 API 调用脚本 ↗」都指向 GitHub 上的 call_api.py。
+   用 href 匹配，官网改 class 名也依旧生效。                             */
+a[href*="call_api.py"],
+a[href*="inference/llm"],
+.api-nav-link,
+.api-inline-link {
+  display: none !important;
+}
+
+/* 提示行里随之多余的分隔点「·」（不想隐藏提示行本身，只去掉孤立分隔符） */
+.tip-wrap > span:not(.tip) {
+  display: none !important;
+}
+
+/* ---------- 3. 产品宣传落地页入口 ----------
+   「首页」是产品介绍页，不是翻译功能；功能入口（语音翻译 / 音节控制 /
+   长文本翻译）、Logo、中英切换全部保留。
+   注意：官网 i18n.js 会动态改写首页链接的 href（中文 home.html /
+   英文 home-en.html），所以主选择器用官网脚本自己依赖的 data-en="Home"，
+   再补两个 href 兜底，切换语言后也不会把宣传入口放回来。                  */
+.atnav .links > a[data-en="Home"],
+.atnav .links > a[href$="/site/home.html"],
+.atnav .links > a[href$="/site/home-en.html"] {
+  display: none !important;
+}
+
+/* ---------- 4. 页脚品牌落款 ---------- */
+footer.atfooter {
+  display: none !important;
+}
+
+/* ---------- 5. 翻译页：预设指令 / 梗翻译 chips ----------
+   "📌 指令遵循（敬体日语 / 保留 Markdown / JSON 格式输出 / 数字转英文单词 /
+   指定术语约束）" 与 "🔥 梗翻译（白嫖与入库吃灰 / 遥遥领先 / 泰裤辣与绝绝子 /
+   疯狂星期四 / 打工人与摸鱼）" 整块去掉，指令输入框保留。                */
+.case-presets {
+  display: none !important;
+}
+
+/* ---------- 6. 语音翻译页：DEMOS 案例展示整块 ----------
+   "DEMOS · 案例展示 / 看看 Index-Echo 的实际表现" 的 S2TT、S2ST 视频卡片。
+   只命中外层 section，页面自身的「体验预置语音样例」按钮不受影响。        */
+section.cases.wrap,
+.cases.wrap {
+  display: none !important;
+}
+
+/* ---------- 7. 隐藏后的间距补偿 ----------
+   唯一的"新增样式"：hero 移除后让翻译卡与导航栏之间留出呼吸空间。
+   仅限含 .atcard 的内容区，不影响其它页面。                              */
+.wrap:has(.atcard) {
+  margin-top: 28px !important;
+}
+body {
+  padding-bottom: 32px !important;
+}
+
+/* ---------- 8. 清空 / 开始翻译 吸底 ----------
+   翻译卡很高，按钮原本在页面最底部，要滑很久才能点到。
+   这里把 .btns 整条固定在视口底部（与卡片同宽 1060px 居中），
+   页面滚到任何位置都能直接翻译；手机键盘弹出时 WebView 会缩小视口，
+   吸底条自动贴到键盘上方。
+   注意：.atcard 自身的 backdrop-filter 会创建 containing block，让子元素的
+   position:fixed 相对卡片定位而失效，所以这层毛玻璃必须去掉。               */
+.atcard {
+  -webkit-backdrop-filter: none !important;
+  backdrop-filter: none !important;
+}
+
+.row3 .btns {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 9000;
+  width: 100%;
+  max-width: 1012px; /* = .wrap 的 1060 减去左右 24px padding，与卡片外边缘对齐 */
+  margin: 0 auto;
+  padding: 10px 22px;
+  gap: 10px;
+  background: var(--lg-tint-2, rgba(255,255,255,.96));
+  border-top: 1px solid var(--lg-edge, rgba(29,29,38,.08));
+  border-radius: var(--lg-r-lg, 16px);
+  box-shadow: var(--lg-shadow-strong, 0 -8px 28px rgba(80,60,120,.1));
+}
+
+.row3 .btns .atbtn-ghost,
+.row3 .btns .atbtn {
+  flex: 1;
+  justify-content: center;
+  padding: 11px 16px;
+  font-size: 14.5px;
+}
+
+body {
+  padding-bottom: calc(88px + env(safe-area-inset-bottom, 0px)) !important;
+}
+
+@media (max-width: 720px) {
+  .row3 .btns {
+    border-radius: 0;
+    padding: 10px 16px calc(10px + env(safe-area-inset-bottom, 0px));
+  }
+
+  .row3 .btns .atbtn-ghost,
+  .row3 .btns .atbtn {
+    padding: 12px 14px;
+    font-size: 15px;
+  }
+}
+
+/* ---------- 9. 安卓原生壳（html.it-app）----------
+   安卓端外面套了原生顶栏 + 底部 Tab，网页自己那条带 Logo 的导航就多余了；
+   中英切换已经移到原生顶栏，功能入口由底部 Tab 承担。
+   仅安卓注入 it-app 标记，Windows 版不受影响、仍与官网完全一致。          */
+.it-app .atnav {
+  display: none !important;
+}
+
+.it-app .wrap:has(.atcard) {
+  margin-top: 10px !important;
+}
+
+/* 顶部少了一条导航，内容向上提，避免大片空白 */
+.it-app body {
+  padding-top: 2px !important;
+}
+
+/* ---------- 10. 文案精简 ----------
+   只留下「能操作 / 能避免出错」的文字，说明性、营销性、重复性的一律去掉：
+   · 模型归属「由 Index-Translate-2B 提供」——上面模型按钮已经高亮，重复
+   · 卡片提示「翻译要求可留空，直接开始普通翻译。」
+   · 空态占位「译文将在这里呈现」（框体保留，只是不写字）
+   · 音节页标语「让对白贴近人物，让表达照顾节奏。」
+   · 语音页两段样例引导语「或点击体验预置…」
+   · 语音页小灰注「指定为辅助提示 · 当前模型自动识别」「字幕样式 · 逐句 [起 → 止]」
+   · 长文本页「把想读的文字，放进来。」与「也可以先用官方样例体验」
+   保留：语种/字符数/状态、支持格式与大小限制、拖拽提示、按住说话提示。   */
+.req-head .by,
+.row3 .tip-wrap,
+.syl .lab span,
+.slogan,
+.sample-head,
+.io-note,
+.drop .tip,
+.atcard .divider,
+footer {
+  display: none !important;
+}
+
+/* 空态占位文字：容器保留（撑住高度与边框），文字透明 */
+.output.empty {
+  color: transparent !important;
+}
+
+/* 长文本页的空态是 JS 生成的两行文案，同样去掉 */
+.output.empty .t1,
+.output.empty .t2 {
+  display: none !important;
+}
+
+/* 样例旁的「查看源文档」是次要入口：去掉后文字更少，窄屏样例按钮也不再换行 */
+.samples .sampleview {
+  display: none !important;
+}
+
+/* ---------- 11. 删除全部示例 / 体验入口 ----------
+   只留真实输入与上传：示例图、预置语音/长音频样例、官方示例文档。          */
+#sampleImgBtn,
+.sample-section,
+.sample-preview,
+.samples,
+.sampleview,
+.samplebtn,
+.sample-head,
+.sample-run-btn {
+  display: none !important;
+}
+
+/* ---------- 12. 提高信息密度 ----------
+   全平台轻度收紧；窄屏再收紧一档。只改间距/行高/最小高度，不改配色字号层级。*/
+.card {
+  padding: 16px 18px 14px !important;
+}
+.atcard {
+  border-radius: 18px !important;
+}
+.req {
+  margin-top: 12px !important;
+  padding: 11px 14px !important;
+}
+.req-body {
+  margin-top: 7px !important;
+}
+.req-body textarea {
+  padding: 8px 11px !important;
+  line-height: 1.5 !important;
+}
+.panes {
+  margin-top: 12px !important;
+}
+.pane-head {
+  padding: 8px 14px !important;
+}
+.pane-foot {
+  padding: 7px 14px !important;
+}
+.pane textarea,
+.pane .output {
+  min-height: 220px !important;
+  padding: 13px 15px !important;
+  line-height: 1.6 !important;
+}
+.seg button {
+  padding: 6px 13px !important;
+}
+select {
+  padding: 6px 28px 6px 12px !important;
+}
+.row3 {
+  margin-top: 12px !important;
+}
+.drop {
+  padding: 26px 18px !important;
+}
+.result {
+  margin-top: 12px !important;
+  padding-top: 12px !important;
+}
+.models {
+  margin: -6px 0 16px !important;
+}
+.langs {
+  margin-bottom: 18px !important;
+}
+
+@media (max-width: 720px) {
+  .it-app .wrap:has(.atcard),
+  .wrap:has(.atcard) {
+    margin-top: 4px !important;
+  }
+  .card {
+    padding: 10px 12px 12px !important;
+    border-radius: 14px !important;
+  }
+  .atcard {
+    border-radius: 14px !important;
+  }
+  .req {
+    margin-top: 8px !important;
+    padding: 8px 10px !important;
+    border-radius: 11px !important;
+  }
+  .req-body {
+    margin-top: 5px !important;
+  }
+  .req-body textarea {
+    height: 40px !important;
+    min-height: 40px !important;
+    padding: 6px 9px !important;
+    font-size: 13px !important;
+  }
+  .panes {
+    margin-top: 8px !important;
+    border-radius: 11px !important;
+  }
+  .pane-head {
+    padding: 6px 10px !important;
+    font-size: 12.5px !important;
+  }
+  .pane textarea,
+  .pane .output {
+    min-height: 148px !important;
+    max-height: 340px !important;
+    padding: 9px 11px !important;
+    font-size: 14px !important;
+    line-height: 1.55 !important;
+  }
+  .pane-foot {
+    padding: 5px 10px !important;
+    font-size: 11.5px !important;
+  }
+  .row1,
+  .row2,
+  .langs,
+  .seg {
+    gap: 6px !important;
+  }
+  .seg button {
+    padding: 6px 3px !important;
+    font-size: 12.5px !important;
+  }
+  select {
+    padding: 6px 24px 6px 10px !important;
+    font-size: 12.5px !important;
+  }
+  .langs,
+  .models {
+    margin-bottom: 10px !important;
+  }
+  .row3 {
+    margin-top: 8px !important;
+  }
+  .row3 .btns {
+    padding: 8px 12px calc(8px + env(safe-area-inset-bottom, 0px)) !important;
+  }
+  .row3 .btns .atbtn-ghost,
+  .row3 .btns .atbtn {
+    padding: 10px 12px !important;
+    font-size: 14px !important;
+  }
+  body {
+    padding-bottom: calc(72px + env(safe-area-inset-bottom, 0px)) !important;
+  }
+
+  /* 语音页 */
+  .io-src {
+    margin-bottom: 8px !important;
+  }
+  .models {
+    margin: -2px 0 10px !important;
+    gap: 6px !important;
+  }
+  .opt-row {
+    margin: -2px 0 10px !important;
+  }
+  .mic-zone {
+    gap: 9px !important;
+    padding: 4px 0 0 !important;
+  }
+  .mic-btn {
+    width: 88px !important;
+    height: 88px !important;
+    font-size: 32px !important;
+  }
+  .mic-hint {
+    font-size: 12px !important;
+  }
+  .go {
+    margin-top: 10px !important;
+    padding: 10px 34px !important;
+  }
+  .rrow {
+    margin-bottom: 9px !important;
+  }
+
+  /* 长文本页 */
+  .card-head {
+    margin-bottom: 8px !important;
+    font-size: 13px !important;
+  }
+  .drop {
+    padding: 16px 12px !important;
+    border-radius: 13px !important;
+  }
+  .drop .big {
+    font-size: 26px !important;
+  }
+  .drop .sub {
+    margin-top: 4px !important;
+    font-size: 12px !important;
+  }
+  .drop .pick {
+    margin-top: 9px !important;
+    padding: 7px 18px !important;
+  }
+  .limit {
+    margin-top: 8px !important;
+    font-size: 11px !important;
+  }
+  .card-foot {
+    margin-top: 8px !important;
+    padding-top: 8px !important;
+  }
+
+  /* 音节页 */
+  .syl {
+    margin-top: 8px !important;
+    padding: 9px 11px !important;
+    gap: 9px !important;
+    border-radius: 11px !important;
+  }
+  .syl .lab {
+    min-width: 0 !important;
+  }
+  .syl .hint {
+    font-size: 11px !important;
+  }
+}
+
+/* ---------- 13. 自定义背景 ----------
+   图片 URL 由注入脚本写入 #it-bg-style；这里定义模式下的可读性处理：
+   半透明白色蒙版压住照片，卡片与译文区提高不透明度，装饰光晕减弱。      */
+.it-bg-fab {
+  position: fixed;
+  right: 16px;
+  bottom: 96px;
+  z-index: 9100;
+  width: 38px;
+  height: 38px;
+  padding: 0;
+  border: 1px solid var(--lg-edge, rgba(29,29,38,.1));
+  border-radius: 50%;
+  background: var(--lg-tint-2, rgba(255,255,255,.94));
+  box-shadow: var(--lg-shadow, 0 4px 16px rgba(80,60,120,.18));
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.it-bg-panel {
+  position: fixed;
+  right: 16px;
+  bottom: 142px;
+  z-index: 9100;
+  width: 148px;
+  padding: 6px;
+  border: 1px solid var(--lg-edge, rgba(29,29,38,.1));
+  border-radius: 14px;
+  background: var(--lg-tint-2, #fff);
+  box-shadow: var(--lg-shadow, 0 10px 30px rgba(80,60,120,.2));
+}
+
+.it-bg-panel button {
+  display: block;
+  width: 100%;
+  padding: 9px 10px;
+  border: 0;
+  border-radius: 9px;
+  background: transparent;
+  color: var(--lg-ink, #1d1d26);
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.it-bg-panel button:hover {
+  background: var(--lg-accent-wash, #f7f6fb);
+}
+
+/* 安卓端走原生「⋯」菜单，不显示网页里的悬浮按钮 */
+.it-app .it-bg-fab,
+.it-app .it-bg-panel {
+  display: none !important;
+}
+
+/* ---------- 14. 电脑端划词翻译浮标 ---------- */
+.it-sel-btn {
+  position: fixed;
+  z-index: 9200;
+  transform: translate(-50%, -100%);
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: var(--lg-accent, #fb7299);
+  color: #fff;
+  font: 700 14px/1 -apple-system, BlinkMacSystemFont, "PingFang SC", sans-serif;
+  box-shadow: var(--lg-shadow, 0 6px 18px rgba(224,72,122,.42));
+  cursor: pointer;
+  transition: transform 0.12s;
+}
+
+.it-sel-btn:hover {
+  transform: translate(-50%, -100%) scale(1.08);
+}
+
+.it-app .it-sel-btn {
+  display: none !important;
+}
+
+/* ---------- 15. 电脑端设置面板 ---------- */
+.it-set-mask {
+  position: fixed;
+  inset: 0;
+  z-index: 9300;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  background: rgba(46, 42, 56, 0.24);
+}
+
+.it-set-mask.on {
+  display: flex;
+}
+
+.it-set {
+  width: 420px;
+  max-width: calc(100vw - 40px);
+  overflow: hidden;
+  border-radius: var(--lg-r-lg, 18px);
+  background: var(--lg-tint-2, #fff);
+  box-shadow: var(--lg-shadow-strong, 0 24px 60px rgba(30,20,60,.28));
+  color: var(--lg-ink, #1d1d26);
+  font-size: 13px;
+}
+
+.it-set-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 18px 10px;
+  font-size: 15px;
+}
+
+.it-set-head b {
+  font-weight: 700;
+}
+
+.it-set-x {
+  padding: 0 4px;
+  border: 0;
+  background: transparent;
+  color: var(--lg-ink-faint, #9a9aa8);
+  font-size: 20px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.it-set-x:hover {
+  color: var(--lg-ink, #1d1d26);
+}
+
+.it-set-body {
+  padding: 4px 18px 8px;
+}
+
+.it-set-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 9px 0;
+  border-bottom: 1px solid var(--lg-edge-dark, #f4f3f8);
+  cursor: pointer;
+}
+
+.it-set-row:last-of-type {
+  border-bottom: 0;
+}
+
+.it-set-row > span {
+  flex: none;
+  color: var(--lg-ink-sub, #6e6e80);
+}
+
+.it-set-row input,
+.it-set-row select {
+  flex: 1;
+  max-width: 210px;
+  padding: 7px 10px;
+  border: 1px solid var(--lg-edge-dark, #ecebf2);
+  border-radius: 9px;
+  background: var(--lg-tint-1, #fbfaff);
+  color: var(--lg-ink, #1d1d26);
+  font: inherit;
+  font-size: 12.5px;
+  text-align: center;
+  outline: none;
+  cursor: pointer;
+}
+
+.it-set-row input.recording {
+  border-color: var(--lg-accent, #fb7299);
+  background: #fff5f8;
+  color: #e0487a;
+  font-weight: 600;
+}
+
+.it-set-row input.it-set-check {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  max-width: none;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  accent-color: var(--lg-accent, #fb7299);
+  cursor: pointer;
+}
+
+.it-set-note {
+  padding: 10px 0 2px;
+  color: var(--lg-ink-faint, #a0a0ae);
+  font-size: 11.5px;
+  line-height: 1.6;
+}
+
+.it-set-note.warn {
+  color: #d6455f;
+}
+
+.it-set-foot {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 18px 16px;
+  border-top: 1px solid var(--lg-edge-dark, #f4f3f8);
+  background: var(--lg-tint-1, #fcfbfe);
+}
+
+.it-set-foot .sp {
+  flex: 1;
+}
+
+.it-set-foot button {
+  padding: 8px 16px;
+  border: 0;
+  border-radius: 9px;
+  font: inherit;
+  font-size: 12.5px;
+  cursor: pointer;
+}
+
+.it-set-foot .ghost {
+  background: var(--lg-tint-1, #f2f1f7);
+  color: var(--lg-ink-sub, #6e6e80);
+}
+
+.it-set-foot .ghost:hover {
+  background: var(--lg-tint-2, #e9e8f1);
+}
+
+.it-set-foot .primary {
+  background: var(--lg-accent, #fb7299);
+  color: #fff;
+  font-weight: 600;
+}
+
+.it-set-foot .primary:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.it-toast {
+  position: fixed;
+  left: 50%;
+  bottom: 110px;
+  z-index: 9400;
+  padding: 9px 16px;
+  border-radius: 999px;
+  background: rgba(46, 42, 56, 0.82);
+  color: #fff;
+  font-size: 12.5px;
+  opacity: 0;
+  transform: translate(-50%, 10px);
+  pointer-events: none;
+  transition: all 0.18s;
+}
+
+.it-toast.on {
+  opacity: 1;
+  transform: translate(-50%, 0);
+}
+
+.it-toast.error {
+  background: rgba(174, 58, 92, 0.86);
+}
+
+.it-app .it-set-mask,
+.it-app .it-toast {
+  display: none !important;
+}
+
+/* ---------- 16. 自绘标题栏（无边框窗口） ---------- */
+html.it-titlebar-on body {
+  padding-top: 40px !important;
+}
+
+.it-titlebar {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 9500;
+  height: 40px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  background: var(--lg-tint-2, #fff);
+  border-bottom: 1px solid var(--lg-edge-dark, rgba(29,29,38,.07));
+  user-select: none;
+  -webkit-user-select: none;
+  font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", sans-serif;
+}
+
+.it-tb-left {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding-left: 16px;
+  min-width: 0;
+}
+
+.it-tb-dot {
+  width: 8px;
+  height: 8px;
+  flex: none;
+  border-radius: 50%;
+  background: linear-gradient(135deg, var(--lg-accent, #fb7299), var(--lg-lilac, #ffa26b));
+  box-shadow: 0 0 0 4px rgba(251, 114, 153, 0.12);
+}
+
+.it-tb-brand {
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 2px;
+  color: var(--lg-ink, #1d1d26);
+  white-space: nowrap;
+}
+
+.it-tb-sep {
+  width: 1px;
+  height: 12px;
+  flex: none;
+  background: rgba(29, 29, 38, 0.12);
+}
+
+.it-tb-page {
+  font-size: 11.5px;
+  color: var(--lg-ink-faint, #9a9aa8);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.it-tb-actions {
+  display: flex;
+  height: 100%;
+  flex: none;
+}
+
+.it-tb-actions button {
+  width: 46px;
+  height: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--lg-ink-sub, #7d7d8e);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.14s, color 0.14s;
+}
+
+.it-tb-actions button:hover {
+  background: var(--lg-tint-2, #f6f5fa);
+  color: var(--lg-ink, #1d1d26);
+}
+
+.it-tb-actions button.it-tb-close:hover {
+  background: var(--lg-accent-deep, #e0487a);
+  color: #fff;
+}
+
+.it-tb-actions svg {
+  pointer-events: none;
+}
+
+.it-app .it-titlebar {
+  display: none !important;
+}
+
+/* Pake 注入的顶部拖动条带 app-region: drag，会把整条标题栏变成系统拖动区，
+   导致自绘标题栏的按钮收不到点击；拖动改由 custom.js 调 it_window_action 处理 */
+#pake-top-dom {
+  display: none !important;
+  -webkit-app-region: no-drag !important;
+  app-region: no-drag !important;
+  pointer-events: none !important;
+}
+
+/* 隐藏官网导航左上角的「译 Index-Translate」品牌区 */
+.atnav .logo {
+  display: none !important;
+}
+
+/* ==========================================================================
+   可选开关（按需取消注释）
+   --------------------------------------------------------------------------
+   A. 想要更极简：整条顶部导航也不要（Logo / 功能入口 / 中英切换一起隐藏）
+      nav.atnav { display: none !important; }
+      .wrap:has(.atcard) { margin-top: 8px !important; }
+
+   B. 连背景的世界文字漂浮装饰也隐藏（官网视觉母题，默认保留）
+      .at-glyphs { display: none !important; }
+
+   C. 恢复首页链接（默认隐藏）
+      .atnav .links > a[data-en="Home"] { display: inline-block !important; }
+
+   D. 保留页脚
+      footer.atfooter { display: block !important; }
+   ========================================================================== */
