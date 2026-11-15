@@ -430,6 +430,92 @@ try {
     await directionAndShells(page, 'syllable', 'text', -1);
   });
 
+  await scenario('鼠标拖动模型滑块实时选择', async () => {
+    await selectTab(page, 'text');
+    await page.evaluate(`document.querySelector('#model-text [data-model="index-mt-2b"]').click()`);
+    await pause(450);
+    const points = await page.evaluate(`(() => [...document.querySelectorAll('#model-text button')].map((button) => {
+      const rect = button.getBoundingClientRect();
+      return { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 };
+    }))()`);
+    const mouse = (type, point) => page.send('Input.dispatchMouseEvent', {
+      type, x: point.x, y: point.y, button: type === 'mouseMoved' ? 'none' : 'left',
+      buttons: type === 'mouseReleased' ? 0 : 1, clickCount: type === 'mouseMoved' ? 0 : 1,
+    });
+    await mouse('mousePressed', points[0]);
+    await mouse('mouseMoved', { x: points[0].x + 5, y: points[0].y });
+    check('模型滑块轻微抖动不会提前切换', await page.evaluate(`
+      window.__itDebug.state.model.text === 'index-mt-2b' &&
+      !document.getElementById('model-text').classList.contains('is-dragging')`));
+    await mouse('mouseMoved', { x: points[0].x + 12, y: points[0].y });
+    check('模型滑块开始拖动后跟随指针且未越阈值时保留当前项', await page.evaluate(`(() => {
+      const box = document.getElementById('model-text');
+      const thumb = box.querySelector('.models-thumb');
+      const active = box.querySelector('button.on');
+      const x = new DOMMatrixReadOnly(getComputedStyle(thumb).transform).m41;
+      return box.classList.contains('is-dragging') && window.__itDebug.state.model.text === 'index-mt-2b' &&
+        x > active.offsetLeft + 6;
+    })()`));
+    await mouse('mouseMoved', points[1]);
+    check('鼠标尚未松开时越过阈值已切到9B', await page.evaluate(`
+      window.__itDebug.state.model.text === 'index-mt-9b'`));
+    await mouse('mouseMoved', points[2]);
+    check('模型滑块同次拖动可继续切到35B', await page.evaluate(`
+      window.__itDebug.state.model.text === 'index-mt-35b'`));
+    await mouse('mouseMoved', points[1]);
+    await mouse('mouseReleased', points[1]);
+    await pause(450);
+    check('反向拖动松开后选择持久化且滑块归位', await page.evaluate(`(() => {
+      const box = document.getElementById('model-text');
+      const active = box.querySelector('button.on');
+      const x = new DOMMatrixReadOnly(getComputedStyle(box.querySelector('.models-thumb')).transform).m41;
+      return window.__itDebug.state.model.text === 'index-mt-9b' &&
+        JSON.parse(localStorage.getItem('it-state')).model.text === 'index-mt-9b' &&
+        !box.classList.contains('is-dragging') && Math.abs(x - active.offsetLeft) < .75;
+    })()`));
+    await page.click('#model-text [data-model="index-mt-2b"]');
+    check('拖动后普通模型点击仍可用', await page.evaluate(`
+      window.__itDebug.state.model.text === 'index-mt-2b'`));
+  });
+
+  await scenario('触屏拖动底栏实时切页与取消', async () => {
+    await page.send('Emulation.setDeviceMetricsOverride', {
+      width: 390, height: 844, deviceScaleFactor: 1, mobile: true,
+    });
+    await page.send('Emulation.setTouchEmulationEnabled', { enabled: true, maxTouchPoints: 1 });
+    await selectTab(page, 'text');
+    const points = await page.evaluate(`(() => [...document.querySelectorAll('.tabs button[data-tab]')].map((button) => {
+      const rect = button.getBoundingClientRect();
+      return { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 };
+    }))()`);
+    const touch = (type, point) => page.send('Input.dispatchTouchEvent', {
+      type, touchPoints: point ? [{ x: point.x, y: point.y, id: 1 }] : [],
+    });
+    await touch('touchStart', points[0]);
+    await touch('touchMove', points[1]);
+    check('手指尚未抬起时底栏已切到音节页', await page.evaluate(`
+      window.__itDebug.state.tab === 'syllable' &&
+      document.getElementById('pane-text').inert`));
+    await touch('touchMove', points[2]);
+    check('底栏同次拖动可继续切到长文页', await page.evaluate(`
+      window.__itDebug.state.tab === 'doc'`));
+    await touch('touchMove', points[0]);
+    await touch('touchCancel');
+    await settle(page, 'text');
+    check('触屏取消后保留最后选择且释放拖动状态', await page.evaluate(`(() => {
+      const box = document.querySelector('.tabs');
+      const active = box.querySelector('button.on[data-tab]');
+      const x = new DOMMatrixReadOnly(getComputedStyle(box.querySelector('.tabs-thumb')).transform).m41;
+      return window.__itDebug.state.tab === 'text' && !box.classList.contains('is-dragging') &&
+        Math.abs(x - active.offsetLeft) < .75;
+    })()`));
+    await page.send('Emulation.setTouchEmulationEnabled', { enabled: false });
+    await page.send('Emulation.setDeviceMetricsOverride', {
+      width: 1180, height: 900, deviceScaleFactor: 1, mobile: false,
+    });
+    await selectTab(page, 'text');
+  });
+
   await scenario('Windows 悬浮窗原生桥接源码一致性', async () => {
     const popupSource = await readFile('desktop/patch/setup.rs', 'utf8');
     check('流式动效读取新的悬浮窗偏好对象', popupSource.includes(
