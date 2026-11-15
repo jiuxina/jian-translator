@@ -575,6 +575,46 @@ try {
       popupSource.includes('window.label() != APP_WINDOW_LABEL'));
   });
 
+  await scenario('玻璃边缘使用主题化折射滤镜', async () => {
+    const result = await page.evaluate(`(() => {
+      const card = document.querySelector('#pane-text .card');
+      const rim = getComputedStyle(card, '::after');
+      const filterUrl = rim.backdropFilter || rim.webkitBackdropFilter;
+      const filterId = (filterUrl.match(/url\\(["']?#([^"')]+)["']?\\)/) || [])[1];
+      const filter = filterId && document.getElementById(filterId);
+      return {
+        filterId,
+        rimMask: rim.mask || rim.webkitMask,
+        isPrismatic: rim.backgroundImage.includes('conic-gradient'),
+        displacement: !!filter?.querySelector('feDisplacementMap'),
+        refractionMap: !!filter?.querySelector('feImage[href^="data:image/png"]'),
+        specular: !!filter?.querySelector('feBlend')
+      };
+    })()`);
+    check('玻璃边缘使用SVG位移折射、边缘遮罩和镜面高光',
+      !!result.filterId && result.rimMask !== 'none' && result.isPrismatic &&
+        result.displacement && result.refractionMap && result.specular,
+      JSON.stringify(result));
+    check('卡片透出100%仍保留液态边缘光环', await page.evaluate(`(() => {
+      const api = window.__itDebug.preferences;
+      api.apply(api.normalize({ appearance: { cardReveal: 100, material: 'glass' } }));
+      const rim = getComputedStyle(document.querySelector('#pane-text .card'), '::after');
+      return Number(rim.opacity) > .65 && rim.backdropFilter.includes('url(') &&
+        getComputedStyle(document.querySelector('#pane-text .card')).backgroundColor === 'rgba(0, 0, 0, 0)';
+    })()`));
+    check('纯色材质明确关闭折射边缘而保持普通描边', await page.evaluate(`(() => {
+      const api = window.__itDebug.preferences;
+      api.apply(api.normalize({ appearance: { material: 'solid' } }));
+      const card = document.querySelector('#pane-text .card');
+      const valid = getComputedStyle(card, '::after').display === 'none' &&
+        getComputedStyle(card).borderTopColor !== 'rgba(0, 0, 0, 0)';
+      api.apply(api.defaults);
+      return valid;
+    })()`));
+    const screenshot = await page.send('Page.captureScreenshot', { format: 'png' });
+    await writeFile('output/preview-liquid-glass-rim-light.png', Buffer.from(screenshot.data, 'base64'));
+  });
+
   await scenario('入场时仍可切换模型', async () => {
     await selectTab(page, 'text');
     const motion = await page.evaluate(`(async () => {
