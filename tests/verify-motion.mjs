@@ -346,6 +346,14 @@ async function menus(connection) {
     return !!about && about.textContent.includes('笺') && about.textContent.includes('2.2.0') &&
       about.textContent.includes('Index-Translate') && about.textContent.includes('非官方客户端');
   })()`));
+  check('关于页移除译字标语并展示开源仓库链接', await connection.evaluate(`(() => {
+    const about = document.querySelector('.it-about');
+    const repository = about?.querySelector('.it-about-repository');
+    return !!about && !about.querySelector('.it-about-eyebrow') &&
+      !about.querySelector('.it-about-brand')?.textContent.includes('译') &&
+      repository?.href === 'https://github.com/jiuxina/jian-translator' &&
+      repository.target === '_blank' && repository.rel.includes('noopener');
+  })()`));
   check('关于页打开时焦点位于对话框内', await connection.evaluate(`
     document.querySelector('.it-about').contains(document.activeElement)`));
   check('系统返回关闭关于页', await connection.evaluate(`window.__itHandleBack() === true &&
@@ -939,6 +947,71 @@ try {
         !!document.getElementById('it-popup-pick-background') &&
         !!document.getElementById('it-popup-follow-background');
     })()`));
+    await desktop.evaluate(`document.querySelector('[data-pref-tab="background"]').click()`);
+    const sectionTransitionStarted = await desktop.evaluate(`(() => {
+      const leaving = document.querySelector('[data-pref-section="appearance"]');
+      const activeTab = document.querySelector('[data-pref-tab="background"]');
+      const thumb = document.querySelector('.it-set-nav-thumb');
+      return !!thumb && activeTab.classList.contains('on') &&
+        leaving.classList.contains('is-leaving') &&
+        leaving.getAnimations().some((animation) => animation.playState === 'running');
+    })()`);
+    check('设置导航滑块移动且右侧旧页面淡出', sectionTransitionStarted);
+    await desktop.until(`(() => {
+      const visible = [...document.querySelectorAll('[data-pref-section]')]
+        .filter((section) => !section.hidden && !section.inert);
+      return visible.length === 1 && visible[0].dataset.prefSection === 'background';
+    })()`);
+    const sectionThumbAligned = await desktop.evaluate(`(() => {
+      const tab = document.querySelector('[data-pref-tab="background"]');
+      const thumb = document.querySelector('.it-set-nav-thumb');
+      const tabRect = tab.getBoundingClientRect();
+      const thumbRect = thumb.getBoundingClientRect();
+      return Math.abs(tabRect.x - thumbRect.x) < 1 && Math.abs(tabRect.y - thumbRect.y) < 1 &&
+        Math.abs(tabRect.width - thumbRect.width) < 1 && Math.abs(tabRect.height - thumbRect.height) < 1;
+    })()`);
+    check('设置导航滑块落在当前菜单项下方', sectionThumbAligned);
+    await desktop.evaluate(`document.querySelector('[data-pref-tab="appearance"]').click()`);
+    await desktop.until(`(() => document.querySelector('[data-pref-section="appearance"]')?.classList.contains('is-entering'))()`);
+    await desktop.until(`(() => {
+      const visible = [...document.querySelectorAll('[data-pref-section]')]
+        .filter((section) => !section.hidden && !section.inert);
+      return visible.length === 1 && visible[0].dataset.prefSection === 'appearance';
+    })()`);
+    const themeSelectPopup = await desktop.evaluate(`(() => {
+      const select = document.querySelector('[data-pref="appearance.mode"]');
+      const button = select?.parentElement?.querySelector('.sel-btn');
+      const expectedRadius = getComputedStyle(document.documentElement).getPropertyValue('--lg-r-sm').trim();
+      return !!button && button.getAttribute('aria-label') === '明暗主题' &&
+        getComputedStyle(button).borderRadius === expectedRadius &&
+        getComputedStyle(button).backdropFilter !== 'none';
+    })()`);
+    check('设置下拉复用玻璃控件并保持表单标签', themeSelectPopup);
+    await desktop.evaluate(`document.querySelector('[data-pref="appearance.mode"]')?.parentElement?.querySelector('.sel-btn')?.click()`);
+    await desktop.until(`!!document.querySelector('.sel-pop[aria-hidden="false"]')`);
+    const themeOptionsStyled = await desktop.evaluate(`(() => {
+      const popup = document.querySelector('.sel-pop[aria-hidden="false"]');
+      return !!popup && !!popup.querySelector('.sel-list .sel-item') &&
+        getComputedStyle(popup).backdropFilter !== 'none';
+    })()`);
+    check('设置下拉选项使用统一玻璃弹层', themeOptionsStyled);
+    await desktop.key('Escape');
+    await desktop.until(`!document.querySelector('.sel-pop[aria-hidden="false"]')`);
+    check('设置下拉关闭后焦点返回触发控件', await desktop.evaluate(`(() =>
+      document.activeElement === document.querySelector('[data-pref="appearance.mode"]')?.parentElement?.querySelector('.sel-btn'))()`));
+    await desktop.evaluate(`(() => {
+      const select = document.querySelector('[data-pref="appearance.material"]');
+      const strength = document.querySelector('[data-pref="appearance.glassStrength"]');
+      window.__motionTest.glassStrengthBefore = strength.value;
+      select.value = 'solid';
+      select.dispatchEvent(new Event('change', { bubbles: true }));
+    })()`);
+    check('纯色材质禁用无效玻璃强度且保留设置值', await desktop.evaluate(`(() => {
+      const strength = document.querySelector('[data-pref="appearance.glassStrength"]');
+      return strength.disabled && strength.value === window.__motionTest.glassStrengthBefore;
+    })()`));
+    await desktop.evaluate(`document.querySelector('[data-pref="appearance.material"]').value = 'glass';
+      document.querySelector('[data-pref="appearance.material"]').dispatchEvent(new Event('change', { bubbles: true }));`);
     await desktop.click('[data-pref-tab="desktop"]');
     await desktop.click('#it-popup-pick-background');
     check('模拟文件选择器已打开', await desktop.evaluate('window.__motionTest.filePickerOpens === 1'));
