@@ -6,7 +6,14 @@
 <meta name="color-scheme" content="light">
 <link rel="icon" href="data:,">
 <title>笺</title>
-<link rel="stylesheet" href="theme.css?v=13">
+<script>
+  try {
+    if (window.__TAURI_INTERNALS__ || (window.__TAURI__ && window.__TAURI__.core)) {
+      document.documentElement.classList.add('it-settings-boot');
+    }
+  } catch (e) {}
+</script>
+<link rel="stylesheet" href="theme.css?v=14">
 </head>
 <body>
 
@@ -219,7 +226,7 @@
 
 <div class="toast" id="toast"></div>
 
-<script src="langs.js?v=13"></script>
-<script src="app.js?v=13"></script>
+<script src="langs.js?v=14"></script>
+<script src="app.js?v=14"></script>
 </body>
 </html>

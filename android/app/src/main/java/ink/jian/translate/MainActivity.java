@@ -2,6 +2,7 @@ package ink.jian.translate;
 
 import android.app.Activity;
 import android.app.Dialog;
+import android.content.res.Configuration;
 import android.content.res.ColorStateList;
 import android.content.Intent;
 import android.graphics.Bitmap;
@@ -14,6 +15,7 @@ import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.util.Base64;
+import android.util.Log;
 import android.util.TypedValue;
 import android.view.Gravity;
 import android.view.KeyEvent;
@@ -41,6 +43,11 @@ import androidx.exifinterface.media.ExifInterface;
 
 import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
+import java.util.Locale;
+
+import org.json.JSONArray;
+import org.json.JSONException;
+import org.json.JSONObject;
 
 /**
  * 「笺」Android 壳（v2 自绘前端）。
@@ -53,16 +60,26 @@ import java.io.InputStream;
  */
 public class MainActivity extends Activity {
 
+    private static final String TAG = "IndexTranslate";
+
     private static final int REQ_CAMERA = 1003;
     private static final int REQ_GALLERY = 1005;
     private static final int REQ_CAMERA_PERM = 1004;
 
     private static final String ASSET_URL = "file:///android_asset/index.html";
+    private static final String APPEARANCE_PREFS = "native_appearance";
+    private static final String APPEARANCE_SNAPSHOT_KEY = "snapshot";
 
-    private static final int COLOR_BG = 0xFFF3EFF6;
-    private static final int COLOR_INK = 0xFF2E2A38;
-    private static final int COLOR_INK_SUB = 0xFF6E687E;
-    private static final int COLOR_ACCENT = 0xFFC96F90;
+    private static final NativeAppearance DEFAULT_APPEARANCE = new NativeAppearance(
+            false,
+            new int[]{0xFFFCF8FB, 0xFFF3EFF6, 0xFFEBE5F4},
+            0xFF2E2A38,
+            0xFF6E687E,
+            0xFFC96F90,
+            0xAAFFFFFF,
+            0x9EFFFFFF,
+            0x24FFFFFF,
+            0x33C96F90);
 
     private FrameLayout root;
     private WebView webView;
@@ -71,6 +88,12 @@ public class MainActivity extends Activity {
     private TextView overlayText;
     private Button retryButton;
     private PhotoSourceDialog photoSourceDialog;
+    private NativeAppearance appearance = DEFAULT_APPEARANCE;
+    private LinearLayout photoSourceSheet;
+    private View photoSourceHandle;
+    private TextView photoSourceTitle;
+    private TextView photoSourceTakePhoto;
+    private TextView photoSourceChoosePhoto;
 
     private boolean pageLoaded = false;
 
@@ -81,17 +104,14 @@ public class MainActivity extends Activity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        appearance = loadAppearanceSnapshot();
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
             Window window = getWindow();
             window.addFlags(WindowManager.LayoutParams.FLAG_DRAWS_SYSTEM_BAR_BACKGROUNDS);
             window.setStatusBarColor(Color.TRANSPARENT);
             window.setNavigationBarColor(Color.TRANSPARENT);
-            window.getDecorView().setSystemUiVisibility(
-                    View.SYSTEM_UI_FLAG_LAYOUT_STABLE
-                            | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
-                            | View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR
-                            | View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR);
+            window.getDecorView().setSystemUiVisibility(systemUiFlags());
         }
 
         root = new FrameLayout(this);
@@ -113,6 +133,18 @@ public class MainActivity extends Activity {
     protected void onSaveInstanceState(Bundle outState) {
         super.onSaveInstanceState(outState);
         if (webView != null) webView.saveState(outState);
+    }
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        notifySystemAppearance();
+    }
+
+    @Override
+    public void onConfigurationChanged(Configuration newConfig) {
+        super.onConfigurationChanged(newConfig);
+        notifySystemAppearance();
     }
 
     @Override
@@ -173,6 +205,7 @@ public class MainActivity extends Activity {
             public void onPageFinished(WebView view, String url) {
                 pageLoaded = true;
                 hideOverlay();
+                notifySystemAppearance();
             }
 
             @Override
@@ -229,14 +262,14 @@ public class MainActivity extends Activity {
         overlay.setClickable(true);
 
         spinner = new ProgressBar(this);
-        spinner.setIndeterminateTintList(ColorStateList.valueOf(COLOR_ACCENT));
+        spinner.setIndeterminateTintList(ColorStateList.valueOf(appearance.accent));
         LinearLayout.LayoutParams spinnerLp = new LinearLayout.LayoutParams(
                 dp(28), dp(28));
         overlay.addView(spinner, spinnerLp);
 
         overlayText = new TextView(this);
         overlayText.setText("正在准备…");
-        overlayText.setTextColor(COLOR_INK_SUB);
+        overlayText.setTextColor(appearance.mutedInk);
         overlayText.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12.5f);
         LinearLayout.LayoutParams textLp = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
@@ -250,7 +283,7 @@ public class MainActivity extends Activity {
         retryButton.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f);
         retryButton.setVisibility(View.GONE);
         GradientDrawable bg = new GradientDrawable();
-        bg.setColor(COLOR_ACCENT);
+        bg.setColor(appearance.accent);
         bg.setCornerRadius(dp(999));
         retryButton.setBackground(bg);
         retryButton.setPadding(dp(22), dp(8), dp(22), dp(8));
@@ -273,7 +306,223 @@ public class MainActivity extends Activity {
 
     private GradientDrawable ambientBackground() {
         return new GradientDrawable(GradientDrawable.Orientation.TL_BR,
-                new int[]{0xFFFCF8FB, COLOR_BG, 0xFFEBE5F4});
+                appearance.background);
+    }
+
+    private int systemUiFlags() {
+        int flags = View.SYSTEM_UI_FLAG_LAYOUT_STABLE | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN;
+        if (!appearance.dark) {
+            flags |= View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR | View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR;
+        }
+        return flags;
+    }
+
+    private void applyNativeAppearance(NativeAppearance next) {
+        appearance = next;
+        if (root != null) root.setBackground(ambientBackground());
+        if (overlay != null) {
+            overlay.setBackground(ambientBackground());
+            overlayText.setTextColor(appearance.mutedInk);
+            spinner.setIndeterminateTintList(ColorStateList.valueOf(appearance.accent));
+            GradientDrawable retryBackground = new GradientDrawable();
+            retryBackground.setColor(appearance.accent);
+            retryBackground.setCornerRadius(dp(999));
+            retryButton.setBackground(retryBackground);
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+            getWindow().getDecorView().setSystemUiVisibility(systemUiFlags());
+        }
+        applyPhotoSourceAppearance();
+    }
+
+    private void applyPhotoSourceAppearance() {
+        if (photoSourceSheet == null) return;
+        GradientDrawable surface = new GradientDrawable();
+        surface.setColor(appearance.surface);
+        surface.setCornerRadius(dp(24));
+        surface.setStroke(dp(1), appearance.edge);
+        photoSourceSheet.setBackground(surface);
+        if (photoSourceHandle != null) {
+            GradientDrawable handle = new GradientDrawable();
+            handle.setColor((appearance.mutedInk & 0x00FFFFFF) | 0x55000000);
+            handle.setCornerRadius(dp(2));
+            photoSourceHandle.setBackground(handle);
+        }
+        if (photoSourceTitle != null) photoSourceTitle.setTextColor(appearance.ink);
+        updatePhotoSourceAction(photoSourceTakePhoto);
+        updatePhotoSourceAction(photoSourceChoosePhoto);
+        if (photoSourceDialog != null && photoSourceDialog.getWindow() != null) {
+            photoSourceDialog.getWindow().getDecorView().setSystemUiVisibility(systemUiFlags());
+        }
+    }
+
+    private void updatePhotoSourceAction(TextView action) {
+        if (action == null) return;
+        action.setTextColor(appearance.mutedInk);
+        GradientDrawable fill = new GradientDrawable();
+        fill.setColor(appearance.controlFill);
+        fill.setCornerRadius(dp(14));
+        GradientDrawable mask = new GradientDrawable();
+        mask.setColor(Color.WHITE);
+        mask.setCornerRadius(dp(14));
+        action.setBackground(new RippleDrawable(
+                ColorStateList.valueOf(appearance.ripple), fill, mask));
+    }
+
+    private void notifySystemAppearance() {
+        if (webView == null || !pageLoaded) return;
+        String mode = getSystemAppearance();
+        webView.evaluateJavascript("window.__itOnSystemAppearance&&window.__itOnSystemAppearance('"
+                + mode + "')", null);
+    }
+
+    private String getSystemAppearance() {
+        int night = getResources().getConfiguration().uiMode & Configuration.UI_MODE_NIGHT_MASK;
+        return night == Configuration.UI_MODE_NIGHT_YES ? "dark" : "light";
+    }
+
+    private static final class NativeAppearance {
+        final boolean dark;
+        final int[] background;
+        final int ink;
+        final int mutedInk;
+        final int accent;
+        final int surface;
+        final int edge;
+        final int controlFill;
+        final int ripple;
+
+        NativeAppearance(boolean dark, int[] background, int ink, int mutedInk, int accent,
+                         int surface, int edge, int controlFill, int ripple) {
+            this.dark = dark;
+            this.background = background;
+            this.ink = ink;
+            this.mutedInk = mutedInk;
+            this.accent = accent;
+            this.surface = surface;
+            this.edge = edge;
+            this.controlFill = controlFill;
+            this.ripple = ripple;
+        }
+
+        static NativeAppearance fromJson(String json) throws JSONException {
+            JSONObject value = new JSONObject(json);
+            JSONArray colors = value.getJSONArray("background");
+            if (colors.length() != 3) throw new JSONException("background requires 3 colors");
+            return new NativeAppearance(
+                    value.getBoolean("dark"),
+                    new int[]{color(colors.getString(0)), color(colors.getString(1)),
+                            color(colors.getString(2))},
+                    color(value.getString("ink")),
+                    color(value.getString("mutedInk")),
+                    color(value.getString("accent")),
+                    color(value.getString("surface")),
+                    color(value.getString("edge")),
+                    color(value.getString("controlFill")),
+                    color(value.getString("ripple")));
+        }
+
+        JSONObject toJson() throws JSONException {
+            JSONArray colors = new JSONArray();
+            for (int color : background) colors.put(colorString(color));
+            return new JSONObject()
+                    .put("dark", dark)
+                    .put("background", colors)
+                    .put("ink", colorString(ink))
+                    .put("mutedInk", colorString(mutedInk))
+                    .put("accent", colorString(accent))
+                    .put("surface", colorString(surface))
+                    .put("edge", colorString(edge))
+                    .put("controlFill", colorString(controlFill))
+                    .put("ripple", colorString(ripple));
+        }
+
+        private static String colorString(int color) {
+            return String.format(Locale.ROOT, "#%08X", color);
+        }
+
+        private static int color(String value) throws JSONException {
+            try {
+                if (value == null || !value.matches("#[0-9a-fA-F]{8}")) {
+                    throw new IllegalArgumentException("Expected #AARRGGBB color");
+                }
+                return Color.parseColor(value);
+            } catch (IllegalArgumentException error) {
+                throw new JSONException("Invalid appearance color");
+            }
+        }
+    }
+
+    private void applyNativeAppearanceJson(String json) {
+        try {
+            NativeAppearance next = NativeAppearance.fromJson(json);
+            runOnUiThread(() -> applyNativeAppearance(next));
+        } catch (JSONException | RuntimeException error) {
+            Log.w(TAG, "Ignoring invalid native appearance update", error);
+        }
+    }
+
+    private NativeAppearance loadAppearanceSnapshot() {
+        String snapshotJson = getSharedPreferences(APPEARANCE_PREFS, MODE_PRIVATE)
+                .getString(APPEARANCE_SNAPSHOT_KEY, null);
+        if (snapshotJson == null) return DEFAULT_APPEARANCE;
+        try {
+            AppearanceSnapshot snapshot = AppearanceSnapshot.fromJson(snapshotJson);
+            boolean systemDark = "dark".equals(getSystemAppearance());
+            return snapshot.resolve(systemDark);
+        } catch (JSONException | RuntimeException error) {
+            Log.w(TAG, "Ignoring invalid cached native appearance", error);
+            return DEFAULT_APPEARANCE;
+        }
+    }
+
+    private boolean commitAppearanceSnapshot(String snapshotJson) {
+        try {
+            AppearanceSnapshot snapshot = AppearanceSnapshot.fromJson(snapshotJson);
+            return getSharedPreferences(APPEARANCE_PREFS, MODE_PRIVATE).edit()
+                    .putString(APPEARANCE_SNAPSHOT_KEY, snapshot.toJson().toString())
+                    .commit();
+        } catch (JSONException | RuntimeException error) {
+            Log.w(TAG, "Ignoring invalid native appearance snapshot", error);
+            return false;
+        }
+    }
+
+    private static final class AppearanceSnapshot {
+        final String mode;
+        final NativeAppearance light;
+        final NativeAppearance dark;
+
+        AppearanceSnapshot(String mode, NativeAppearance light, NativeAppearance dark) {
+            this.mode = mode;
+            this.light = light;
+            this.dark = dark;
+        }
+
+        static AppearanceSnapshot fromJson(String json) throws JSONException {
+            JSONObject value = new JSONObject(json);
+            String mode = value.getString("mode");
+            if (!"system".equals(mode) && !"light".equals(mode) && !"dark".equals(mode)) {
+                throw new JSONException("Invalid appearance mode");
+            }
+            NativeAppearance light = NativeAppearance.fromJson(value.getJSONObject("light").toString());
+            NativeAppearance dark = NativeAppearance.fromJson(value.getJSONObject("dark").toString());
+            if (light.dark || !dark.dark) throw new JSONException("Mismatched appearance projection");
+            return new AppearanceSnapshot(mode, light, dark);
+        }
+
+        NativeAppearance resolve(boolean systemDark) {
+            if ("dark".equals(mode)) return dark;
+            if ("system".equals(mode) && systemDark) return dark;
+            return light;
+        }
+
+        JSONObject toJson() throws JSONException {
+            return new JSONObject()
+                    .put("mode", mode)
+                    .put("light", light.toJson())
+                    .put("dark", dark.toJson());
+        }
     }
 
     private void showOverlay(String message, boolean withRetry) {
@@ -315,6 +564,21 @@ public class MainActivity extends Activity {
         @JavascriptInterface
         public String platform() {
             return "android";
+        }
+
+        @JavascriptInterface
+        public String getSystemAppearance() {
+            return MainActivity.this.getSystemAppearance();
+        }
+
+        @JavascriptInterface
+        public void applyAppearance(String json) {
+            if (json != null) applyNativeAppearanceJson(json);
+        }
+
+        @JavascriptInterface
+        public boolean commitAppearance(String snapshotJson) {
+            return snapshotJson != null && commitAppearanceSnapshot(snapshotJson);
         }
 
         @JavascriptInterface
@@ -360,18 +624,16 @@ public class MainActivity extends Activity {
         sheet.setOrientation(LinearLayout.VERTICAL);
         sheet.setPadding(dp(18), dp(10), dp(18), dp(18));
 
-        GradientDrawable surface = new GradientDrawable();
-        surface.setColor(getColor(R.color.glass_strong));
-        surface.setCornerRadius(dp(24));
-        surface.setStroke(dp(1), getColor(R.color.glass_edge));
-        sheet.setBackground(surface);
+        photoSourceSheet = sheet;
+        applyPhotoSourceAppearance();
         sheet.setElevation(dp(10));
 
         View handle = new View(this);
         GradientDrawable handleShape = new GradientDrawable();
-        handleShape.setColor(0x55776E82);
+        handleShape.setColor((appearance.mutedInk & 0x00FFFFFF) | 0x55000000);
         handleShape.setCornerRadius(dp(2));
         handle.setBackground(handleShape);
+        photoSourceHandle = handle;
         LinearLayout.LayoutParams handleLp = new LinearLayout.LayoutParams(dp(32), dp(4));
         handleLp.gravity = Gravity.CENTER_HORIZONTAL;
         handleLp.bottomMargin = dp(10);
@@ -380,13 +642,17 @@ public class MainActivity extends Activity {
         TextView title = new TextView(this);
         title.setText("选择图片来源");
         title.setTextSize(TypedValue.COMPLEX_UNIT_SP, 15);
-        title.setTextColor(COLOR_INK);
+        title.setTextColor(appearance.ink);
+        photoSourceTitle = title;
         title.setPadding(dp(4), dp(4), dp(4), dp(10));
         sheet.addView(title, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
 
         TextView takePhoto = photoSourceAction("拍照");
         TextView choosePhoto = photoSourceAction("从相册选择");
+        photoSourceTakePhoto = takePhoto;
+        photoSourceChoosePhoto = choosePhoto;
+        applyPhotoSourceAppearance();
         sheet.addView(takePhoto);
         sheet.addView(choosePhoto);
         PhotoSourceDialog dialog = new PhotoSourceDialog(sheet);
@@ -402,6 +668,7 @@ public class MainActivity extends Activity {
         window.setGravity(Gravity.BOTTOM);
         photoSourceDialog = dialog;
         dialog.show();
+        window.getDecorView().setSystemUiVisibility(systemUiFlags());
         window.setLayout(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
 
         sheet.setAlpha(0f);
@@ -452,7 +719,14 @@ public class MainActivity extends Activity {
             dismissing = true;
             sheet.animate().cancel();
             super.dismiss();
-            if (photoSourceDialog == this) photoSourceDialog = null;
+            if (photoSourceDialog == this) {
+                photoSourceDialog = null;
+                photoSourceSheet = null;
+                photoSourceHandle = null;
+                photoSourceTitle = null;
+                photoSourceTakePhoto = null;
+                photoSourceChoosePhoto = null;
+            }
         }
     }
 
@@ -460,7 +734,7 @@ public class MainActivity extends Activity {
         TextView action = new TextView(this);
         action.setText(label);
         action.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14);
-        action.setTextColor(COLOR_INK_SUB);
+        action.setTextColor(appearance.mutedInk);
         action.setGravity(Gravity.CENTER_VERTICAL);
         action.setPadding(dp(12), 0, dp(12), 0);
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
@@ -469,13 +743,13 @@ public class MainActivity extends Activity {
         action.setLayoutParams(lp);
 
         GradientDrawable fill = new GradientDrawable();
-        fill.setColor(0x24FFFFFF);
+        fill.setColor(appearance.controlFill);
         fill.setCornerRadius(dp(14));
         GradientDrawable mask = new GradientDrawable();
         mask.setColor(Color.WHITE);
         mask.setCornerRadius(dp(14));
         action.setBackground(new RippleDrawable(
-                ColorStateList.valueOf(0x33C96F90), fill, mask));
+                ColorStateList.valueOf(appearance.ripple), fill, mask));
         return action;
     }
 

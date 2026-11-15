@@ -10,8 +10,8 @@
  * the clipboard and desktop bridge are local stubs, and no translation API,
  * credentials, package installation, or existing browser windows are needed.
  */
-const ORIGIN = 'http://127.0.0.1:8899';
-const DEBUG_ORIGIN = 'http://127.0.0.1:9223';
+const ORIGIN = process.env.IT_PREVIEW_ORIGIN || 'http://127.0.0.1:8899';
+const DEBUG_ORIGIN = process.env.IT_CDP_ORIGIN || 'http://127.0.0.1:9223';
 const PAGE_URL = `${ORIGIN}/?debug=1`;
 const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const results = [];
@@ -142,7 +142,6 @@ async function scenario(name, task) {
 }
 
 const baselineScript = `
-  try { localStorage.clear(); } catch {}
   window.__motionTest = { copied: [], invoked: [] };
   Object.defineProperty(navigator, 'clipboard', {
     configurable: true,
@@ -159,14 +158,30 @@ const desktopScript = `
       if (command === 'it_get_settings') return Promise.resolve({
         selection_shortcut: 'Ctrl+Alt+T', activation_shortcut: 'Ctrl+Alt+I',
         open_main_window: false, target_lang: 'auto',
-        auto_start: false, start_to_tray: true
+        auto_start: false, start_to_tray: true,
+        preferences: JSON.parse(localStorage.getItem('it-preferences') || 'null')
       });
+      if (command === 'it_save_settings') {
+        const submitted = JSON.parse(JSON.stringify(args.settings));
+        window.__motionTest.submittedSettings = submitted;
+        return new Promise((resolve) => {
+          let timer;
+          const finish = () => {
+            clearTimeout(timer);
+            window.__motionTest.savedSettings = submitted;
+            delete window.__motionTest.resolveSave;
+            resolve([]);
+          };
+          window.__motionTest.resolveSave = finish;
+          timer = setTimeout(finish, window.__motionTest.saveDelay || 0);
+        });
+      }
       return Promise.resolve(null);
     }
   };
 `;
 
-async function prepare(connection, desktop = false) {
+async function prepare(connection, desktop = false, clearStorage = false) {
   await connection.send('Emulation.setDeviceMetricsOverride', {
     width: 1180, height: 900, deviceScaleFactor: 1, mobile: false,
   });
@@ -179,9 +194,12 @@ async function prepare(connection, desktop = false) {
     patterns: [{ urlPattern: '*', requestStage: 'Request' }],
   });
   await connection.send('Page.addScriptToEvaluateOnNewDocument', {
-    source: baselineScript + (desktop ? desktopScript : ''),
+    source: (clearStorage ? 'try { if (!sessionStorage.getItem("motion-test-fresh")) {' +
+      ' localStorage.clear(); sessionStorage.setItem("motion-test-fresh", "1"); } } catch (e) {}\n' : '') +
+      baselineScript + (desktop ? desktopScript : ''),
   });
   await connection.send('Page.navigate', { url: PAGE_URL });
+  await connection.send('Page.bringToFront');
   await connection.until(`document.readyState === 'complete' && !!window.__itDebug`);
   await connection.evaluate(`new Promise((resolve) => {
     requestAnimationFrame(() => requestAnimationFrame(resolve));
@@ -319,7 +337,7 @@ try {
   const target = ownTargets.find((item) => item.id === mainTargetId);
   if (!target) throw new Error('CDP did not expose the isolated main test tab.');
   page = await Cdp.connect(target.webSocketDebuggerUrl);
-  await prepare(page);
+  await prepare(page, false, true);
 
   await scenario('双向页面承接', async () => {
     await directionAndShells(page, 'text', 'syllable', 1);
@@ -404,6 +422,10 @@ try {
       const summary = box.querySelector('summary');
       summary.click();
       await new Promise((resolve) => setTimeout(resolve, 80));
+      const deadline = performance.now() + 1500;
+      while (body.getBoundingClientRect().height === 0 && performance.now() < deadline) {
+        await new Promise(requestAnimationFrame);
+      }
       const before = body.getBoundingClientRect().height;
       summary.click();
       const after = body.getBoundingClientRect().height;
@@ -592,8 +614,185 @@ try {
       await settle(page, 'text');
       check(`${width}×${height} 导航按钮通过真实点击切换`,
         await page.evaluate(`window.__itDebug.state.tab === 'text'`));
+      if (width === 390) {
+        await page.evaluate(`window.__itOpenSettings()`);
+        await page.until(`document.querySelector('.it-set-mask')?.getAttribute('aria-hidden') === 'false'`);
+        await page.until(`document.querySelector('.it-set').getAnimations().length === 0`);
+        const mobileControlHeights = await page.evaluate(`(() => {
+          const controls = [
+            ...document.querySelectorAll('.it-set-nav button'),
+            ...document.querySelectorAll('.it-set-row'),
+            ...document.querySelectorAll('.it-set-foot button')
+          ].filter((control) => control.getClientRects().length > 0);
+          return controls.map((control) => ({
+            label: control.textContent.trim().slice(0, 24), height: control.getBoundingClientRect().height
+          }));
+        })()`);
+        check('手机设置导航、选项和底栏按钮均达到48px触控高度',
+          mobileControlHeights.length > 0 && mobileControlHeights.every((control) => control.height >= 48),
+          JSON.stringify(mobileControlHeights));
+        await page.key('Escape');
+        await page.until(`document.querySelector('.it-set-mask')?.getAttribute('aria-hidden') === 'true'`);
+      }
     });
   }
+
+  await scenario('通用偏好预览、撤销和保存', async () => {
+    check('偏好配置公开可测试的归一化入口', await page.evaluate(`
+      !!window.__itDebug.preferences &&
+      typeof window.__itDebug.preferences.normalize === 'function'`));
+    check('偏好默认值保留薄樱浅色玻璃', await page.evaluate(`(() => {
+      const defaults = window.__itDebug.preferences?.normalize({});
+      return defaults?.appearance?.mode === 'light' &&
+        defaults?.appearance?.palette === 'sakura' &&
+        defaults?.appearance?.material === 'glass' &&
+        defaults?.appearance?.glassStrength === 100 &&
+        defaults?.translation?.defaultTab === 'text';
+    })()`));
+    await page.evaluate(`window.__itDebug.preferences.apply(
+      window.__itDebug.preferences.normalize({
+        background: { data: 'data:image/png;base64,AA==' }
+      }))`);
+    await page.click('#brand');
+    await page.click('#more-menu [data-act="bg-reset"]');
+    await page.until(`document.querySelector('.it-set-mask')?.getAttribute('aria-hidden') === 'false'`);
+    check('更多菜单恢复默认背景会预览清除且可撤销', await page.evaluate(`
+      document.getElementById('it-pref-background-status').textContent === '未选择背景图片。' &&
+      !document.getElementById('it-bg-style')`));
+    await page.key('Escape');
+    await page.until(`document.querySelector('.it-set-mask')?.getAttribute('aria-hidden') === 'true'`);
+    check('取消背景恢复会保留原图', await page.evaluate(`!!document.getElementById('it-bg-style')`));
+    await page.evaluate(`window.__itDebug.preferences.apply(window.__itDebug.preferences.defaults)`);
+    const nativeSnapshotCheck = await page.evaluate(`(() => {
+      const api = window.__itDebug.preferences;
+      const preferences = api.normalize({ appearance: { mode: 'system', palette: 'sage' } });
+      const snapshot = JSON.parse(api.nativeSnapshot(preferences));
+      const allModesValid = ['system', 'light', 'dark'].every((mode) => {
+        const candidate = api.normalize({ appearance: { mode: mode, material: 'solid' } });
+        const stored = JSON.parse(api.nativeSnapshot(candidate));
+        return stored.mode === mode && stored.light.dark === false && stored.dark.dark === true &&
+          stored.dark.surface === '#FF302C38';
+      });
+      return { valid: allModesValid && snapshot.mode === 'system' && snapshot.light.dark === false && snapshot.dark.dark === true &&
+        snapshot.light.accent === '#FF66876F' && snapshot.dark.accent === '#FF83A58B' &&
+        snapshot.light.background.every((color) => /^#[0-9A-F]{8}$/.test(color)), snapshot };
+    })()`);
+    check('安卓启动缓存包含浅深两套原生色板', nativeSnapshotCheck.valid,
+      JSON.stringify(nativeSnapshotCheck.snapshot));
+    check('背景滑块更新不重写或复制完整图片数据', await page.evaluate(`(() => {
+      const api = window.__itDebug.preferences;
+      const preferences = api.normalize({
+        background: { data: 'data:image/png;base64,AA==' }
+      });
+      api.apply(preferences);
+      const style = document.getElementById('it-bg-style').textContent;
+      preferences.background.blur = 10;
+      api.apply(preferences);
+      const stable = document.getElementById('it-bg-style').textContent === style &&
+        style.indexOf('data:image/png') === -1;
+      api.apply(api.defaults);
+      return stable;
+    })()`));
+    check('纯色材质使用不透明卡片并关闭玻璃模糊', await page.evaluate(`(() => {
+      const api = window.__itDebug.preferences;
+      api.apply(api.normalize({ appearance: { material: 'solid' } }));
+      const card = getComputedStyle(document.querySelector('.card'));
+      const opaque = card.backgroundColor === 'rgb(255, 255, 255)' &&
+        card.backdropFilter === 'none';
+      api.apply(api.defaults);
+      return opaque;
+    })()`));
+
+    await page.click('#brand');
+    await page.click('#more-menu [data-act="settings"]');
+    await page.until(`document.querySelector('.it-set-mask')?.getAttribute('aria-hidden') === 'false'`);
+    check('网页与安卓界面可直接打开通用设置',
+      await page.evaluate(`!!document.querySelector('#it-pref-theme') &&
+        !!document.querySelector('[data-pref-section="appearance"]')`));
+
+    await page.evaluate(`(() => {
+      const control = document.getElementById('it-pref-theme');
+      if (!control) return;
+      control.value = 'dark';
+      control.dispatchEvent(new Event('change', { bubbles: true }));
+    })()`);
+    check('外观草稿实时预览深色主题', await page.evaluate(`
+      document.documentElement.dataset.itTheme === 'dark'`));
+    await page.key('Escape');
+    await page.until(`document.querySelector('.it-set-mask')?.getAttribute('aria-hidden') === 'true'`);
+    check('Escape 取消恢复已保存外观', await page.evaluate(`
+      document.documentElement.dataset.itTheme === 'light'`));
+
+    await page.click('#brand');
+    await page.click('#more-menu [data-act="settings"]');
+    await page.until(`document.querySelector('.it-set-mask')?.getAttribute('aria-hidden') === 'false'`);
+    await page.evaluate(`(() => {
+      const control = document.getElementById('it-pref-theme');
+      control.value = 'dark';
+      control.dispatchEvent(new Event('change', { bubbles: true }));
+      const palette = document.getElementById('it-pref-palette');
+      palette.value = 'sage';
+      palette.dispatchEvent(new Event('change', { bubbles: true }));
+      const setPreference = (path, value) => {
+        const input = document.querySelector('[data-pref="' + path + '"]');
+        if (input.type === 'checkbox') input.checked = value;
+        else input.value = value;
+        input.dispatchEvent(new Event('change', { bubbles: true }));
+      };
+      setPreference('translation.defaultTab', 'doc');
+      setPreference('translation.sourceLanguage', 'auto');
+      setPreference('translation.targetLanguage', 'en');
+      setPreference('translation.defaultModels.text', 'index-mt-9b');
+      setPreference('translation.rememberLanguages', false);
+      setPreference('translation.rememberModels', false);
+    })()`);
+    await page.click('#it-set-save');
+    await page.until(`document.querySelector('.it-set-mask')?.getAttribute('aria-hidden') === 'true'`);
+    check('网页保存偏好后保留预览并持久化完整配置', await page.evaluate(`(() => {
+      const saved = JSON.parse(localStorage.getItem('it-preferences') || 'null');
+      return document.documentElement.dataset.itTheme === 'dark' &&
+        saved?.appearance?.mode === 'dark' && saved?.appearance?.palette === 'sage' &&
+        saved?.translation?.defaultTab === 'doc' &&
+        saved?.translation?.defaultModels?.text === 'index-mt-9b';
+    })()`));
+    await page.evaluate(`localStorage.setItem('it-state', JSON.stringify({
+      src: 'de', tgt: 'ja', model: { text: 'index-mt-35b', syllable: 'index-mt-9b-syllable',
+        doc: 'index-nailong-9b' }, tab: 'text'
+    }))`);
+    await page.send('Page.reload');
+    await pause(400);
+    const restoredDefaults = await page.evaluate(`(() => {
+      const state = window.__itDebug && window.__itDebug.state;
+      return state && {
+        tab: state.tab, src: state.src, tgt: state.tgt, model: state.model.text,
+        preferences: JSON.parse(localStorage.getItem('it-preferences') || 'null'),
+        remembered: JSON.parse(localStorage.getItem('it-state') || 'null')
+      };
+    })()`);
+    check('关闭语言与模型记忆时，下次启动按默认页面语言和模型',
+      !!restoredDefaults && restoredDefaults.tab === 'doc' && restoredDefaults.src === 'auto' &&
+      restoredDefaults.tgt === 'en' && restoredDefaults.model === 'index-mt-9b',
+      JSON.stringify(restoredDefaults));
+    await page.evaluate(`(() => {
+      const saved = JSON.parse(localStorage.getItem('it-preferences'));
+      saved.translation.defaultTab = 'last';
+      localStorage.setItem('it-preferences', JSON.stringify(saved));
+      const remembered = JSON.parse(localStorage.getItem('it-state'));
+      remembered.tab = 'doc';
+      localStorage.setItem('it-state', JSON.stringify(remembered));
+    })()`);
+    await page.send('Page.reload');
+    await page.until(`document.readyState === 'complete' && !!window.__itDebug`);
+    await page.evaluate(`window.dispatchEvent(new Event('resize'))`);
+    check('记住上次页面后调整窗口仍保持页面、焦点和操作栏一致', await page.evaluate(`(() => {
+      const selected = [...document.querySelectorAll('.pane.on')];
+      const accessible = [...document.querySelectorAll('.pane[aria-hidden="false"]')];
+      return window.__itDebug.state.tab === 'doc' && selected.length === 1 &&
+        selected[0].id === 'pane-doc' && accessible.length === 1 &&
+        accessible[0] === selected[0] && !selected[0].inert &&
+        document.querySelector('.dock.on').dataset.pane === 'doc';
+    })()`));
+  });
 
   await scenario('桌面设置焦点与返回', async () => {
     const created = await page.send('Target.createTarget', { url: 'about:blank' });
@@ -613,11 +812,19 @@ try {
         document.getElementById('src').focus();
         return document.activeElement.id !== 'src';
       })()`));
+    await desktop.until(`!document.getElementById('it-set-save').disabled`);
+    await desktop.click('[data-pref-tab="desktop"]');
+    await desktop.click('[data-reset-section]');
+    check('恢复电脑功能默认值不会重置通用外观', await desktop.evaluate(`
+      document.documentElement.dataset.itTheme === 'dark' &&
+      document.documentElement.dataset.itPalette === 'sage'`));
     await desktop.key('Escape');
     await desktop.until(`document.querySelector('.it-set-mask').getAttribute('aria-hidden') === 'true'`);
     check('桌面设置 Escape 关闭并归还可用焦点',
-      await desktop.evaluate(`document.activeElement.id === 'brand' &&
-        !document.getElementById('pane-text').inert`));
+      await desktop.evaluate(`(() => {
+        const selected = document.querySelectorAll('.pane[aria-hidden="false"]');
+        return document.activeElement.id === 'brand' && selected.length === 1 && !selected[0].inert;
+      })()`));
     await desktop.click('#brand');
     await desktop.click('#more-menu [data-act="settings"]');
     await desktop.until(`document.querySelector('.it-set-mask').getAttribute('aria-hidden') === 'false'`);
@@ -631,6 +838,68 @@ try {
     await desktop.click('.it-set-x');
     await desktop.until(`document.querySelector('.it-set-mask').getAttribute('aria-hidden') === 'true'`);
     check('桌面设置关闭按钮可真实点中', true);
+
+    await desktop.click('#brand');
+    await desktop.click('#more-menu [data-act="settings"]');
+    await desktop.until(`document.querySelector('.it-set-mask').getAttribute('aria-hidden') === 'false' &&
+      !document.getElementById('it-set-save').disabled`);
+    await desktop.evaluate(`(() => {
+      const setPreference = (path, value) => {
+        const control = document.querySelector('[data-pref="' + path + '"]');
+        if (control.type === 'checkbox') control.checked = value;
+        else control.value = value;
+        control.dispatchEvent(new Event('change', { bubbles: true }));
+      };
+      setPreference('appearance.mode', 'dark');
+      setPreference('appearance.palette', 'amber');
+      setPreference('appearance.material', 'frosted');
+      setPreference('appearance.glassStrength', 45);
+      setPreference('appearance.radius', 'small');
+      setPreference('appearance.fontScale', 130);
+      setPreference('appearance.layout', 'compact');
+      setPreference('appearance.motion', 'reduced');
+      setPreference('appearance.ambientLight', false);
+    })()`);
+    await desktop.click('[data-pref-tab="appearance"]');
+    await desktop.click('[data-reset-section]');
+    check('恢复外观默认值保留阅读布局与动效分组草稿', await desktop.evaluate(`(() => {
+      const value = (path) => document.querySelector('[data-pref="' + path + '"]').value;
+      return value('appearance.mode') === 'light' && value('appearance.palette') === 'sakura' &&
+        value('appearance.material') === 'glass' && value('appearance.glassStrength') === '100' &&
+        value('appearance.radius') === 'round' && value('appearance.fontScale') === '130' &&
+        value('appearance.layout') === 'compact' && value('appearance.motion') === 'reduced' &&
+        !document.querySelector('[data-pref="appearance.ambientLight"]').checked;
+    })()`));
+    await desktop.evaluate(`(() => {
+      const theme = document.getElementById('it-pref-theme');
+      theme.value = 'dark';
+      theme.dispatchEvent(new Event('change', { bubbles: true }));
+      window.__motionTest.saveDelay = 10000;
+    })()`);
+    await desktop.click('#it-set-save');
+    check('保存处理中禁用编辑、类别导航和关闭控件', await desktop.evaluate(`(() => {
+      const controls = [...document.querySelectorAll(
+        '.it-set-mask .it-set-body input, .it-set-mask .it-set-body select, ' +
+        '.it-set-mask .it-set-nav button, .it-set-mask [data-close], ' +
+        '.it-set-mask [data-reset-section], #it-set-save')];
+      return controls.length > 0 && controls.every((control) => control.disabled);
+    })()`));
+    await desktop.key('Escape');
+    check('保存处理中 Escape 不撤销或关闭提交', await desktop.evaluate(`
+      document.querySelector('.it-set-mask').getAttribute('aria-hidden') === 'false' &&
+      document.documentElement.dataset.itTheme === 'dark'`));
+    await desktop.evaluate(`window.__motionTest.resolveSave()`);
+    await desktop.until(`document.querySelector('.it-set-mask').getAttribute('aria-hidden') === 'true'`);
+    check('异步保存使用提交快照并在完成后保留同一份偏好', await desktop.evaluate(`(() => {
+      const submitted = window.__motionTest.submittedSettings;
+      const saved = window.__motionTest.savedSettings;
+      const local = JSON.parse(localStorage.getItem('it-preferences') || 'null');
+      return submitted && saved && JSON.stringify(submitted) === JSON.stringify(saved) &&
+        JSON.stringify(saved.preferences) === JSON.stringify(local) &&
+        local.appearance.mode === 'dark' && local.appearance.fontScale === 130 &&
+        local.appearance.layout === 'compact' && local.appearance.motion === 'reduced' &&
+        local.appearance.ambientLight === false && document.documentElement.dataset.itTheme === 'dark';
+    })()`));
   });
 
   for (const connection of connections.filter((connection) => connection !== controller)) {

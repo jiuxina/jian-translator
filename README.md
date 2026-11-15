@@ -20,6 +20,8 @@ node tests/verify-motion.mjs
 
 回归使用本地桥接替身并拦截外部请求，不调用翻译接口。界面设计、验证记录和历史成品说明见
 [docs/ui-theme.md](docs/ui-theme.md)。
+`IT_CDP_ORIGIN` 可指定其他 Chrome 调试地址，`IT_PREVIEW_ORIGIN` 可指定其他本地预览地址。
+当前完整离线回归包含 66 项检查。
 
 ## Windows 构建
 
@@ -29,10 +31,12 @@ node tests/verify-motion.mjs
 
 ```powershell
 $env:npm_config_prefix = "$PWD/.build/npm-global"
+$env:IT_OUT_DIR = "$PWD/.build/release-stage"
 & 'D:\Program Files\Git\usr\bin\bash.exe' app/rebuild.sh
 ```
 
-Git Bash 安装位置因机器而异，使用本机实际路径。构建输出在 `output/`。
+Git Bash 安装位置因机器而异，使用本机实际路径。默认构建输出在 `output/`；设置 `IT_OUT_DIR`
+可把产物写到隔离目录，正在运行的桌面程序可以继续工作。
 
 ## Android 构建
 
@@ -48,6 +52,7 @@ Git Bash 安装位置因机器而异，使用本机实际路径。构建输出�
 ```
 
 历史 `syncWebAssets` 任务会删除目标目录，因此此处使用覆盖同步并跳过该任务。
+当前发布版本为 Android versionCode `4` / versionName `2.1.0`，Windows 安装包版本 `2.1.0`。
 
 ## 版本管理
 

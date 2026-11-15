@@ -81,6 +81,7 @@
 
   /* 所有动效统一走这个开关：系统开了「减少动态效果」就退回即时切换 */
   function motionReduced() {
+    if (activePreferences && activePreferences.appearance.motion === 'off') return true;
     try { return window.matchMedia('(prefers-reduced-motion: reduce)').matches; }
     catch (e) { return false; }
   }
@@ -654,6 +655,286 @@
     controller: null
   };
 
+  /* ---------------- 4a. Saved preferences ---------------- */
+  var PREFERENCES_KEY = 'it-preferences';
+  var MODEL_OPTIONS = {
+    text: ['index-mt-2b', 'index-mt-9b', 'index-mt-35b'],
+    syllable: ['index-mt-2b-syllable', 'index-mt-9b-syllable'],
+    doc: ['index-nailong-2b', 'index-nailong-9b']
+  };
+  var DEFAULT_PREFERENCES = {
+    version: 1,
+    appearance: {
+      mode: 'light', palette: 'sakura', material: 'glass', glassStrength: 100,
+      radius: 'round', font: 'sans', fontScale: 100, layout: 'standard',
+      motion: 'system', ambientLight: true
+    },
+    background: { data: '', opacity: 34, blur: 0, fit: 'cover' },
+    translation: {
+      defaultTab: 'text', sourceLanguage: 'auto', targetLanguage: 'zh',
+      defaultModels: {
+        text: 'index-mt-2b', syllable: 'index-mt-2b-syllable', doc: 'index-nailong-2b'
+      },
+      rememberLanguages: true, rememberModels: true
+    }
+  };
+
+  function copyObject(value) {
+    return JSON.parse(JSON.stringify(value));
+  }
+
+  function enumValue(value, allowed, fallback) {
+    return allowed.indexOf(value) >= 0 ? value : fallback;
+  }
+
+  function boundedNumber(value, min, max, fallback) {
+    var number = Number(value);
+    return isFinite(number) ? Math.round(Math.max(min, Math.min(max, number))) : fallback;
+  }
+
+  function normalizePreferences(input) {
+    var source = input && typeof input === 'object' ? input : {};
+    var appearance = source.appearance || {};
+    var background = source.background || {};
+    var translation = source.translation || {};
+    var savedModels = translation.defaultModels || {};
+    var result = copyObject(DEFAULT_PREFERENCES);
+
+    result.appearance.mode = enumValue(appearance.mode, ['light', 'dark', 'system'], 'light');
+    result.appearance.palette = enumValue(appearance.palette,
+      ['sakura', 'mist', 'sage', 'amber'], 'sakura');
+    result.appearance.material = enumValue(appearance.material,
+      ['glass', 'frosted', 'solid'], 'glass');
+    result.appearance.glassStrength = boundedNumber(appearance.glassStrength, 0, 100, 100);
+    result.appearance.radius = enumValue(appearance.radius,
+      ['round', 'standard', 'small'], 'round');
+    result.appearance.font = enumValue(appearance.font,
+      ['sans', 'serif', 'mono'], 'sans');
+    result.appearance.fontScale = boundedNumber(appearance.fontScale, 90, 140, 100);
+    result.appearance.layout = enumValue(appearance.layout,
+      ['standard', 'compact'], 'standard');
+    result.appearance.motion = enumValue(appearance.motion,
+      ['system', 'reduced', 'off'], 'system');
+    result.appearance.ambientLight = appearance.ambientLight !== false;
+
+    var image = typeof background.data === 'string' &&
+      /^data:image\/(png|jpeg|webp|gif);base64,/i.test(background.data) &&
+      background.data.length <= 6000000 ? background.data : '';
+    result.background.data = image;
+    result.background.opacity = boundedNumber(background.opacity, 0, 80, 34);
+    result.background.blur = boundedNumber(background.blur, 0, 20, 0);
+    result.background.fit = enumValue(background.fit, ['cover', 'contain'], 'cover');
+
+    result.translation.defaultTab = enumValue(translation.defaultTab,
+      ['text', 'syllable', 'doc', 'last'], 'text');
+    result.translation.sourceLanguage = enumValue(translation.sourceLanguage,
+      Object.keys(LANGS).concat(['auto']), 'auto');
+    result.translation.targetLanguage = enumValue(translation.targetLanguage,
+      Object.keys(LANGS), 'zh');
+    Object.keys(MODEL_OPTIONS).forEach(function (group) {
+      result.translation.defaultModels[group] = enumValue(savedModels[group], MODEL_OPTIONS[group],
+        DEFAULT_PREFERENCES.translation.defaultModels[group]);
+    });
+    result.translation.rememberLanguages = translation.rememberLanguages !== false;
+    result.translation.rememberModels = translation.rememberModels !== false;
+    return result;
+  }
+
+  function readSavedPreferences() {
+    var parsed = null;
+    try { parsed = JSON.parse(localStorage.getItem(PREFERENCES_KEY) || 'null'); }
+    catch (e) {}
+    if (!parsed) {
+      try {
+        var oldBackground = localStorage.getItem('it-bg-data');
+        if (oldBackground) parsed = { background: { data: oldBackground } };
+      } catch (e) {}
+    }
+    return normalizePreferences(parsed);
+  }
+
+  var activePreferences = readSavedPreferences();
+  var currentSystemAppearance = 'light';
+  var PALETTE_COLORS = {
+    sakura: { light: { accent: '#E28BA6', deep: '#C96F90', lilac: '#9A9BE6' },
+      dark: { accent: '#F0A8BE', deep: '#E28BA6', lilac: '#B9BAF0' } },
+    mist: { light: { accent: '#54AEB2', deep: '#388D94', lilac: '#8EAFC7' },
+      dark: { accent: '#7DD0D0', deep: '#54AEB2', lilac: '#ABC9E1' } },
+    sage: { light: { accent: '#83A58B', deep: '#66876F', lilac: '#9FAE91' },
+      dark: { accent: '#A4C9A5', deep: '#83A58B', lilac: '#C2C69D' } },
+    amber: { light: { accent: '#E3A253', deep: '#C88733', lilac: '#C68E80' },
+      dark: { accent: '#F2BC72', deep: '#E3A253', lilac: '#E3B0A2' } }
+  };
+
+  function colorRgba(hex, alpha) {
+    var value = hex.replace('#', '');
+    var number = parseInt(value, 16);
+    return 'rgba(' + ((number >> 16) & 255) + ',' + ((number >> 8) & 255) + ',' +
+      (number & 255) + ',' + alpha + ')';
+  }
+
+  function colorArgb(hex, alpha) {
+    var opacity = Math.round(alpha * 255).toString(16);
+    if (opacity.length < 2) opacity = '0' + opacity;
+    return ('#' + opacity + hex.replace('#', '')).toUpperCase();
+  }
+
+  function opaqueRgb(red, green, blue) {
+    function byte(value) {
+      var result = value.toString(16);
+      return result.length < 2 ? '0' + result : result;
+    }
+    return ('#FF' + byte(red) + byte(green) + byte(blue)).toUpperCase();
+  }
+
+  function resolvedAppearance(preferences) {
+    var appearance = preferences.appearance;
+    if (appearance.mode === 'system') return currentSystemAppearance === 'dark' ? 'dark' : 'light';
+    return appearance.mode;
+  }
+
+  function nativeAppearance(preferences, systemMode) {
+    var mode = systemMode || preferences.appearance.mode;
+    var dark = mode === 'dark' || (mode === 'system' &&
+      currentSystemAppearance === 'dark');
+    var colors = PALETTE_COLORS[preferences.appearance.palette] || PALETTE_COLORS.sakura;
+    var accent = colors[dark ? 'dark' : 'light'];
+    var background = dark ?
+      [opaqueRgb(45, 41, 52), opaqueRgb(33, 31, 40), opaqueRgb(26, 25, 32)] :
+      [opaqueRgb(252, 248, 251), opaqueRgb(243, 239, 246), opaqueRgb(235, 229, 244)];
+    var surface = preferences.appearance.material === 'solid' ?
+      (dark ? '#FF302C38' : '#FFF9F6FA') : (dark ? '#C92D2934' : '#D9FFFFFF');
+    return {
+      dark: dark,
+      background: background,
+      ink: dark ? '#FFF2EDF3' : '#FF2E2A38',
+      mutedInk: dark ? '#FFBFB8C5' : '#FF6E687E',
+      accent: colorArgb(accent.deep, 1),
+      surface: surface,
+      edge: dark ? '#7FFFFFFF' : '#9EFFFFFF',
+      controlFill: dark ? '#33FFFFFF' : '#24FFFFFF',
+      ripple: colorArgb(accent.deep, .20)
+    };
+  }
+
+  function nativeAppearanceSnapshot(preferences) {
+    return JSON.stringify({
+      mode: preferences.appearance.mode,
+      light: nativeAppearance(preferences, 'light'),
+      dark: nativeAppearance(preferences, 'dark')
+    });
+  }
+
+  function syncAndroidAppearance(preferences) {
+    if (!Bridge.isAndroid || !window.NativeBridge ||
+        typeof window.NativeBridge.applyAppearance !== 'function') return;
+    try { window.NativeBridge.applyAppearance(JSON.stringify(nativeAppearance(preferences))); }
+    catch (e) {}
+  }
+
+  function applyPreferences(preferences) {
+    activePreferences = normalizePreferences(preferences);
+    var root = document.documentElement;
+    var appearance = activePreferences.appearance;
+    var dark = resolvedAppearance(activePreferences) === 'dark';
+    var colors = PALETTE_COLORS[appearance.palette] || PALETTE_COLORS.sakura;
+    var palette = colors[dark ? 'dark' : 'light'];
+    var background = dark ? '#211F28' : '#F3EFF6';
+    var backgroundWarm = dark ? '#2D2934' : '#FCF8FB';
+    var ink = dark ? '#F2EDF3' : '#2E2A38';
+    var inkSub = dark ? '#BFB8C5' : '#6E687E';
+    var inkFaint = dark ? '#908997' : '#A29CAC';
+    var strength = appearance.glassStrength / 100;
+    function surfaceOpacity(base) {
+      if (appearance.material === 'solid') return 1;
+      var frosting = appearance.material === 'frosted' ? .2 : 0;
+      return Math.min(.98, base + (1 - strength) * (.96 - base) + frosting);
+    }
+    var blur = appearance.material === 'solid' ? 0 :
+      appearance.material === 'frosted' ? (20 + 24 * strength) : 22 * strength;
+    var radius = appearance.radius === 'small' ? [12, 9, 7] :
+      appearance.radius === 'standard' ? [19, 15, 11] : [26, 20, 14];
+
+    root.dataset.itTheme = dark ? 'dark' : 'light';
+    var colorScheme = document.querySelector('meta[name="color-scheme"]');
+    if (colorScheme) colorScheme.setAttribute('content', dark ? 'dark light' : 'light dark');
+    root.dataset.itThemeMode = appearance.mode;
+    root.dataset.itPalette = appearance.palette;
+    root.dataset.itMaterial = appearance.material;
+    root.dataset.itRadius = appearance.radius;
+    root.dataset.itLayout = appearance.layout;
+    root.dataset.itMotion = appearance.motion;
+    root.dataset.itAmbient = appearance.ambientLight ? 'true' : 'false';
+    root.style.setProperty('--lg-bg', background);
+    root.style.setProperty('--lg-bg-warm', backgroundWarm);
+    root.style.setProperty('--lg-bg-end', dark ? '#18161D' : '#EBE5F4');
+    root.style.setProperty('--lg-overlay', dark ? 'rgba(4,3,7,.54)' : 'rgba(46,42,56,.18)');
+    root.style.setProperty('--lg-ink', ink);
+    root.style.setProperty('--lg-ink-sub', inkSub);
+    root.style.setProperty('--lg-ink-faint', inkFaint);
+    root.style.setProperty('--lg-accent', palette.accent);
+    root.style.setProperty('--lg-accent-deep', palette.deep);
+    root.style.setProperty('--lg-lilac', palette.lilac);
+    root.style.setProperty('--lg-glow-a', colorRgba(palette.accent, appearance.ambientLight ? (dark ? .2 : .28) : 0));
+    root.style.setProperty('--lg-glow-b', colorRgba(palette.lilac, appearance.ambientLight ? (dark ? .14 : .2) : 0));
+    root.style.setProperty('--lg-glow-c', dark ? 'rgba(255,255,255,.08)' : 'rgba(255,255,255,.48)');
+    root.style.setProperty('--lg-accent-wash', colorRgba(palette.deep, dark ? .22 : .14));
+    root.style.setProperty('--lg-accent-wash-2', colorRgba(palette.deep, dark ? .32 : .24));
+    root.style.setProperty('--lg-edge', dark ? 'rgba(255,255,255,.18)' : 'rgba(255,255,255,.74)');
+    root.style.setProperty('--lg-edge-dark', dark ? 'rgba(255,255,255,.12)' : 'rgba(70,52,96,.09)');
+    root.style.setProperty('--lg-shadow', dark ?
+      '0 12px 34px rgba(0,0,0,.32),0 3px 10px rgba(0,0,0,.18)' :
+      '0 12px 34px rgba(70,52,96,.13),0 3px 10px rgba(70,52,96,.06)');
+    root.style.setProperty('--lg-shadow-strong', dark ?
+      '0 24px 60px rgba(0,0,0,.42),0 5px 14px rgba(0,0,0,.2)' :
+      '0 24px 60px rgba(70,52,96,.20),0 5px 14px rgba(70,52,96,.08)');
+    root.style.setProperty('--lg-shadow-soft', dark ?
+      '0 5px 16px rgba(0,0,0,.24)' : '0 5px 16px rgba(70,52,96,.09)');
+    root.style.setProperty('--lg-blur', blur + 'px');
+    root.style.setProperty('--lg-blur-strong', Math.round(blur * 1.55) + 'px');
+    root.style.setProperty('--lg-saturate', (1 + strength * .7).toFixed(2));
+    root.style.setProperty('--lg-tint-0', colorRgba(dark ? '#302C38' : '#FFFFFF', surfaceOpacity(.24)));
+    root.style.setProperty('--lg-tint-1', colorRgba(dark ? '#35313F' : '#FFFFFF', surfaceOpacity(.44)));
+    root.style.setProperty('--lg-tint-2', colorRgba(dark ? '#393543' : '#FFFFFF', surfaceOpacity(.72)));
+    root.style.setProperty('--lg-tint-popup', colorRgba(dark ? '#302C38' : '#FFFFFF', surfaceOpacity(.82)));
+    root.style.setProperty('--lg-tint-field', colorRgba(dark ? '#302C38' : '#FFFFFF', surfaceOpacity(.62)));
+    root.style.setProperty('--lg-tint-inset', colorRgba(dark ? '#25232C' : '#FFFFFF', surfaceOpacity(.36)));
+    root.style.setProperty('--lg-r-lg', radius[0] + 'px');
+    root.style.setProperty('--lg-r-md', radius[1] + 'px');
+    root.style.setProperty('--lg-r-sm', radius[2] + 'px');
+    root.style.setProperty('--it-content-font', appearance.font === 'serif' ?
+      '"Noto Serif", "Songti SC", serif' : appearance.font === 'mono' ?
+        '"Cascadia Code", "Consolas", monospace' :
+        '"PingFang SC", "Microsoft YaHei UI", "Noto Sans SC", system-ui, sans-serif');
+    root.style.setProperty('--it-content-scale', String(appearance.fontScale / 100));
+    root.style.setProperty('--lg-distance-scene', appearance.motion === 'reduced' ? '0px' : '28px');
+    if (appearance.motion === 'reduced') {
+      root.style.setProperty('--lg-duration-panel', '180ms');
+      root.style.setProperty('--lg-duration-dialog', '140ms');
+    } else {
+      root.style.setProperty('--lg-duration-panel', '420ms');
+      root.style.setProperty('--lg-duration-dialog', '240ms');
+    }
+    syncMotionConstants();
+    applyBackground(activePreferences.background.data, activePreferences.background);
+    syncAndroidAppearance(activePreferences);
+  }
+
+  function syncMotionConstants() {
+    PANEL_DURATION = cssDuration('--lg-duration-panel', 420);
+    DIALOG_DURATION = cssDuration('--lg-duration-dialog', 240);
+    SCENE_DISTANCE = cssNumber('--lg-distance-scene', 28);
+  }
+
+  window.__itGetAppearance = function () {
+    return JSON.stringify(nativeAppearance(activePreferences));
+  };
+  window.__itOnSystemAppearance = function (mode) {
+    if (mode !== 'light' && mode !== 'dark') return;
+    currentSystemAppearance = mode;
+    if (activePreferences.appearance.mode === 'system') applyPreferences(activePreferences);
+  };
+
   /* ---------------- 5. API 客户端 ---------------- */
   function describeError(status, body) {
     var message = '';
@@ -895,6 +1176,11 @@
     settleTabs();
 
     state.tab = name;
+    try {
+      var remembered = JSON.parse(localStorage.getItem('it-state') || '{}');
+      remembered.tab = name;
+      localStorage.setItem('it-state', JSON.stringify(remembered));
+    } catch (e) {}
     shownTab = name;
     document.querySelectorAll('.tabs button').forEach(function (button) {
       var selected = button.getAttribute('data-tab') === name;
@@ -1623,11 +1909,19 @@
   }
 
   /* ---------------- 12. 背景 ---------------- */
-  function applyBackground(dataUrl) {
+  var appliedBackgroundData = '';
+
+  function applyBackground(dataUrl, preferences) {
     var id = 'it-bg-style';
     var style = $(id);
-    if (!dataUrl) {
+    if (!dataUrl || !/^data:image\/(png|jpeg|webp|gif);base64,/i.test(dataUrl)) {
       if (style) style.remove();
+      document.documentElement.style.removeProperty('--it-bg-image');
+      document.documentElement.style.removeProperty('--it-bg-overlay');
+      document.documentElement.style.removeProperty('--it-bg-fit');
+      document.documentElement.style.removeProperty('--it-bg-blur');
+      document.documentElement.style.removeProperty('--it-bg-inset');
+      appliedBackgroundData = '';
       return;
     }
     if (!style) {
@@ -1635,20 +1929,31 @@
       style.id = id;
       document.head.appendChild(style);
     }
-    style.textContent =
-      'body::before{background-image:linear-gradient(rgba(255,255,255,.34),rgba(255,255,255,.34)),' +
-      'url("' + dataUrl + '")!important;background-size:cover!important;' +
+    preferences = preferences || activePreferences.background;
+    var alpha = Math.max(0, Math.min(80, Number(preferences.opacity) || 0)) / 100;
+    var overlay = resolvedAppearance(activePreferences) === 'dark' ?
+      'rgba(18,16,24,' + alpha + ')' : 'rgba(255,255,255,' + alpha + ')';
+    var blur = Math.max(0, Math.min(20, Number(preferences.blur) || 0));
+    var fit = preferences.fit === 'contain' ? 'contain' : 'cover';
+    if (appliedBackgroundData !== dataUrl) {
+      document.documentElement.style.setProperty('--it-bg-image', 'url("' + dataUrl + '")');
+      appliedBackgroundData = dataUrl;
+    }
+    document.documentElement.style.setProperty('--it-bg-overlay', overlay);
+    document.documentElement.style.setProperty('--it-bg-fit', fit);
+    document.documentElement.style.setProperty('--it-bg-blur', blur + 'px');
+    document.documentElement.style.setProperty('--it-bg-inset', blur ? '-40px' : '-2%');
+    style.textContent = 'body::before{background-image:linear-gradient(var(--it-bg-overlay),var(--it-bg-overlay)),' +
+      'var(--it-bg-image)!important;background-size:var(--it-bg-fit)!important;' +
       'background-position:center!important;background-repeat:no-repeat!important;' +
-      'background-attachment:fixed!important;}' +
+      'background-attachment:fixed!important;inset:var(--it-bg-inset)!important;' +
+      'filter:blur(var(--it-bg-blur));}' +
       '.card{background:var(--lg-tint-0)!important;}' +
       '.card.out{background:var(--lg-tint-1)!important;}';
   }
 
   function restoreBackground() {
-    try {
-      var saved = localStorage.getItem('it-bg-data');
-      if (saved) applyBackground(saved);
-    } catch (e) {}
+    applyBackground(activePreferences.background.data, activePreferences.background);
   }
 
   function initMenu() {
@@ -1724,22 +2029,17 @@
       closeMenu();
       var act = target.getAttribute('data-act');
 
-      if (act === 'bg') {
-        Bridge.pickImage(function (dataUrl) { shrinkImage(dataUrl, Bridge.setBackground); });
-      } else if (act === 'bg-reset') {
-        Bridge.resetBackground();
-        toast('已恢复默认背景');
-      } else if (act === 'settings') {
-        if (Bridge.isDesktop && window.__itOpenSettings) {
-          window.__itOpenSettings({ origin: origin, trigger: brand });
-        }
-        else if (Bridge.isAndroid && window.NativeBridge && window.NativeBridge.settings) {
-          window.NativeBridge.settings();
-        } else {
-          toast('当前环境没有额外设置');
+      if (act === 'bg' || act === 'bg-reset' || act === 'settings') {
+        if (window.__itOpenSettings) {
+          window.__itOpenSettings({
+            section: act === 'bg' || act === 'bg-reset' ? 'background' : 'appearance',
+            resetBackground: act === 'bg-reset',
+            origin: origin,
+            trigger: brand
+          });
         }
       } else if (act === 'about') {
-        alert('笺 · 版本 2.0.0\n\n' +
+        alert('笺 · 版本 2.1.0\n\n' +
           '翻译由 bilibili Index-Translate 提供，通过官方公开 API 接入。\n' +
           '本项目为非官方客户端，与哔哩哔哩无隶属关系。');
       }
@@ -1820,57 +2120,205 @@
     });
   }
 
-  /* ---------------- 15. 桌面端设置面板 ---------------- */
+  /* ---------------- 15. Shared settings panel ---------------- */
   var settingsState = null;
+  var committedSettings = null;
   var DEFAULT_SETTINGS = {
-    selection_shortcut: 'Ctrl+Alt+T',
-    activation_shortcut: 'Ctrl+Alt+I',
-    open_main_window: false,
-    target_lang: 'auto',
-    auto_start: false,
-    start_to_tray: true
+    selection_shortcut: 'Ctrl+Alt+T', activation_shortcut: 'Ctrl+Alt+I',
+    open_main_window: false, target_lang: 'auto', auto_start: false, start_to_tray: true,
+    preferences: copyObject(DEFAULT_PREFERENCES)
   };
 
-  function initDesktopSettings() {
-    if (!Bridge.isDesktop) return;
+  function valueAtPath(source, path) {
+    return path.split('.').reduce(function (value, key) {
+      return value && value[key] != null ? value[key] : undefined;
+    }, source);
+  }
 
+  function assignAtPath(target, path, value) {
+    var parts = path.split('.');
+    var cursor = target;
+    for (var i = 0; i < parts.length - 1; i++) {
+      if (!cursor[parts[i]]) cursor[parts[i]] = {};
+      cursor = cursor[parts[i]];
+    }
+    cursor[parts[parts.length - 1]] = value;
+  }
+
+  function settingsFromSaved(saved, localPreferences) {
+    var result = copyObject(DEFAULT_SETTINGS);
+    if (saved && typeof saved === 'object') {
+      ['selection_shortcut', 'activation_shortcut', 'open_main_window', 'target_lang',
+        'auto_start', 'start_to_tray'].forEach(function (key) {
+        if (saved[key] !== undefined) result[key] = saved[key];
+      });
+    }
+    result.preferences = normalizePreferences(
+      saved && saved.preferences ? saved.preferences : localPreferences);
+    return result;
+  }
+
+  function restoreTranslationPreferences(preferences) {
+    var translation = normalizePreferences(preferences).translation;
+    var saved = null;
+    try { saved = JSON.parse(localStorage.getItem('it-state') || 'null'); }
+    catch (e) {}
+
+    state.tab = translation.defaultTab === 'last' ? 'text' : translation.defaultTab;
+    state.src = translation.sourceLanguage;
+    state.tgt = translation.targetLanguage;
+    Object.keys(state.model).forEach(function (group) {
+      state.model[group] = translation.defaultModels[group];
+    });
+    if (saved) {
+      if (translation.defaultTab === 'last' && ['text', 'syllable', 'doc'].indexOf(saved.tab) >= 0) {
+        state.tab = saved.tab;
+      }
+      if (translation.rememberLanguages) {
+        if (Object.prototype.hasOwnProperty.call(LANGS, saved.src) || saved.src === 'auto') state.src = saved.src;
+        if (Object.prototype.hasOwnProperty.call(LANGS, saved.tgt)) state.tgt = saved.tgt;
+      }
+      if (translation.rememberModels && saved.model) {
+        Object.keys(MODEL_OPTIONS).forEach(function (group) {
+          if (MODEL_OPTIONS[group].indexOf(saved.model[group]) >= 0) state.model[group] = saved.model[group];
+        });
+      }
+    }
+    shownTab = state.tab;
+    if ($('src-lang').querySelector('option[value="' + state.src + '"]')) $('src-lang').value = state.src;
+    if ($('tgt-lang').querySelector('option[value="' + state.tgt + '"]')) $('tgt-lang').value = state.tgt;
+    document.querySelectorAll('.models button').forEach(function (button) {
+      var group = button.parentElement.id.replace('model-', '');
+      button.classList.toggle('on', state.model[group] === button.getAttribute('data-model'));
+    });
+    document.querySelectorAll('.tabs button[data-tab]').forEach(function (button) {
+      var selected = button.getAttribute('data-tab') === state.tab;
+      button.classList.toggle('on', selected);
+      button.setAttribute('aria-selected', selected ? 'true' : 'false');
+      button.tabIndex = selected ? 0 : -1;
+    });
+    document.querySelectorAll('.pane[role="tabpanel"]').forEach(function (pane) {
+      var selected = pane.id === 'pane-' + state.tab;
+      pane.classList.toggle('on', selected);
+      pane.inert = !selected;
+      pane.setAttribute('aria-hidden', selected ? 'false' : 'true');
+    });
+    document.querySelectorAll('.dock').forEach(function (dock) {
+      dock.classList.toggle('on', dock.getAttribute('data-pane') === state.tab);
+    });
+    refreshSelectButtons(false);
+    positionThumbs(false);
+  }
+
+  function initDesktopSettings() {
     var modal = document.createElement('div');
     modal.className = 'it-set-mask';
     modal.setAttribute('aria-hidden', 'true');
     modal.inert = true;
-    modal.innerHTML =
-      '<div class="it-set" role="dialog" aria-modal="true" aria-label="设置" tabindex="-1">' +
-        '<div class="it-set-head"><b>设置</b>' +
-          '<button type="button" class="it-set-x" data-close="1" aria-label="关闭">×</button></div>' +
-        '<div class="it-set-body">' +
-          '<label class="it-set-row"><span>划词翻译快捷键</span>' +
-            '<input type="text" id="it-set-selection" readonly placeholder="点击后按组合键"></label>' +
-          '<label class="it-set-row"><span>显示 / 隐藏窗口</span>' +
-            '<input type="text" id="it-set-activation" readonly placeholder="点击后按组合键"></label>' +
-          '<label class="it-set-row"><span>划词结果显示</span>' +
-            '<select id="it-set-mode">' +
-              '<option value="popup">鼠标旁悬浮窗</option>' +
-              '<option value="main">打开主窗口</option>' +
-            '</select></label>' +
-          '<label class="it-set-row"><span>悬浮窗目标语言</span>' +
-            '<select id="it-set-lang">' +
-              '<option value="auto">自动判断</option>' +
-              '<option value="zh">中文</option>' +
-              '<option value="en">英文</option>' +
-            '</select></label>' +
-          '<label class="it-set-row"><span>开机自动启动</span>' +
-            '<input type="checkbox" class="it-set-check" id="it-set-autostart"></label>' +
-          '<label class="it-set-row"><span>启动后最小化到托盘</span>' +
-            '<input type="checkbox" class="it-set-check" id="it-set-starttotray"></label>' +
-          '<div class="it-set-note" id="it-set-note">点击快捷键输入框后直接按组合键（需包含 Ctrl / Alt / Shift）。开机自启、启动到托盘在下次启动生效。</div>' +
-        '</div>' +
-        '<div class="it-set-foot">' +
-          '<button type="button" class="ghost" id="it-set-default">恢复默认</button>' +
-          '<span class="sp"></span>' +
-          '<button type="button" class="ghost" data-close="1">取消</button>' +
-          '<button type="button" class="primary" id="it-set-save">保存</button>' +
-        '</div>' +
-      '</div>';
+    modal.innerHTML = `
+      <div class="it-set" role="dialog" aria-modal="true" aria-label="设置" tabindex="-1">
+        <div class="it-set-head"><b>设置</b><span id="it-set-status" role="status"></span>
+          <button type="button" class="it-set-x" data-close="1" aria-label="关闭设置" title="关闭">×</button></div>
+        <div class="it-set-layout">
+          <nav class="it-set-nav" aria-label="设置类别">
+            <button type="button" class="on" data-pref-tab="appearance">外观</button>
+            <button type="button" data-pref-tab="background">背景</button>
+            <button type="button" data-pref-tab="reading">阅读与布局</button>
+            <button type="button" data-pref-tab="motion">动效</button>
+            <button type="button" data-pref-tab="translation">翻译偏好</button>
+            <button type="button" data-pref-tab="desktop" data-desktop-only hidden>电脑功能</button>
+          </nav>
+          <div class="it-set-body">
+            <section class="it-set-page" data-pref-section="appearance">
+              <h2>外观</h2>
+              <div class="it-pref-preview"><span class="it-pref-preview-label">实时预览</span>
+                <div class="it-pref-preview-card"><span>笺</span><span>原文 · 译文</span>
+                  <b>清楚、舒适的阅读体验</b><i></i></div></div>
+              <label class="it-set-row"><span>明暗主题</span><select id="it-pref-theme" data-pref="appearance.mode">
+                <option value="light">浅色</option><option value="dark">深色</option><option value="system">跟随系统</option>
+              </select></label>
+              <label class="it-set-row"><span>配色</span><select id="it-pref-palette" data-pref="appearance.palette">
+                <option value="sakura">薄樱</option><option value="mist">雾蓝</option>
+                <option value="sage">鼠尾草</option><option value="amber">暖杏</option>
+              </select></label>
+              <label class="it-set-row"><span>材质</span><select data-pref="appearance.material">
+                <option value="glass">玻璃</option><option value="frosted">磨砂</option><option value="solid">纯色</option>
+              </select></label>
+              <label class="it-set-range"><span>玻璃强度 <output data-pref-output="appearance.glassStrength"></output></span>
+                <input type="range" min="0" max="100" step="5" data-pref="appearance.glassStrength" data-pref-type="number"></label>
+              <label class="it-set-row"><span>卡片圆角</span><select data-pref="appearance.radius">
+                <option value="small">小</option><option value="standard">标准</option><option value="round">圆润</option>
+              </select></label>
+            </section>
+            <section class="it-set-page" data-pref-section="reading" hidden>
+              <h2>阅读与布局</h2>
+              <label class="it-set-row"><span>内容字体</span><select data-pref="appearance.font">
+                <option value="sans">系统无衬线</option><option value="serif">系统衬线</option><option value="mono">等宽</option>
+              </select></label>
+              <label class="it-set-range"><span>内容字号 <output data-pref-output="appearance.fontScale"></output></span>
+                <input type="range" min="90" max="140" step="5" data-pref="appearance.fontScale" data-pref-type="number"></label>
+              <label class="it-set-row"><span>内容间距</span><select data-pref="appearance.layout">
+                <option value="standard">标准</option><option value="compact">紧凑</option>
+              </select></label>
+            </section>
+            <section class="it-set-page" data-pref-section="motion" hidden>
+              <h2>动效</h2>
+              <label class="it-set-row"><span>界面动画</span><select data-pref="appearance.motion">
+                <option value="system">跟随系统</option><option value="reduced">减少</option><option value="off">关闭</option>
+              </select></label>
+              <label class="it-set-row"><span>环境柔光</span><input type="checkbox" class="it-set-check" data-pref="appearance.ambientLight" data-pref-type="boolean"></label>
+              <div class="it-set-note">系统启用减少动态效果时，动画会立即关闭。</div>
+            </section>
+            <section class="it-set-page" data-pref-section="background" hidden>
+              <h2>背景</h2>
+              <div class="it-set-actions"><button type="button" class="ghost" id="it-pref-pick-background">选择背景图片</button>
+                <button type="button" class="ghost" id="it-pref-reset-background">恢复默认背景</button></div>
+              <div class="it-set-note" id="it-pref-background-status">背景图片仅保存在本机。</div>
+              <label class="it-set-range"><span>背景淡化 <output data-pref-output="background.opacity"></output></span>
+                <input type="range" min="0" max="80" step="2" data-pref="background.opacity" data-pref-type="number"></label>
+              <label class="it-set-range"><span>背景模糊 <output data-pref-output="background.blur"></output></span>
+                <input type="range" min="0" max="20" step="1" data-pref="background.blur" data-pref-type="number"></label>
+              <label class="it-set-row"><span>图片显示</span><select data-pref="background.fit">
+                <option value="cover">填满背景</option><option value="contain">完整显示</option>
+              </select></label>
+            </section>
+            <section class="it-set-page" data-pref-section="translation" hidden>
+              <h2>翻译偏好</h2>
+              <label class="it-set-row"><span>默认打开页面</span><select data-pref="translation.defaultTab">
+                <option value="text">文本</option><option value="syllable">音节</option>
+                <option value="doc">长文</option><option value="last">上次页面</option>
+              </select></label>
+              <label class="it-set-row"><span>默认源语言</span><select id="it-pref-source" data-pref="translation.sourceLanguage"></select></label>
+              <label class="it-set-row"><span>默认目标语言</span><select id="it-pref-target" data-pref="translation.targetLanguage"></select></label>
+              <label class="it-set-row"><span>文本默认模型</span><select data-pref="translation.defaultModels.text">
+                <option value="index-mt-2b">2B 快</option><option value="index-mt-9b">9B</option><option value="index-mt-35b">35B</option>
+              </select></label>
+              <label class="it-set-row"><span>音节默认模型</span><select data-pref="translation.defaultModels.syllable">
+                <option value="index-mt-2b-syllable">2B</option><option value="index-mt-9b-syllable">9B</option>
+              </select></label>
+              <label class="it-set-row"><span>长文默认模型</span><select data-pref="translation.defaultModels.doc">
+                <option value="index-nailong-2b">2B</option><option value="index-nailong-9b">9B</option>
+              </select></label>
+              <label class="it-set-row"><span>记住上次语言</span><input type="checkbox" class="it-set-check" data-pref="translation.rememberLanguages" data-pref-type="boolean"></label>
+              <label class="it-set-row"><span>记住上次模型</span><input type="checkbox" class="it-set-check" data-pref="translation.rememberModels" data-pref-type="boolean"></label>
+              <div class="it-set-note">关闭记忆后，下次启动使用这里设定的默认项。</div>
+            </section>
+            <section class="it-set-page" data-pref-section="desktop" hidden>
+              <h2>电脑功能</h2>
+              <label class="it-set-row"><span>划词翻译快捷键</span><input type="text" id="it-set-selection" readonly placeholder="点击后按组合键"></label>
+              <label class="it-set-row"><span>显示 / 隐藏窗口</span><input type="text" id="it-set-activation" readonly placeholder="点击后按组合键"></label>
+              <label class="it-set-row"><span>划词结果显示</span><select id="it-set-mode"><option value="popup">鼠标旁悬浮窗</option><option value="main">打开主窗口</option></select></label>
+              <label class="it-set-row"><span>悬浮窗目标语言</span><select id="it-set-lang"><option value="auto">自动判断</option><option value="zh">中文</option><option value="en">英文</option></select></label>
+              <label class="it-set-row"><span>开机自动启动</span><input type="checkbox" class="it-set-check" id="it-set-autostart"></label>
+              <label class="it-set-row"><span>启动后最小化到托盘</span><input type="checkbox" class="it-set-check" id="it-set-starttotray"></label>
+              <div class="it-set-note">自启动和启动到托盘设置下次启动时生效。</div>
+            </section>
+          </div>
+        </div>
+        <div class="it-set-foot"><button type="button" class="ghost" data-reset-section>恢复本组默认</button>
+          <span class="sp"></span><button type="button" class="ghost" data-close="1">取消</button>
+          <button type="button" class="primary" id="it-set-save">保存</button></div>
+      </div>`;
     document.body.appendChild(modal);
 
     var recording = null;
@@ -1879,15 +2327,49 @@
     var returnFocus = null;
     var backgroundState = [];
     var settingsSeq = 0;
+    var backgroundPickSeq = 0;
+    var settingsSaving = false;
+    var activeSection = 'appearance';
+
+    modal.querySelectorAll('[data-pref-tab="desktop"]').forEach(function (tab) {
+      tab.hidden = !Bridge.isDesktop;
+    });
+    var langOptions = '<option value="auto">自动检测</option>';
+    Object.keys(LANGS).forEach(function (code) {
+      langOptions += '<option value="' + code + '">' + langName(code) + '</option>';
+    });
+    $('it-pref-source').innerHTML = langOptions;
+    $('it-pref-target').innerHTML = langOptions.replace('<option value="auto">自动检测</option>', '');
 
     function fill() {
       if (!settingsState) return;
+      modal.querySelectorAll('[data-pref]').forEach(function (control) {
+        var value = valueAtPath(settingsState.preferences, control.getAttribute('data-pref'));
+        if (control.type === 'checkbox') control.checked = !!value;
+        else control.value = value == null ? '' : String(value);
+      });
+      modal.querySelectorAll('[data-pref-output]').forEach(function (output) {
+        var value = valueAtPath(settingsState.preferences, output.getAttribute('data-pref-output'));
+        var suffix = output.getAttribute('data-pref-output') === 'background.blur' ? ' px' :
+          output.getAttribute('data-pref-output').indexOf('Scale') >= 0 ||
+          output.getAttribute('data-pref-output') === 'background.opacity' ? '%' : '%';
+        output.textContent = value + suffix;
+      });
       $('it-set-selection').value = settingsState.selection_shortcut || '';
       $('it-set-activation').value = settingsState.activation_shortcut || '未设置';
       $('it-set-mode').value = settingsState.open_main_window ? 'main' : 'popup';
       $('it-set-lang').value = settingsState.target_lang || 'auto';
       $('it-set-autostart').checked = !!settingsState.auto_start;
       $('it-set-starttotray').checked = settingsState.start_to_tray !== false;
+      $('it-pref-background-status').textContent = settingsState.preferences.background.data ?
+        '已选择背景图片，保存设置后保留。' : '未选择背景图片。';
+      modal.querySelectorAll('[data-pref-section]').forEach(function (section) {
+        section.hidden = section.getAttribute('data-pref-section') !== activeSection;
+      });
+      modal.querySelectorAll('[data-pref-tab]').forEach(function (tab) {
+        tab.classList.toggle('on', tab.getAttribute('data-pref-tab') === activeSection);
+        tab.setAttribute('aria-current', tab.getAttribute('data-pref-tab') === activeSection ? 'page' : 'false');
+      });
     }
 
     function stopRecord() {
@@ -1923,11 +2405,20 @@
       document.addEventListener('keydown', onKey, true);
     }
 
+    function enableControls(enabled) {
+      modal.querySelectorAll('.it-set-body input, .it-set-body select, .it-set-body button, #it-set-save, [data-reset-section]')
+        .forEach(function (control) { control.disabled = !enabled; });
+    }
+
     function close() {
       if (!modal.classList.contains('on')) return false;
+      if (settingsSaving) return true;
       stopRecord();
       closeSelect();
       settingsSeq++;
+      settingsState = committedSettings ? copyObject(committedSettings) : copyObject(DEFAULT_SETTINGS);
+      applyPreferences(settingsState.preferences);
+      fill();
       backgroundState.forEach(function (entry) { entry.el.inert = entry.inert; });
       backgroundState = [];
       if (returnFocus && returnFocus.isConnected) returnFocus.focus({ preventScroll: true });
@@ -1936,7 +2427,7 @@
       modal.setAttribute('aria-hidden', 'true');
       modal.inert = true;
       moveSurface(dialog, settingsOrigin, false, function () { modal.classList.remove('it-surface-leave'); });
-      Bridge.invoke('it_set_hotkeys_enabled', { enabled: true }).catch(function () {});
+      if (Bridge.isDesktop) Bridge.invoke('it_set_hotkeys_enabled', { enabled: true }).catch(function () {});
       return true;
     }
     closeSettingsLayer = close;
@@ -1945,9 +2436,14 @@
       if (modal.classList.contains('on')) return;
       closeSelect();
       var seq = ++settingsSeq;
+      activeSection = source && source.section ? source.section : 'appearance';
+      if (activeSection === 'desktop' && !Bridge.isDesktop) activeSection = 'appearance';
       returnFocus = (source && source.trigger) || document.activeElement;
       settingsOrigin = (source && source.origin) || rectOf(returnFocus);
-      settingsState = settingsState || JSON.parse(JSON.stringify(DEFAULT_SETTINGS));
+      settingsState = settingsFromSaved(null, activePreferences);
+      var resetBackgroundOnOpen = !!(source && source.resetBackground);
+      committedSettings = copyObject(settingsState);
+      if (resetBackgroundOnOpen) settingsState.preferences.background.data = '';
       modal.inert = false;
       modal.setAttribute('aria-hidden', 'false');
       modal.classList.remove('it-surface-leave');
@@ -1962,19 +2458,91 @@
       });
       moveSurface(dialog, settingsOrigin, true);
       dialog.querySelector('[data-close]').focus({ preventScroll: true });
-      Bridge.invoke('it_set_hotkeys_enabled', { enabled: false }).catch(function () {});
-      Bridge.invoke('it_get_settings').then(function (saved) {
-        if (saved && seq === settingsSeq && !recording) { settingsState = saved; fill(); }
-      }).catch(function () {});
+      if (resetBackgroundOnOpen) applyPreferences(settingsState.preferences);
+      if (Bridge.isDesktop) {
+        enableControls(false);
+        $('it-set-status').textContent = '读取中';
+        Bridge.invoke('it_set_hotkeys_enabled', { enabled: false }).catch(function () {});
+        Bridge.invoke('it_get_settings').then(function (saved) {
+          if (seq !== settingsSeq || !modal.classList.contains('on')) return;
+          settingsState = settingsFromSaved(saved, readSavedPreferences());
+          committedSettings = copyObject(settingsState);
+          if (resetBackgroundOnOpen) settingsState.preferences.background.data = '';
+          applyPreferences(settingsState.preferences);
+          fill();
+          $('it-set-status').textContent = '';
+          enableControls(true);
+        }).catch(function (error) {
+          if (seq !== settingsSeq) return;
+          $('it-set-status').textContent = '读取失败，请关闭后重试';
+          toast('设置读取失败：' + error, true);
+        });
+      } else {
+        applyPreferences(settingsState.preferences);
+        $('it-set-status').textContent = '';
+        enableControls(true);
+      }
     };
 
     on(modal, 'click', function (e) {
       if (e.target === modal || (e.target.closest && e.target.closest('[data-close]'))) close();
+      var tab = e.target.closest && e.target.closest('[data-pref-tab]');
+      if (tab && !tab.disabled) {
+        activeSection = tab.getAttribute('data-pref-tab');
+        fill();
+      }
+      if (e.target.closest && e.target.closest('[data-reset-section]')) {
+        var defaults = copyObject(DEFAULT_PREFERENCES);
+        if (activeSection === 'desktop') {
+          var preservedPreferences = copyObject(settingsState.preferences);
+          settingsState = copyObject(DEFAULT_SETTINGS);
+          settingsState.preferences = preservedPreferences;
+        } else if (activeSection === 'reading') {
+          settingsState.preferences.appearance.font = defaults.appearance.font;
+          settingsState.preferences.appearance.fontScale = defaults.appearance.fontScale;
+          settingsState.preferences.appearance.layout = defaults.appearance.layout;
+        } else if (activeSection === 'motion') {
+          settingsState.preferences.appearance.motion = defaults.appearance.motion;
+          settingsState.preferences.appearance.ambientLight = defaults.appearance.ambientLight;
+        } else if (activeSection === 'appearance') {
+          ['mode', 'palette', 'material', 'glassStrength', 'radius'].forEach(function (key) {
+            settingsState.preferences.appearance[key] = defaults.appearance[key];
+          });
+        } else {
+          settingsState.preferences[activeSection === 'appearance' ? 'appearance' :
+            activeSection === 'background' ? 'background' : 'translation'] =
+            defaults[activeSection === 'appearance' ? 'appearance' :
+              activeSection === 'background' ? 'background' : 'translation'];
+        }
+        applyPreferences(settingsState.preferences);
+        fill();
+      }
+      if (e.target.closest && e.target.closest('#it-pref-pick-background')) {
+        var selection = ++backgroundPickSeq;
+        var session = settingsSeq;
+        Bridge.pickImage(function (dataUrl) {
+          if (!dataUrl || !settingsState || session !== settingsSeq ||
+              selection !== backgroundPickSeq || !modal.classList.contains('on')) return;
+          shrinkImage(dataUrl, function (compressed) {
+            if (!settingsState || session !== settingsSeq || selection !== backgroundPickSeq ||
+                !modal.classList.contains('on')) return;
+            settingsState.preferences.background.data = compressed;
+            applyPreferences(settingsState.preferences);
+            fill();
+          });
+        });
+      }
+      if (e.target.closest && e.target.closest('#it-pref-reset-background')) {
+        backgroundPickSeq++;
+        settingsState.preferences.background.data = '';
+        applyPreferences(settingsState.preferences);
+        fill();
+      }
     });
     on(modal, 'keydown', function (e) {
       if (e.key !== 'Tab' || !modal.classList.contains('on')) return;
       var focusable = Array.prototype.slice.call(dialog.querySelectorAll('button, input, select, [tabindex]'))
-        .filter(function (el) { return !el.disabled && el.tabIndex >= 0 && el.getClientRects().length; });
+        .filter(function (el) { return !el.disabled && !el.hidden && el.tabIndex >= 0 && el.getClientRects().length; });
       if (!focusable.length) { e.preventDefault(); dialog.focus(); return; }
       var first = focusable[0];
       var last = focusable[focusable.length - 1];
@@ -1986,28 +2554,91 @@
     });
     on($('it-set-selection'), 'click', function () { startRecord(this, 'selection_shortcut'); });
     on($('it-set-activation'), 'click', function () { startRecord(this, 'activation_shortcut'); });
-    on($('it-set-default'), 'click', function () {
-      settingsState = JSON.parse(JSON.stringify(DEFAULT_SETTINGS));
-      fill();
-    });
     on($('it-set-mode'), 'change', function () { settingsState.open_main_window = this.value === 'main'; });
     on($('it-set-lang'), 'change', function () { settingsState.target_lang = this.value; });
     on($('it-set-autostart'), 'change', function () { settingsState.auto_start = this.checked; });
     on($('it-set-starttotray'), 'change', function () { settingsState.start_to_tray = this.checked; });
+
+    function updatePreference(control) {
+      if (settingsSaving || !settingsState || !control.hasAttribute('data-pref')) return;
+      var value = control.type === 'checkbox' ? control.checked : control.value;
+      if (control.getAttribute('data-pref-type') === 'number') value = Number(value);
+      assignAtPath(settingsState.preferences, control.getAttribute('data-pref'), value);
+      settingsState.preferences = normalizePreferences(settingsState.preferences);
+      applyPreferences(settingsState.preferences);
+      fill();
+    }
+    on(modal, 'input', function (e) { updatePreference(e.target); });
+    on(modal, 'change', function (e) { updatePreference(e.target); });
+
     on($('it-set-save'), 'click', function () {
+      if (settingsSaving) return;
+      stopRecord();
+      closeSelect();
+      backgroundPickSeq++;
+      var submission = copyObject(settingsState);
+      settingsSaving = true;
       var button = this;
-      button.disabled = true;
-      Bridge.invoke('it_save_settings', { settings: settingsState }).then(function (errors) {
-        button.disabled = false;
-        if (errors && errors.length) toast(errors.join('；'), true);
-        else { toast('设置已保存'); close(); }
+      delete button.dataset.cacheError;
+      enableControls(false);
+      modal.querySelectorAll('.it-set-nav button, [data-close]').forEach(function (control) {
+        control.disabled = true;
+      });
+      $('it-set-status').textContent = '保存中';
+      function unlock() {
+        settingsSaving = false;
+        enableControls(true);
+        modal.querySelectorAll('.it-set-nav button, [data-close]').forEach(function (control) {
+          control.disabled = false;
+        });
+        $('it-set-status').textContent = '';
+      }
+      var finishSave = function () {
+        try {
+          localStorage.setItem(PREFERENCES_KEY, JSON.stringify(submission.preferences));
+        } catch (error) {
+          if (!Bridge.isDesktop) {
+            unlock();
+            toast('设置保存失败：' + error, true);
+            return;
+          }
+          button.dataset.cacheError = 'true';
+        }
+        if (Bridge.isAndroid && window.NativeBridge &&
+            typeof window.NativeBridge.commitAppearance === 'function') {
+          try {
+            if (!window.NativeBridge.commitAppearance(nativeAppearanceSnapshot(submission.preferences))) {
+              button.dataset.cacheError = 'true';
+            }
+          } catch (error) {
+            button.dataset.cacheError = 'true';
+          }
+        }
+        committedSettings = copyObject(submission);
+        settingsState = copyObject(submission);
+        applyPreferences(committedSettings.preferences);
+        unlock();
+        toast(button.dataset.cacheError === 'true' ?
+          (Bridge.isAndroid ? '设置已保存；原生外观缓存未能更新' : '设置已保存；本机缓存未能更新') :
+          '设置已保存', button.dataset.cacheError === 'true');
+        delete button.dataset.cacheError;
+        close();
+      };
+      if (!Bridge.isDesktop) { finishSave(); return; }
+      Bridge.invoke('it_save_settings', { settings: submission }).then(function (errors) {
+        if (errors && errors.length) {
+          unlock();
+          toast(errors.join('；'), true);
+          return;
+        }
+        finishSave();
       }).catch(function (error) {
-        button.disabled = false;
+        unlock();
         toast('保存失败：' + error, true);
       });
     });
 
-    Bridge.invoke('it_set_hotkeys_enabled', { enabled: true }).catch(function () {});
+    if (Bridge.isDesktop) Bridge.invoke('it_set_hotkeys_enabled', { enabled: true }).catch(function () {});
   }
 
   /* ---------------- 15. 初始化 ---------------- */
@@ -2015,8 +2646,22 @@
     if (PLATFORM === 'desktop') document.documentElement.classList.add('it-desktop');
     if (PLATFORM === 'android') document.documentElement.classList.add('it-android');
 
+    var nativeBootstrap = null;
+    if (Bridge.isDesktop) {
+      nativeBootstrap = Bridge.invoke('it_get_settings');
+      nativeBootstrap.catch(function () {});
+    }
+
     fillLangSelects();
     enhanceAllSelects();
+    if (Bridge.isAndroid && window.NativeBridge && typeof window.NativeBridge.getSystemAppearance === 'function') {
+      try { currentSystemAppearance = window.NativeBridge.getSystemAppearance() === 'dark' ? 'dark' : 'light'; }
+      catch (e) {}
+    } else {
+      try { currentSystemAppearance = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'; }
+      catch (e) {}
+    }
+    applyPreferences(activePreferences);
     initTabs();
     initMobileKeyboardLayout();
     initModelGroups();
@@ -2058,21 +2703,7 @@
       tgt.dispatchEvent(new Event('change', { bubbles: true }));
     });
 
-    /* 记住上次选择 */
-    try {
-      var saved = JSON.parse(localStorage.getItem('it-state') || 'null');
-      if (saved) {
-        if (saved.src) { $('src-lang').value = saved.src; state.src = saved.src; }
-        if (saved.tgt) { $('tgt-lang').value = saved.tgt; state.tgt = saved.tgt; }
-        if (saved.model) {
-          Object.keys(saved.model).forEach(function (k) { if (state.model[k]) state.model[k] = saved.model[k]; });
-          document.querySelectorAll('.models button').forEach(function (btn) {
-            var group = btn.parentElement.id.replace('model-', '');
-            btn.classList.toggle('on', state.model[group] === btn.getAttribute('data-model'));
-          });
-        }
-      }
-    } catch (e) {}
+    restoreTranslationPreferences(activePreferences);
 
     /* 恢复的是程序化赋值，不会触发 change：手动把按钮文字与模型滑块对齐 */
     refreshSelectButtons(false);
@@ -2093,16 +2724,54 @@
     if (reducedMotionQuery.addEventListener) reducedMotionQuery.addEventListener('change', updateMotionPreference);
     else if (reducedMotionQuery.addListener) reducedMotionQuery.addListener(updateMotionPreference);
 
+    var colorSchemeQuery = window.matchMedia('(prefers-color-scheme: dark)');
+    function updateSystemAppearance() {
+      if (Bridge.isAndroid && window.NativeBridge && typeof window.NativeBridge.getSystemAppearance === 'function') {
+        try { currentSystemAppearance = window.NativeBridge.getSystemAppearance() === 'dark' ? 'dark' : 'light'; }
+        catch (e) { currentSystemAppearance = colorSchemeQuery.matches ? 'dark' : 'light'; }
+      } else {
+        currentSystemAppearance = colorSchemeQuery.matches ? 'dark' : 'light';
+      }
+      if (activePreferences.appearance.mode === 'system') applyPreferences(activePreferences);
+    }
+    if (colorSchemeQuery.addEventListener) colorSchemeQuery.addEventListener('change', updateSystemAppearance);
+    else if (colorSchemeQuery.addListener) colorSchemeQuery.addListener(updateSystemAppearance);
+    window.__itOnSystemAppearance = function (mode) {
+      if (mode !== 'light' && mode !== 'dark') return;
+      currentSystemAppearance = mode;
+      if (activePreferences.appearance.mode === 'system') applyPreferences(activePreferences);
+    };
+
     function persist() {
       try {
         localStorage.setItem('it-state', JSON.stringify({
-          src: state.src, tgt: state.tgt, model: state.model
+          src: state.src, tgt: state.tgt, model: state.model, tab: state.tab
         }));
       } catch (e) {}
     }
     on($('src-lang'), 'change', persist);
     on($('tgt-lang'), 'change', persist);
     document.querySelectorAll('.models button').forEach(function (b) { on(b, 'click', persist); });
+
+    if (Bridge.isDesktop && nativeBootstrap) {
+      var bootReleased = false;
+      var bootTimer = setTimeout(function () {
+        bootReleased = true;
+        document.documentElement.classList.remove('it-settings-boot');
+      }, 2500);
+      nativeBootstrap.then(function (savedSettings) {
+        if (bootReleased) return;
+        if (savedSettings && savedSettings.preferences) {
+          activePreferences = normalizePreferences(savedSettings.preferences);
+          applyPreferences(activePreferences);
+          restoreTranslationPreferences(activePreferences);
+        }
+      }).catch(function () {}).then(function () {
+        if (bootReleased) return;
+        clearTimeout(bootTimer);
+        document.documentElement.classList.remove('it-settings-boot');
+      });
+    }
 
     /* 调试钩子：只在 ?debug=1 时挂载，正式运行不暴露内部状态 */
     if (/[?&]debug=1/.test(location.search)) {
@@ -2112,7 +2781,9 @@
         runText: runText,
         runDoc: runDoc,
         switchTab: switchTab,
-        startWriter: startWriter
+        startWriter: startWriter,
+        preferences: { normalize: normalizePreferences, defaults: copyObject(DEFAULT_PREFERENCES),
+          apply: applyPreferences, nativeSnapshot: nativeAppearanceSnapshot }
       };
     }
   }
