@@ -1,4 +1,57 @@
-# 界面美学与动效：v10 设置切换与控件
+# 界面美学与动效：v11 触控与背景范围
+
+## v11：手机底栏入口、拖动选择与卡片背景裁剪（2026-11-15）
+
+- 手机顶部品牌入口与空标题栏收起，底栏改为三个模式共用玻璃胶囊，旁边独立放置“设置”
+  齿轮按钮。齿轮提供 58px 触控区域，在上方打开“设置…”与“关于”；关闭页面后回焦到齿轮。
+  输入时底栏和操作区一同避让。Windows 窄窗口仍保留标题栏及最小化、最大化、关闭按钮。
+- 去掉 WebKit 默认蓝色触摸高亮，保留主题 `:focus-visible` 焦点轮廓与正文选区颜色。
+  浏览器使用 CSS 安全区；Android 原生把系统栏、刘海和键盘 insets 应用为 WebView 实际外边距，
+  再将已处理的 insets 清零后传给 WebView，避免 fixed 控件和触摸坐标落在系统栏下或重复避让。
+- 主模式与模型胶囊支持鼠标及触屏拖动：横向移动 8px 后捕获，滑块跟随指针，
+  越过相邻项中点并加 4px 回差时实时切换；同一手势支持多次和反向切换，松开或取消后对齐当前项。
+  普通点击、方向键、焦点及原有持久化路径保留；条外松开、失焦和缩放均清理捕获。
+- 原文、译文、翻译要求、下拉列表与设置内容统一透明滚动轨道、主题色细圆角滑块，
+  去掉系统滚动箭头。WebKit 使用伪元素样式；标准 scrollbar 属性只在非 WebKit 分支中使用，
+  避免 Chromium 用原生滚动条覆盖自绘样式。
+- Windows 悬浮窗背景层改为卡片同矩形及同圆角裁剪，图片、模糊和淡化都不进入四周阴影留白；
+  外阴影放到 frame，内部高光留给卡片。`contain` 按卡片尺寸完整显示，
+  `cover` 仅在背景模糊开启时扩展所需边缘。设置内预览同步使用同样分层。
+
+### v11 验证记录
+
+- `node tests/verify-motion.mjs`：**120/120 通过**。新增鼠标/触屏拖动、门槛抖动、
+  实时多项/反向选择、取消与条外松开、拖动后方向键、手机齿轮入口与回焦、安全区、
+  点击高亮、浅深滚动条、窄桌面标题栏、悬浮窗背景与预览矩形、完整显示、透明外部和阴影检查。
+- 实际浏览器截图已查看：`output/preview-touch-mobile-main.png`、
+  `output/preview-touch-mobile-menu.png`、`output/preview-touch-scrollbar-light.png`、
+  `output/preview-touch-scrollbar-dark.png`、`output/preview-popup-clipped-contain.png`、
+  `output/preview-popup-clipped-dark.png`。浮窗带边框测试图四边完整，外部采样仅有透明或阴影像素。
+- JavaScript 语法、维护源 `rustfmt --check` 及 `git diff --check` 通过；
+  Android 离线 Java 编译及 Release 构建成功。Java、JS 及综合代码审查均已完成；
+  审查发现的窄桌面窗口按钮隐藏和 `contain` 图片边缘裁剪已修复并复核。
+- Android 完整离线 `check` 在 AndroidTest lint 模型依赖解析时因缺少本地缓存停止；
+  这不代表完整检查已通过。真实 Android 状态栏、IME、横竖屏与刘海屏，Windows 原生浮窗及
+  DPI 的设备验收仍需补充；浏览器仿真和模板渲染不替代设备结果。
+- Rust 预检的 Windows 目标离线 `cargo check` 通过；严格 `clippy -D warnings` 仍报告三项既有
+  脚本投递/窗口创建警告（多余借用及副作用 `map`），未把严格 Clippy 记录为通过。
+
+### v11 构建交付
+
+应用版本保持 `2.2.0`，Android versionCode 保持 `5`。上一轮产物保留，本轮另存为：
+
+| 文件 | 字节数 | 构建时间（Asia/Shanghai） |
+| --- | ---: | --- |
+| `output/笺-2.2.0-交互优化.exe` | 9,400,320 | 2026-11-15 21:02:44 |
+| `output/笺-2.2.0-交互优化.msi` | 4,292,608 | 2026-11-15 21:02:41 |
+| `output/笺-2.2.0-交互优化.apk` | 3,579,692 | 2026-11-15 20:59:11 |
+
+Windows 由 `.build/release-stage-touch-2.2.0/` 复制，Release 编译和 MSI 打包成功；
+Android 先覆盖同步四项 `web/` 资源，再离线构建并跳过历史删除任务。
+APK 内资源哈希与源码一致，v2 签名验证通过；发布 SHA-256 追加到 `output/SHA256SUMS.txt`。
+MSI 产品版本为 `2.2.0`；EXE 的 PE 版本仍沿用 Pake 模板 `3.18.0` 的已知限制。
+
+---
 
 ## v10：设置连贯切换、统一下拉与开源入口（2026-11-15）
 
@@ -140,7 +193,7 @@ Android 签名凭据已外置到被忽略的 `android/signing.properties`，原�
 独立预览服务现位于 `tests/serve-preview.mjs`，不再依赖 `.build/` 中的临时脚本；
 Windows 模板版本固定使用 Pake 3.18.0。完整入口见根目录 README。
 
-> **当前源码：v10「设置连贯切换、统一下拉与开源入口」**（2026-11-15，前端资源 v16）。当前自绘界面的样式与
+> **当前源码：v11「手机底栏入口、拖动选择与卡片背景裁剪」**（2026-11-15，前端资源 v17）。当前自绘界面的样式与
 > 动效真源是 `web/theme.css`；Android WebView 共用这份资源。Windows 划词浮窗在
 > `desktop/patch/setup.rs` 中接收已保存的外观偏好。
 > v7 发布包采用独立文件名，保留 `output/` 中既有文件及正在运行的程序。

@@ -13,18 +13,28 @@
     }
   } catch (e) {}
 </script>
-<link rel="stylesheet" href="theme.css?v=16">
+<link rel="stylesheet" href="theme.css?v=17">
 </head>
 <body>
 
 <header class="bar" id="appbar">
   <div class="brand" id="brand" role="button" tabindex="0" title="右键打开菜单">笺</div>
 
-  <nav class="tabs" role="tablist">
-    <button type="button" id="tab-text" data-tab="text" class="on" role="tab" aria-selected="true" aria-controls="pane-text">文本</button>
-    <button type="button" id="tab-syllable" data-tab="syllable" role="tab" aria-selected="false" aria-controls="pane-syllable" tabindex="-1">音节</button>
-    <button type="button" id="tab-doc" data-tab="doc" role="tab" aria-selected="false" aria-controls="pane-doc" tabindex="-1">长文</button>
-  </nav>
+  <div class="mobile-navigation">
+    <nav class="tabs" role="tablist" aria-label="翻译模式">
+      <button type="button" id="tab-text" data-tab="text" class="on" role="tab" aria-selected="true" aria-controls="pane-text">文本</button>
+      <button type="button" id="tab-syllable" data-tab="syllable" role="tab" aria-selected="false" aria-controls="pane-syllable" tabindex="-1">音节</button>
+      <button type="button" id="tab-doc" data-tab="doc" role="tab" aria-selected="false" aria-controls="pane-doc" tabindex="-1">长文</button>
+    </nav>
+    <button type="button" id="mobile-settings" class="mobile-settings" aria-label="设置与关于"
+      aria-controls="more-menu" aria-expanded="false">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true">
+        <path stroke-linejoin="round" d="m9 3-.7 2.2-2 .9-2.1-.5-2 3.4 1.5 1.7v2.4L2.2 15l2 3.4 2.1-.5 2 .9L9 21h4l.7-2.2 2-.9 2.1.5 2-3.4-1.5-1.7v-2.4l1.5-1.7-2-3.4-2.1.5-2-.9L13 3Z"/>
+        <circle cx="11" cy="12" r="3"/>
+      </svg>
+      <span>设置</span>
+    </button>
+  </div>
 
   <div class="bar-right">
     <div class="win-actions" id="win-actions" hidden>
@@ -249,6 +259,6 @@
 <div class="toast" id="toast"></div>
 
 <script src="langs.js?v=15"></script>
-<script src="app.js?v=16"></script>
+<script src="app.js?v=17"></script>
 </body>
 </html>

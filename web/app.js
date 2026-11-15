@@ -1281,7 +1281,7 @@
       localStorage.setItem('it-state', JSON.stringify(remembered));
     } catch (e) {}
     shownTab = name;
-    document.querySelectorAll('.tabs button').forEach(function (button) {
+    document.querySelectorAll('.tabs button[data-tab]').forEach(function (button) {
       var selected = button.getAttribute('data-tab') === name;
       button.classList.toggle('on', selected);
       button.setAttribute('aria-selected', selected ? 'true' : 'false');
@@ -1358,7 +1358,7 @@
   }
 
   function initTabs() {
-    var buttons = Array.prototype.slice.call(document.querySelectorAll('.tabs button'));
+    var buttons = Array.prototype.slice.call(document.querySelectorAll('.tabs button[data-tab]'));
     buttons.forEach(function (btn, index) {
       var tab = btn.getAttribute('data-tab');
       var selected = btn.classList.contains('on');
@@ -1403,14 +1403,112 @@
 
   /* ---------------- 8. 玻璃滑块 ----------------
      模式标签和模型组选中态共用同一套玻璃滑块。 */
+  function initSegmentDrag(box) {
+    if (!window.PointerEvent || box.dataset.dragReady === '1') return;
+    box.dataset.dragReady = '1';
+    var buttonSelector = box.classList.contains('tabs') ? 'button[data-tab]' : 'button[data-model]';
+    var buttons = Array.prototype.slice.call(box.querySelectorAll(buttonSelector));
+    var thumb = box.querySelector('.models-thumb, .tabs-thumb');
+    if (!thumb || buttons.length < 2) return;
+    var drag = null;
+    var ignoreClickUntil = 0;
+
+    function finishDrag() {
+      if (!drag) return;
+      var ending = drag;
+      drag = null;
+      box.classList.remove('is-dragging');
+      if (ending.dragging) {
+        ignoreClickUntil = performance.now() + 500;
+        thumb.style.transition = '';
+        moveThumb(box, box.querySelector(buttonSelector + '.on'), true);
+      }
+      try {
+        if (box.hasPointerCapture(ending.pointerId)) box.releasePointerCapture(ending.pointerId);
+      } catch (e) {}
+    }
+
+    on(box, 'pointerdown', function (e) {
+      var button = e.target.closest && e.target.closest(buttonSelector);
+      if (drag || !button || button.disabled || e.button !== 0 || e.isPrimary === false) return;
+      var index = buttons.indexOf(button);
+      if (index < 0 || button.closest('[inert]')) return;
+      var rect = box.getBoundingClientRect();
+      ignoreClickUntil = 0;
+      drag = {
+        pointerId: e.pointerId, startX: e.clientX, startY: e.clientY,
+        scale: rect.width ? box.offsetWidth / rect.width : 1,
+        startCenter: button.offsetLeft + button.offsetWidth / 2,
+        index: buttons.indexOf(box.querySelector(buttonSelector + '.on')),
+        dragging: false
+      };
+    });
+
+    on(document, 'pointermove', function (e) {
+      if (!drag || e.pointerId !== drag.pointerId) return;
+      if (e.pointerType === 'mouse' && !(e.buttons & 1)) { finishDrag(); return; }
+      var dx = e.clientX - drag.startX;
+      var dy = e.clientY - drag.startY;
+      if (!drag.dragging) {
+        if (Math.abs(dy) > 10 && Math.abs(dy) > Math.abs(dx) * 1.2) { finishDrag(); return; }
+        if (Math.abs(dx) < 8 || Math.abs(dx) < Math.abs(dy) * 1.2) return;
+        drag.dragging = true;
+        box.classList.add('is-dragging');
+        thumb.style.transition = 'none';
+        try { box.setPointerCapture(e.pointerId); } catch (error) {}
+      }
+      e.preventDefault();
+      var center = drag.startCenter + dx * drag.scale;
+      var index = Math.max(0, drag.index);
+      function centerAt(i) { return buttons[i].offsetLeft + buttons[i].offsetWidth / 2; }
+      while (index < buttons.length - 1 && center > (centerAt(index) + centerAt(index + 1)) / 2 + 4) index++;
+      while (index > 0 && center < (centerAt(index - 1) + centerAt(index)) / 2 - 4) index--;
+      if (index !== drag.index) {
+        drag.index = index;
+        buttons[index].focus({ preventScroll: true });
+        buttons[index].click();
+      }
+      var active = buttons[index];
+      thumb.style.width = active.offsetWidth + 'px';
+      var left = Math.max(buttons[0].offsetLeft,
+        Math.min(buttons[buttons.length - 1].offsetLeft, center - active.offsetWidth / 2));
+      thumb.style.transform = 'translateX(' + left + 'px)';
+    }, { passive: false });
+
+    on(document, 'pointerup', function (e) {
+      if (drag && e.pointerId === drag.pointerId) finishDrag();
+    });
+    on(document, 'pointercancel', function (e) {
+      if (drag && e.pointerId === drag.pointerId) finishDrag();
+    });
+    on(box, 'lostpointercapture', function (e) {
+      if (e.target === box && drag && e.pointerId === drag.pointerId) finishDrag();
+    });
+    on(window, 'blur', finishDrag);
+    on(window, 'resize', finishDrag);
+    on(box, 'keydown', function (e) {
+      if (drag && e.key === 'Escape') { finishDrag(); e.preventDefault(); }
+    });
+    /* 拖动已实时提交选择，吞掉同一手势随后合成的点击；新的按下和键盘点击仍正常处理。 */
+    on(box, 'click', function (e) {
+      if (e.detail > 0 && performance.now() < ignoreClickUntil) {
+        ignoreClickUntil = 0;
+        e.preventDefault();
+        e.stopImmediatePropagation();
+      }
+    }, true);
+  }
+
   function setupThumbs() {
     document.querySelectorAll('.models, .tabs').forEach(function (box) {
       var selector = box.classList.contains('tabs') ? '.tabs-thumb' : '.models-thumb';
-      if (box.querySelector(selector)) return;
-      var thumb = document.createElement('span');
-      thumb.className = selector.slice(1);
-      thumb.setAttribute('aria-hidden', 'true');
-      box.insertBefore(thumb, box.firstChild);
+      if (!box.querySelector(selector)) {
+        var thumb = document.createElement('span');
+        thumb.className = selector.slice(1);
+        thumb.setAttribute('aria-hidden', 'true');
+        box.insertBefore(thumb, box.firstChild);
+      }
+      initSegmentDrag(box);
     });
     positionThumbs();
   }
@@ -2058,6 +2156,7 @@
   function initMenu() {
     var menu = $('more-menu');
     var brand = $('brand');
+    var mobileSettings = $('mobile-settings');
     if (!menu || !brand) return;
     var aboutMask = $('it-about-mask');
     var aboutDialog = aboutMask && aboutMask.querySelector('.it-about');
@@ -2069,10 +2168,17 @@
     menu.setAttribute('aria-hidden', 'true');
     menu.inert = true;
     var menuOrigin = brand;
+    var menuTrigger = brand;
+
+    function visibleMenuTrigger(preferred) {
+      if (preferred && preferred.isConnected && preferred.getClientRects().length) return preferred;
+      return mobileSettings && mobileSettings.getClientRects().length ? mobileSettings : brand;
+    }
 
     function closeMenu() {
       if (!menu.classList.contains('on')) return false;
-      if (menu.contains(document.activeElement)) brand.focus({ preventScroll: true });
+      if (menu.contains(document.activeElement)) visibleMenuTrigger(menuTrigger).focus({ preventScroll: true });
+      if (mobileSettings) mobileSettings.setAttribute('aria-expanded', 'false');
       menu.setAttribute('aria-hidden', 'true');
       menu.inert = true;
       moveSurface(menu, menuOrigin, false, function () { menu.hidden = true; });
@@ -2091,7 +2197,7 @@
       aboutBackgroundState.forEach(function (entry) { entry.el.inert = entry.inert; });
       aboutBackgroundState = [];
       if (aboutReturnFocus && aboutReturnFocus.isConnected) {
-        aboutReturnFocus.focus({ preventScroll: true });
+        visibleMenuTrigger(aboutReturnFocus).focus({ preventScroll: true });
       }
       return true;
     }
@@ -2101,7 +2207,7 @@
       if (!aboutMask || !aboutDialog) return;
       closeSelect();
       aboutOrigin = origin || rectOf(document.activeElement);
-      aboutReturnFocus = brand;
+      aboutReturnFocus = visibleMenuTrigger(menuTrigger);
       aboutMask.inert = false;
       aboutMask.setAttribute('aria-hidden', 'false');
       aboutMask.classList.remove('it-surface-leave');
@@ -2134,21 +2240,39 @@
       }
     });
 
-    function openAt(x, y, origin) {
+    function openAt(x, y, origin, above) {
       closeSelect();
-      menuOrigin = origin || brand;
+      menuTrigger = visibleMenuTrigger(origin && origin.focus ? origin : null);
+      menuOrigin = origin || menuTrigger;
       menu.hidden = false;
       menu.setAttribute('aria-hidden', 'false');
       menu.inert = false;
       /* 先显示再量尺寸，避免贴边时溢出视口 */
       var w = menu.offsetWidth;
       var h = menu.offsetHeight;
+      if (above) {
+        var anchor = menuTrigger.getBoundingClientRect();
+        x = anchor.right - w;
+        y = anchor.top - h - 10;
+      }
       var left = Math.max(8, Math.min(x, window.innerWidth - w - 8));
       var top = Math.max(8, Math.min(y, window.innerHeight - h - 8));
       menu.style.left = left + 'px';
       menu.style.top = top + 'px';
+      if (mobileSettings) mobileSettings.setAttribute('aria-expanded', menuTrigger === mobileSettings ? 'true' : 'false');
       moveSurface(menu, menuOrigin, true);
     }
+
+    on(mobileSettings, 'click', function (e) {
+      e.stopPropagation();
+      if (menu.classList.contains('on') && menuTrigger === mobileSettings) {
+        closeMenu();
+        return;
+      }
+      openAt(0, 0, mobileSettings, true);
+      var firstItem = menu.querySelector('button');
+      if (firstItem) firstItem.focus({ preventScroll: true });
+    });
 
     /* 桌面：左键单击或右键「笺」都开菜单 */
     on(brand, 'click', function (e) {
@@ -2194,7 +2318,7 @@
           window.__itOpenSettings({
             section: 'appearance',
             origin: origin,
-            trigger: brand
+            trigger: visibleMenuTrigger(menuTrigger)
           });
         }
       } else if (act === 'about') {
@@ -2492,9 +2616,11 @@
                 <div class="it-set-divider"></div>
                 <h3>划词悬浮窗</h3>
                 <div class="it-popup-preview-scene" id="it-popup-preview-scene" aria-label="悬浮窗卡片预览">
-                  <div class="it-popup-preview-image" aria-hidden="true"></div>
-                  <div class="it-popup-preview-card">
-                    <b>原文 · 译文</b><span>清晰、舒适的阅读体验</span>
+                  <div class="it-popup-preview-frame">
+                    <div class="it-popup-preview-image" aria-hidden="true"></div>
+                    <div class="it-popup-preview-card">
+                      <b>原文 · 译文</b><span>清晰、舒适的阅读体验</span>
+                    </div>
                   </div>
                 </div>
                 <label class="it-set-range"><span>卡片透出 <output data-pref-output="popup.cardReveal"></output></span>
@@ -2589,6 +2715,8 @@
         dark ? 'rgba(18,16,24,' + overlayAlpha + ')' : 'rgba(255,255,255,' + overlayAlpha + ')');
       popupPreviewScene.style.setProperty('--it-popup-preview-fit', preferences.background.fit);
       popupPreviewScene.style.setProperty('--it-popup-preview-blur', preferences.background.blur + 'px');
+      popupPreviewScene.style.setProperty('--it-popup-preview-inset',
+        (preferences.background.fit === 'contain' ? 0 : -2 * preferences.background.blur) + 'px');
       popupCard.style.setProperty('--it-popup-card-bg', cardFactor === 0 ? 'transparent' :
         colorRgba(dark ? '#221F2A' : '#FFFFFF', tint * cardFactor));
       popupCard.style.setProperty('--it-popup-card-filter',

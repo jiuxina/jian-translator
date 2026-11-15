@@ -20,6 +20,7 @@ const results = [];
 const connections = [];
 let mainTargetId;
 let desktopTargetId;
+let popupTargetId;
 
 class Cdp {
   constructor(socket) {
@@ -278,6 +279,14 @@ async function selectSettingsSection(connection, section) {
   }
 }
 
+async function openMenu(connection) {
+  const trigger = await connection.evaluate(`(() => {
+    const mobile = document.getElementById('mobile-settings');
+    return mobile?.getClientRects().length ? '#mobile-settings' : '#brand';
+  })()`);
+  await connection.click(trigger);
+}
+
 async function directionAndShells(connection, from, to, direction) {
   await selectTab(connection, from);
   const sample = await connection.evaluate(`(async () => {
@@ -356,7 +365,7 @@ async function directionAndShells(connection, from, to, direction) {
 }
 
 async function menus(connection) {
-  await connection.click('#brand');
+  await openMenu(connection);
   check('主菜单只包含设置和关于', await connection.evaluate(`(() => {
     const actions = [...document.querySelectorAll('#more-menu [data-act]')]
       .map((button) => button.getAttribute('data-act'));
@@ -365,11 +374,11 @@ async function menus(connection) {
   await connection.key('Escape');
   check('Escape 关闭更多菜单',
     await connection.evaluate(`document.getElementById('more-menu').getAttribute('aria-hidden') === 'true'`));
-  await connection.click('#brand');
+  await openMenu(connection);
   check('系统返回关闭更多菜单',
     await connection.evaluate(`window.__itHandleBack() === true &&
       document.getElementById('more-menu').getAttribute('aria-hidden') === 'true'`));
-  await connection.click('#brand');
+  await openMenu(connection);
   await connection.click('#more-menu [data-act="about"]');
   await connection.until(`document.querySelector('.it-about-mask')?.getAttribute('aria-hidden') === 'false'`);
   await pause(350);
@@ -393,7 +402,7 @@ async function menus(connection) {
     document.querySelector('.it-about').contains(document.activeElement)`));
   check('系统返回关闭关于页', await connection.evaluate(`window.__itHandleBack() === true &&
     document.querySelector('.it-about-mask')?.getAttribute('aria-hidden') === 'true'`));
-  await connection.click('#brand');
+  await openMenu(connection);
   await connection.click('#more-menu [data-act="about"]');
   await connection.until(`document.querySelector('.it-about-mask')?.getAttribute('aria-hidden') === 'false'`);
   await connection.key('Escape');
@@ -483,37 +492,78 @@ try {
       width: 390, height: 844, deviceScaleFactor: 1, mobile: true,
     });
     await page.send('Emulation.setTouchEmulationEnabled', { enabled: true, maxTouchPoints: 1 });
-    await selectTab(page, 'text');
-    const points = await page.evaluate(`(() => [...document.querySelectorAll('.tabs button[data-tab]')].map((button) => {
-      const rect = button.getBoundingClientRect();
-      return { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 };
-    }))()`);
-    const touch = (type, point) => page.send('Input.dispatchTouchEvent', {
-      type, touchPoints: point ? [{ x: point.x, y: point.y, id: 1 }] : [],
-    });
-    await touch('touchStart', points[0]);
-    await touch('touchMove', points[1]);
-    check('手指尚未抬起时底栏已切到音节页', await page.evaluate(`
-      window.__itDebug.state.tab === 'syllable' &&
-      document.getElementById('pane-text').inert`));
-    await touch('touchMove', points[2]);
-    check('底栏同次拖动可继续切到长文页', await page.evaluate(`
-      window.__itDebug.state.tab === 'doc'`));
-    await touch('touchMove', points[0]);
-    await touch('touchCancel');
-    await settle(page, 'text');
-    check('触屏取消后保留最后选择且释放拖动状态', await page.evaluate(`(() => {
-      const box = document.querySelector('.tabs');
-      const active = box.querySelector('button.on[data-tab]');
-      const x = new DOMMatrixReadOnly(getComputedStyle(box.querySelector('.tabs-thumb')).transform).m41;
-      return window.__itDebug.state.tab === 'text' && !box.classList.contains('is-dragging') &&
-        Math.abs(x - active.offsetLeft) < .75;
-    })()`));
-    await page.send('Emulation.setTouchEmulationEnabled', { enabled: false });
-    await page.send('Emulation.setDeviceMetricsOverride', {
-      width: 1180, height: 900, deviceScaleFactor: 1, mobile: false,
-    });
-    await selectTab(page, 'text');
+    let activeTouch = false;
+    try {
+      await selectTab(page, 'text');
+      const points = await page.evaluate(`(() => [...document.querySelectorAll('.tabs button[data-tab]')].map((button) => {
+        const rect = button.getBoundingClientRect();
+        return { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 };
+      }))()`);
+      const touch = async (type, point) => {
+        await page.send('Input.dispatchTouchEvent', {
+          type, touchPoints: point ? [{ x: point.x, y: point.y, id: 1 }] : [],
+        });
+        activeTouch = type !== 'touchCancel' && type !== 'touchEnd';
+        await page.evaluate(`new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)))`);
+      };
+      await touch('touchStart', points[0]);
+      await touch('touchMove', points[1]);
+      check('手指尚未抬起时底栏已切到音节页', await page.evaluate(`
+        window.__itDebug.state.tab === 'syllable' &&
+        document.getElementById('pane-text').inert`));
+      await touch('touchMove', points[2]);
+      check('底栏同次拖动可继续切到长文页', await page.evaluate(`
+        window.__itDebug.state.tab === 'doc'`));
+      await touch('touchMove', points[0]);
+      await touch('touchCancel');
+      await settle(page, 'text');
+      check('触屏取消后保留最后选择且释放拖动状态', await page.evaluate(`(() => {
+        const box = document.querySelector('.tabs');
+        const active = box.querySelector('button.on[data-tab]');
+        const x = new DOMMatrixReadOnly(getComputedStyle(box.querySelector('.tabs-thumb')).transform).m41;
+        return window.__itDebug.state.tab === 'text' && !box.classList.contains('is-dragging') &&
+          Math.abs(x - active.offsetLeft) < .75;
+      })()`));
+    } finally {
+      if (activeTouch) await page.send('Input.dispatchTouchEvent', { type: 'touchCancel', touchPoints: [] });
+      await page.send('Emulation.setTouchEmulationEnabled', { enabled: false });
+      await page.send('Emulation.setDeviceMetricsOverride', {
+        width: 1180, height: 900, deviceScaleFactor: 1, mobile: false,
+      });
+      await selectTab(page, 'text');
+    }
+  });
+
+  await scenario('关闭动效时桌面标签仍可拖动', async () => {
+    await page.evaluate(`window.__itDebug.preferences.apply(
+      window.__itDebug.preferences.normalize({ appearance: { motion: 'off' } }))`);
+    try {
+      await selectTab(page, 'text');
+      const points = await page.evaluate(`(() => [...document.querySelectorAll('.tabs button[data-tab]')].map((button) => {
+        const rect = button.getBoundingClientRect();
+        return { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 };
+      }))()`);
+      await page.send('Input.dispatchMouseEvent', {
+        type: 'mousePressed', ...points[0], button: 'left', buttons: 1, clickCount: 1,
+      });
+      await page.send('Input.dispatchMouseEvent', {
+        type: 'mouseMoved', ...points[2], button: 'none', buttons: 1,
+      });
+      check('关闭动效时鼠标拖动立即切换桌面标签且无页面动画', await page.evaluate(`
+        window.__itDebug.state.tab === 'doc' && ${finitePaneAnimations} === 0`));
+      await page.send('Input.dispatchMouseEvent', {
+        type: 'mouseReleased', x: 1170, y: points[2].y, button: 'left', buttons: 0, clickCount: 1,
+      });
+      check('在标签外松开仍释放捕获并保留已切页面', await page.evaluate(`
+        window.__itDebug.state.tab === 'doc' && !document.querySelector('.tabs').classList.contains('is-dragging')`));
+      await page.key('ArrowLeft');
+      check('拖动后方向键从当前标签继续切换', await page.evaluate(`
+        window.__itDebug.state.tab === 'syllable' &&
+        document.activeElement.getAttribute('data-tab') === 'syllable'`));
+    } finally {
+      await page.evaluate(`window.__itDebug.preferences.apply(window.__itDebug.preferences.defaults)`);
+      await selectTab(page, 'text');
+    }
   });
 
   await scenario('Windows 悬浮窗原生桥接源码一致性', async () => {
@@ -780,9 +830,9 @@ try {
       await page.click('#src');
       check(`${width}×${height} 输入焦点使底栏让位`,
         await page.evaluate(`document.activeElement.id === 'src' &&
-          getComputedStyle(document.querySelector('.tabs')).display === 'none'`));
+          document.querySelector('.mobile-navigation').getClientRects().length === 0`));
       await page.evaluate(`document.getElementById('src').blur()`);
-      await page.until(`getComputedStyle(document.querySelector('.tabs')).display !== 'none'`);
+      await page.until(`document.querySelector('.tabs').getClientRects().length > 0`);
       await page.evaluate(`document.getElementById('out-text').textContent = '离线验证译文'`);
       const copiedBefore = await page.evaluate(`window.__motionTest.copied.length`);
       await page.click('#btn-copy');
@@ -796,7 +846,44 @@ try {
       check(`${width}×${height} 导航按钮通过真实点击切换`,
         await page.evaluate(`window.__itDebug.state.tab === 'text'`));
       if (width === 390) {
-        await page.evaluate(`window.__itOpenSettings()`);
+        await page.evaluate(`document.documentElement.style.setProperty('--it-safe-top', '24px');
+          document.documentElement.style.setProperty('--it-safe-bottom', '16px')`);
+        check('手机设置入口与模式胶囊分开并避让安全区', await page.evaluate(`(() => {
+          const gear = document.getElementById('mobile-settings').getBoundingClientRect();
+          const tabs = document.querySelector('.tabs').getBoundingClientRect();
+          return getComputedStyle(document.getElementById('brand')).display === 'none' &&
+            document.getElementById('appbar').getBoundingClientRect().height === 0 &&
+            gear.width >= 48 && gear.height >= 48 && gear.left >= tabs.right + 6 &&
+            gear.bottom <= innerHeight - 16 &&
+            document.getElementById('langbar').getBoundingClientRect().top >= 24;
+        })()`));
+        check('手机按钮默认触摸高亮透明并保留文本选择样式', await page.evaluate(`(() => {
+          return ['mobile-settings', 'btn-go', 'btn-copy'].every((id) =>
+            getComputedStyle(document.getElementById(id)).webkitTapHighlightColor === 'rgba(0, 0, 0, 0)') &&
+            getComputedStyle(document.getElementById('src'), '::selection').backgroundColor !== 'rgba(0, 0, 0, 0)';
+        })()`));
+        await page.evaluate(`document.getElementById('toast').classList.remove('on')`);
+        await page.until(`getComputedStyle(document.getElementById('toast')).opacity === '0'`);
+        const mobileMain = await page.send('Page.captureScreenshot', { format: 'png' });
+        await writeFile('output/preview-touch-mobile-main.png', Buffer.from(mobileMain.data, 'base64'));
+        await openMenu(page);
+        await page.until(`document.getElementById('more-menu').getAnimations().length === 0`);
+        check('手机齿轮在底栏上方打开菜单', await page.evaluate(`(() => {
+          const menu = document.getElementById('more-menu');
+          const gear = document.getElementById('mobile-settings');
+          return gear.getAttribute('aria-expanded') === 'true' && menu.classList.contains('on') &&
+            menu.getBoundingClientRect().bottom <= gear.getBoundingClientRect().top - 4;
+        })()`));
+        await page.until(`document.getElementById('more-menu').getAnimations().length === 0`);
+        const mobileMenu = await page.send('Page.captureScreenshot', { format: 'png' });
+        await writeFile('output/preview-touch-mobile-menu.png', Buffer.from(mobileMenu.data, 'base64'));
+        await page.click('#more-menu [data-act="about"]');
+        await page.until(`document.querySelector('.it-about-mask').getAttribute('aria-hidden') === 'false'`);
+        await page.key('Escape');
+        check('手机关于页关闭后焦点返回齿轮', await page.evaluate(`
+          document.activeElement.id === 'mobile-settings'`));
+        await openMenu(page);
+        await page.click('#more-menu [data-act="settings"]');
         await page.until(`document.querySelector('.it-set-mask')?.getAttribute('aria-hidden') === 'false'`);
         await page.until(`document.querySelector('.it-set').getAnimations().length === 0`);
         const mobileControlHeights = await page.evaluate(`(() => {
@@ -825,9 +912,53 @@ try {
         await writeFile('output/preview-settings-polish-mobile.png', Buffer.from(mobileSettings.data, 'base64'));
         await page.key('Escape');
         await page.until(`document.querySelector('.it-set-mask')?.getAttribute('aria-hidden') === 'true'`);
+        check('手机设置关闭后焦点返回齿轮', await page.evaluate(`
+          document.activeElement.id === 'mobile-settings'`));
+        await page.evaluate(`document.documentElement.style.removeProperty('--it-safe-top');
+          document.documentElement.style.removeProperty('--it-safe-bottom')`);
       }
     });
   }
+
+  await scenario('文本滚动条适配主题', async () => {
+    await page.send('Emulation.setDeviceMetricsOverride', {
+      width: 1180, height: 900, deviceScaleFactor: 1, mobile: false,
+    });
+    await selectTab(page, 'text');
+    await page.evaluate(`(() => {
+      document.getElementById('src').value = '原文内容较多时，滚动条仍保持轻盈清晰。\\n'.repeat(120);
+      const out = document.getElementById('out-text');
+      out.textContent = '译文内容较多时，轨道透明，圆角滑块与主题一致。\\n'.repeat(120);
+      out.classList.remove('empty');
+    })()`);
+    const thumbColors = [];
+    for (const mode of ['light', 'dark']) {
+      await page.evaluate(`window.__itDebug.preferences.apply(
+        window.__itDebug.preferences.normalize({ appearance: { mode: '${mode}' } }))`);
+      check(`${mode} 原文与译文使用透明轨道且移除滚动箭头`, await page.evaluate(`(() => {
+        return ['src', 'out-text'].every((id) => {
+          const node = document.getElementById(id);
+          const bar = getComputedStyle(node, '::-webkit-scrollbar');
+          const thumb = getComputedStyle(node, '::-webkit-scrollbar-thumb');
+          const track = getComputedStyle(node, '::-webkit-scrollbar-track');
+          const buttons = getComputedStyle(node, '::-webkit-scrollbar-button');
+          return node.scrollHeight > node.clientHeight && bar.width === '8px' &&
+            thumb.borderRadius === '99px' && track.backgroundColor === 'rgba(0, 0, 0, 0)' &&
+            buttons.display === 'none';
+        });
+      })()`));
+      thumbColors.push(await page.evaluate(`getComputedStyle(document.getElementById('src'),
+        '::-webkit-scrollbar-thumb').backgroundColor`));
+      const screenshot = await page.send('Page.captureScreenshot', { format: 'png' });
+      await writeFile(`output/preview-touch-scrollbar-${mode}.png`, Buffer.from(screenshot.data, 'base64'));
+    }
+    check('滚动条颜色随浅深主题变化', thumbColors[0] !== thumbColors[1]);
+    await page.evaluate(`(() => {
+      window.__itDebug.preferences.apply(window.__itDebug.preferences.defaults);
+      document.getElementById('src').value = '';
+      document.getElementById('out-text').textContent = '';
+    })()`);
+  });
 
   await scenario('通用偏好预览、撤销和保存', async () => {
     check('文本2B模型显示名称简化为2B且模型标识不变', await page.evaluate(`(() => {
@@ -853,7 +984,7 @@ try {
       window.__itDebug.preferences.normalize({
         background: { data: 'data:image/png;base64,AA==' }
       }))`);
-    await page.click('#brand');
+    await openMenu(page);
     await page.click('#more-menu [data-act="settings"]');
     await page.until(`document.querySelector('.it-set-mask')?.getAttribute('aria-hidden') === 'false'`);
     await selectSettingsSection(page, 'background');
@@ -938,7 +1069,7 @@ try {
         edge.popup.backgroundData === '';
     })()`));
 
-    await page.click('#brand');
+    await openMenu(page);
     await page.click('#more-menu [data-act="settings"]');
     await page.until(`document.querySelector('.it-set-mask')?.getAttribute('aria-hidden') === 'false'`);
     check('网页与安卓界面可直接打开通用设置',
@@ -963,7 +1094,7 @@ try {
     check('Escape 取消恢复已保存外观', await page.evaluate(`
       document.documentElement.dataset.itTheme === 'light'`));
 
-    await page.click('#brand');
+    await openMenu(page);
     await page.click('#more-menu [data-act="settings"]');
     await page.until(`document.querySelector('.it-set-mask')?.getAttribute('aria-hidden') === 'false'`);
     await page.evaluate(`(() => {
@@ -1057,6 +1188,18 @@ try {
     if (!target) throw new Error('CDP did not expose the isolated desktop test tab.');
     const desktop = await Cdp.connect(target.webSocketDebuggerUrl);
     await prepare(desktop, true);
+    await desktop.send('Emulation.setDeviceMetricsOverride', {
+      width: 700, height: 800, deviceScaleFactor: 1, mobile: false,
+    });
+    check('窄桌面窗口仍保留标题栏和窗口操作按钮', await desktop.evaluate(`(() => {
+      return document.getElementById('appbar').getBoundingClientRect().height === 40 &&
+        document.getElementById('win-actions').getBoundingClientRect().width > 80 &&
+        document.getElementById('brand').getClientRects().length > 0 &&
+        document.getElementById('mobile-settings').getClientRects().length === 0;
+    })()`));
+    await desktop.send('Emulation.setDeviceMetricsOverride', {
+      width: 1180, height: 900, deviceScaleFactor: 1, mobile: false,
+    });
     await desktop.click('#brand');
     await desktop.click('#more-menu [data-act="settings"]');
     await desktop.until(`document.querySelector('.it-set-mask').getAttribute('aria-hidden') === 'false'`);
@@ -1234,6 +1377,14 @@ try {
       return image.startsWith('url("data:image/png;base64,') &&
         getComputedStyle(card).backgroundColor !== 'rgba(0, 0, 0, 0)';
     })()`));
+    check('设置中的悬浮窗背景预览也仅覆盖卡片内部', await desktop.evaluate(`(() => {
+      const card = document.querySelector('.it-popup-preview-card');
+      const image = document.querySelector('.it-popup-preview-image');
+      const a = card.getBoundingClientRect(), b = image.getBoundingClientRect();
+      return card.parentElement === image.parentElement &&
+        ['x', 'y', 'width', 'height'].every((key) => Math.abs(a[key] - b[key]) < .1) &&
+        getComputedStyle(image).overflow === 'hidden';
+    })()`));
     await desktop.evaluate(`(() => {
       const reveal = document.querySelector('[data-pref="popup.cardReveal"]');
       reveal.value = '75';
@@ -1352,6 +1503,86 @@ try {
     })()`));
   });
 
+  await scenario('悬浮窗背景范围与滚动条', async () => {
+    const popupSource = await readFile('desktop/patch/setup.rs', 'utf8');
+    const marker = 'const POPUP_BOOTSTRAP: &str = r#"';
+    const start = popupSource.indexOf(marker);
+    const end = popupSource.indexOf('"#;', start + marker.length);
+    if (start < 0 || end < 0) throw new Error('Missing popup bootstrap');
+    const bootstrap = popupSource.slice(start + marker.length, end);
+    ({ targetId: popupTargetId } = await controller.send('Target.createTarget', { url: 'about:blank' }));
+    const popupTargets = await (await fetch(`${DEBUG_ORIGIN}/json`)).json();
+    const target = popupTargets.find((item) => item.id === popupTargetId);
+    if (!target) throw new Error('Missing isolated popup target');
+    const popup = await Cdp.connect(target.webSocketDebuggerUrl);
+    await popup.send('Page.enable');
+    await popup.send('Runtime.enable');
+    await popup.send('Fetch.enable', { patterns: [{ urlPattern: '*', requestStage: 'Request' }] });
+    await popup.send('Emulation.setDeviceMetricsOverride', {
+      width: 436, height: 282, deviceScaleFactor: 1, mobile: false,
+    });
+    await popup.send('Emulation.setDefaultBackgroundColorOverride', { color: { r: 0, g: 0, b: 0, a: 0 } });
+    await popup.send('Emulation.setEmulatedMedia', {
+      features: [{ name: 'prefers-reduced-motion', value: 'reduce' }],
+    });
+    await popup.evaluate(bootstrap);
+    const image = await popup.evaluate(`(() => {
+      const canvas = document.createElement('canvas');
+      canvas.width = 320; canvas.height = 240;
+      const ctx = canvas.getContext('2d');
+      ctx.fillStyle = '#f027ad'; ctx.fillRect(0, 0, 320, 240);
+      ctx.fillStyle = '#1fd2db'; ctx.fillRect(20, 20, 280, 200);
+      return canvas.toDataURL('image/png');
+    })()`);
+    await popup.evaluate(`window.__popupApplyPreferences({
+      appearance: { mode: 'light', material: 'glass', motion: 'off' },
+      background: { data: ${JSON.stringify(image)}, opacity: 0, blur: 0, fit: 'contain' },
+      popup: { cardReveal: 100, backgroundData: '' }
+    });
+    document.getElementById('out').textContent = '正文超出时，滚动条保持透明轨道与圆角。\\n'.repeat(80);`);
+    check('悬浮窗背景与卡片同矩形且圆角裁剪', await popup.evaluate(`(() => {
+      const card = document.getElementById('card'), image = document.getElementById('popup-background');
+      const frame = document.getElementById('card-frame');
+      const a = card.getBoundingClientRect(), b = image.getBoundingClientRect();
+      return card.parentElement === frame && image.parentElement === frame &&
+        ['x', 'y', 'width', 'height'].every((key) => Math.abs(a[key] - b[key]) < .1) &&
+        getComputedStyle(image).overflow === 'hidden' &&
+        getComputedStyle(image).borderRadius === getComputedStyle(card).borderRadius &&
+        getComputedStyle(document.body).backgroundColor === 'rgba(0, 0, 0, 0)';
+    })()`));
+    check('悬浮窗完整显示不把图片放大裁剪且完全透出仍保留外阴影', await popup.evaluate(`(() => {
+      const layer = document.getElementById('popup-background');
+      const photo = getComputedStyle(layer, '::before'), card = getComputedStyle(document.getElementById('card'));
+      return photo.backgroundSize === 'contain' &&
+        ['top', 'right', 'bottom', 'left'].every((side) => photo[side] === '0px') &&
+        card.backgroundColor === 'rgba(255, 255, 255, 0)' && card.backdropFilter === 'none' &&
+        getComputedStyle(document.getElementById('card-frame')).boxShadow !== 'none';
+    })()`));
+    check('悬浮窗正文使用无箭头的透明轨道滚动条', await popup.evaluate(`(() => {
+      const node = document.getElementById('out');
+      return node.scrollHeight > node.clientHeight &&
+        getComputedStyle(node, '::-webkit-scrollbar-button').display === 'none' &&
+        getComputedStyle(node, '::-webkit-scrollbar-track').backgroundColor === 'rgba(0, 0, 0, 0)' &&
+        getComputedStyle(node, '::-webkit-scrollbar-thumb').borderRadius === '99px';
+    })()`));
+    const light = await popup.send('Page.captureScreenshot', { format: 'png' });
+    await writeFile('output/preview-popup-clipped-contain.png', Buffer.from(light.data, 'base64'));
+    await popup.evaluate(`window.__popupApplyPreferences({
+      appearance: { mode: 'dark', material: 'glass', motion: 'off' },
+      background: { data: '', opacity: 34, blur: 20, fit: 'cover' },
+      popup: { cardReveal: 0, backgroundData: ${JSON.stringify(image)} }
+    });`);
+    check('悬浮窗独立图片与模糊淡化仍生效', await popup.evaluate(`(() => {
+      const layer = document.getElementById('popup-background');
+      const photo = getComputedStyle(layer, '::before');
+      return photo.backgroundImage.includes('data:image/png') && photo.filter === 'blur(20px)' &&
+        getComputedStyle(layer, '::after').backgroundColor === 'rgba(18, 16, 24, 0.34)' &&
+        getComputedStyle(document.getElementById('card')).backdropFilter !== 'none';
+    })()`));
+    const dark = await popup.send('Page.captureScreenshot', { format: 'png' });
+    await writeFile('output/preview-popup-clipped-dark.png', Buffer.from(dark.data, 'base64'));
+  });
+
   for (const connection of connections.filter((connection) => connection !== controller)) {
     check('页面无 JavaScript 异常', connection.errors.length === 0, connection.errors.join(' | '));
     check('交互验收没有访问外网', connection.blockedRequests.length === 0,
@@ -1360,7 +1591,7 @@ try {
 } catch (error) {
   check('验收环境可用', false, error.stack || error.message);
 } finally {
-  for (const targetId of [desktopTargetId, mainTargetId].filter(Boolean)) {
+  for (const targetId of [popupTargetId, desktopTargetId, mainTargetId].filter(Boolean)) {
     if (controller?.socket.readyState === WebSocket.OPEN) {
       try { await controller.send('Target.closeTarget', { targetId }); }
       catch (error) { check('独立测试页清理', false, error.message); }

@@ -858,7 +858,7 @@ document.documentElement.innerHTML = `
      不走网页注入，只能内联一份；改主题时两处必须同步。 */
   :root{--lg-tint-2:rgba(255,255,255,.72);--lg-tint-popup:rgba(255,255,255,.82);
     --lg-edge:rgba(255,255,255,.74);--lg-edge-dark:rgba(70,52,96,.09);
-    --lg-scrollbar-thumb:rgba(70,52,96,.14);
+    --lg-scrollbar-thumb:rgba(70,52,96,.22);
     --lg-ink:#2E2A38;--lg-ink-sub:#6E687E;
     --lg-ink-faint:#A29CAC;--lg-accent:#E28BA6;--lg-accent-deep:#C96F90;
     --lg-accent-wash:rgba(226,139,166,.18);--user-font-scale:1;
@@ -867,6 +867,7 @@ document.documentElement.innerHTML = `
     --lg-ease-enter:cubic-bezier(.18,.8,.22,1);
     --lg-shine:inset 1.5px 1.5px 1px rgba(255,255,255,.78),inset -1px -1px 1px rgba(255,255,255,.5);
     --it-popup-bg-overlay:rgba(255,255,255,0);--it-popup-bg-blur:0px;--it-popup-bg-fit:cover;
+    --it-popup-bg-inset:0px;
     --it-popup-card-fill:rgba(255,255,255,.72);--it-popup-card-filter:blur(34px) saturate(1.7);
     --it-popup-card-shine:var(--lg-shine);--it-popup-card-surface:1;
     --it-popup-content-color:var(--lg-ink);--it-popup-content-weight:400;
@@ -879,17 +880,21 @@ document.documentElement.innerHTML = `
     font-family:"PingFang SC","Microsoft YaHei UI","Noto Sans SC",system-ui,sans-serif;
     -webkit-font-smoothing:antialiased;}
   body{box-sizing:border-box;padding:22px;position:relative;isolation:isolate;}
-  #popup-background{position:absolute;z-index:0;inset:-40px;pointer-events:none;
-    background-position:center;background-repeat:no-repeat;background-size:var(--it-popup-bg-fit);
-    filter:blur(var(--it-popup-bg-blur));}
-  #popup-background::after{content:"";position:absolute;inset:0;background:var(--it-popup-bg-overlay);}
+  #card-frame{height:100%;position:relative;isolation:isolate;border-radius:var(--lg-r-lg);
+    box-shadow:var(--lg-shadow-strong);
+    transform-origin:center;animation:popup-arrive var(--lg-duration-panel) var(--lg-ease-enter) both;}
+  #popup-background{position:absolute;z-index:0;inset:0;overflow:hidden;border-radius:inherit;pointer-events:none;}
+  #popup-background::before{content:"";position:absolute;inset:var(--it-popup-bg-inset);
+    background-image:var(--it-popup-background-image,none);background-position:center;background-repeat:no-repeat;
+    background-size:var(--it-popup-bg-fit);filter:blur(var(--it-popup-bg-blur));}
+  #popup-background::after{content:"";position:absolute;inset:0;
+    background:var(--it-popup-bg-overlay);}
   #card{box-sizing:border-box;height:100%;display:flex;flex-direction:column;
     position:relative;z-index:1;isolation:isolate;overflow:hidden;
     background:var(--it-popup-card-fill);border:1px solid var(--lg-edge);border-radius:var(--lg-r-lg);
-    box-shadow:var(--it-popup-card-shine),var(--lg-shadow-strong);
+    box-shadow:var(--it-popup-card-shine);
     -webkit-backdrop-filter:var(--it-popup-card-filter);
-    backdrop-filter:var(--it-popup-card-filter);
-    transform-origin:center;animation:popup-arrive var(--lg-duration-panel) var(--lg-ease-enter) both;}
+    backdrop-filter:var(--it-popup-card-filter);}
   #card::before{content:"";position:absolute;inset:0;pointer-events:none;z-index:0;
     opacity:var(--it-popup-card-surface);
     background:linear-gradient(150deg,rgba(255,255,255,.34),var(--lg-accent-wash) 48%,transparent 72%);}
@@ -900,8 +905,14 @@ document.documentElement.innerHTML = `
   .body{flex:1;overflow-y:auto;padding:2px 14px 12px;font-size:calc(14px * var(--user-font-scale));line-height:1.8;
     letter-spacing:.02em;color:var(--it-popup-content-color);font-weight:var(--it-popup-content-weight);
     font-family:var(--it-popup-content-font);white-space:pre-wrap;word-break:break-word;}
-  .body::-webkit-scrollbar{width:6px}
-  .body::-webkit-scrollbar-thumb{background:var(--lg-scrollbar-thumb);border-radius:99px}
+  @supports not selector(::-webkit-scrollbar){
+    .body{scrollbar-width:thin;scrollbar-color:var(--lg-scrollbar-thumb) transparent;}}
+  .body::-webkit-scrollbar{width:7px;background:transparent;}
+  .body::-webkit-scrollbar-track,.body::-webkit-scrollbar-track-piece{background:transparent;}
+  .body::-webkit-scrollbar-thumb{background:var(--lg-scrollbar-thumb);border:2px solid transparent;
+    background-clip:padding-box;border-radius:99px;}
+  .body::-webkit-scrollbar-button{display:none;width:0;height:0;}
+  .body::-webkit-scrollbar-corner{background:transparent;}
   .ph{color:var(--lg-ink-faint);font-size:13px;}
   .err{color:var(--lg-accent-deep);font-size:13px;}
   .foot{display:flex;align-items:center;justify-content:space-between;
@@ -917,6 +928,7 @@ document.documentElement.innerHTML = `
   @keyframes stream-arrive{from{opacity:0}to{opacity:1}}
   html[data-theme-scheme="dark"]{color-scheme:dark;}
   html[data-theme-scheme="light"]{color-scheme:light;}
+  html[data-material="solid"] #card-frame{box-shadow:none;}
   html[data-material="solid"] #card{backdrop-filter:none;-webkit-backdrop-filter:none;box-shadow:none;}
   html[data-material="solid"] #card::before{display:none;}
   html[data-radius="standard"]{--lg-r-lg:18px;}
@@ -924,18 +936,18 @@ document.documentElement.innerHTML = `
   html[data-radius="standard"] .foot button{border-radius:10px;}
   html[data-radius="small"] .foot button{border-radius:7px;}
   html[data-ambient-light="false"] #card::before{display:none;}
-  html[data-motion="reduced"] #card{animation:none;}
+  html[data-motion="reduced"] #card-frame{animation:none;}
   html[data-motion="off"] *,html[data-motion="off"] *::before,html[data-motion="off"] *::after{animation:none!important;transition:none!important;}
   html[data-motion="reduced"] .foot button{transition:color 140ms ease,background 140ms ease;}
   html[data-font="serif"],html[data-font="serif"] body{font-family:ui-serif,"Noto Serif CJK SC",serif;}
   html[data-font="mono"],html[data-font="mono"] body{font-family:ui-monospace,"Cascadia Mono",monospace;}
-  @media(prefers-reduced-motion:reduce){#card,.stream-segment,.foot button{animation:none!important;transition:none!important}}
+  @media(prefers-reduced-motion:reduce){#card-frame,.stream-segment,.foot button{animation:none!important;transition:none!important}}
 </style></head>
-<body><div id="popup-background" aria-hidden="true"></div><div id="card">
+<body><div id="card-frame"><div id="popup-background" aria-hidden="true"></div><div id="card">
   <div class="head"><b id="meta">翻译中</b><span id="badge"></span></div>
   <div class="body" id="out"><span class="ph">正在翻译…</span></div>
   <div class="foot"><span>Esc 或点击别处关闭</span><button id="copy" type="button">复制</button></div>
-</div></body>`;
+</div></div></body>`;
 
 (function () {
   var output = document.getElementById('out');
@@ -1189,7 +1201,7 @@ document.documentElement.innerHTML = `
     root.style.setProperty('--lg-ink-faint', dark ? '#96909F' : '#A29CAC');
     root.style.setProperty('--lg-edge', dark ? 'rgba(255,255,255,.18)' : 'rgba(255,255,255,.74)');
     root.style.setProperty('--lg-edge-dark', dark ? 'rgba(255,255,255,.12)' : 'rgba(70,52,96,.09)');
-    root.style.setProperty('--lg-scrollbar-thumb', dark ? 'rgba(255,255,255,.22)' : 'rgba(70,52,96,.14)');
+    root.style.setProperty('--lg-scrollbar-thumb', dark ? 'rgba(255,255,255,.28)' : 'rgba(70,52,96,.22)');
     root.style.setProperty('--lg-tint-2', dark
       ? 'rgba(34,31,42,' + tint + ')' : 'rgba(255,255,255,' + tint + ')');
     root.style.setProperty('--lg-tint-popup', dark ? 'rgba(34,31,42,.92)' : 'rgba(255,255,255,.82)');
@@ -1213,8 +1225,11 @@ document.documentElement.innerHTML = `
       : 'rgba(255,255,255,' + backgroundOpacity + ')');
     root.style.setProperty('--it-popup-bg-blur', backgroundBlur + 'px');
     root.style.setProperty('--it-popup-bg-fit', backgroundFit);
+    root.style.setProperty('--it-popup-bg-inset',
+      (backgroundFit === 'contain' ? 0 : -2 * backgroundBlur) + 'px');
     if (backgroundData !== activePopupBackgroundData) {
-      popupBackground.style.backgroundImage = backgroundData ? 'url("' + backgroundData + '")' : 'none';
+      popupBackground.style.setProperty('--it-popup-background-image',
+        backgroundData ? 'url("' + backgroundData + '")' : 'none');
       activePopupBackgroundData = backgroundData;
     }
     root.style.setProperty('--lg-shine', dark

@@ -22,7 +22,6 @@ import android.view.KeyEvent;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.Window;
-import android.view.WindowInsets;
 import android.view.WindowManager;
 import android.webkit.ConsoleMessage;
 import android.webkit.JavascriptInterface;
@@ -39,6 +38,10 @@ import android.widget.ProgressBar;
 import android.widget.TextView;
 import android.widget.Toast;
 
+import androidx.core.graphics.Insets;
+import androidx.core.view.OnApplyWindowInsetsListener;
+import androidx.core.view.ViewCompat;
+import androidx.core.view.WindowInsetsCompat;
 import androidx.exifinterface.media.ExifInterface;
 
 import java.io.ByteArrayOutputStream;
@@ -56,7 +59,7 @@ import org.json.JSONObject;
  * web 前端（与本仓库 web/ 目录同源，构建时同步）自己绘制，翻译请求直连官方
  * 公开接口 https://index-translate.bilibili.com/v1/chat/completions。
  *
- * 原生侧只负责 WebView 容器、相机/相册、系统栏内边距和返回键。
+ * 原生侧只负责 WebView 容器、相机/相册、系统栏安全区和返回键。
  */
 public class MainActivity extends Activity {
 
@@ -228,26 +231,30 @@ public class MainActivity extends Activity {
     }
 
     private void applyInsets() {
-        root.setOnApplyWindowInsetsListener(new View.OnApplyWindowInsetsListener() {
+        ViewCompat.setOnApplyWindowInsetsListener(root, new OnApplyWindowInsetsListener() {
             @Override
-            public WindowInsets onApplyWindowInsets(View v, WindowInsets insets) {
-                int top, bottom, left, right;
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-                    android.graphics.Insets bars = insets.getInsets(
-                            WindowInsets.Type.systemBars() | WindowInsets.Type.ime());
-                    top = bars.top; bottom = bars.bottom; left = bars.left; right = bars.right;
-                } else {
-                    top = insets.getSystemWindowInsetTop();
-                    bottom = insets.getSystemWindowInsetBottom();
-                    left = insets.getSystemWindowInsetLeft();
-                    right = insets.getSystemWindowInsetRight();
-                }
+            public WindowInsetsCompat onApplyWindowInsets(View v, WindowInsetsCompat insets) {
+                int handledTypes = WindowInsetsCompat.Type.systemBars()
+                        | WindowInsetsCompat.Type.displayCutout() | WindowInsetsCompat.Type.ime();
+                Insets safeArea = insets.getInsets(handledTypes);
                 if (webView != null) {
-                    webView.setPadding(left, top, right, bottom);
+                    // WebView padding does not constrain fixed-position HTML controls.
+                    // Resize its actual viewport so CSS and touch coordinates share the safe area.
+                    FrameLayout.LayoutParams params =
+                            (FrameLayout.LayoutParams) webView.getLayoutParams();
+                    if (params.leftMargin != safeArea.left || params.topMargin != safeArea.top
+                            || params.rightMargin != safeArea.right
+                            || params.bottomMargin != safeArea.bottom) {
+                        params.setMargins(safeArea.left, safeArea.top, safeArea.right, safeArea.bottom);
+                        webView.setLayoutParams(params);
+                    }
                 }
-                return insets;
+                // The native frame owns these insets; do not let WebView apply them a second time.
+                return new WindowInsetsCompat.Builder(insets)
+                        .setInsets(handledTypes, Insets.NONE).build();
             }
         });
+        ViewCompat.requestApplyInsets(root);
     }
 
     // ------------------------------------------------------------------
