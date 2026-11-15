@@ -251,6 +251,7 @@ def main():
             )
         for feature in (
             "Win32_Graphics_Dwm",
+            "Win32_Storage_FileSystem",
             "Win32_System_DataExchange",
             "Win32_System_Memory",
             "Win32_System_Ole",

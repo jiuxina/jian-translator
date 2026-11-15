@@ -49,6 +49,8 @@ pub struct DesktopSettings {
     pub auto_start: bool,
     /// 启动时直接藏进托盘、不弹主窗口。默认开启，可在设置面板关闭。
     pub start_to_tray: bool,
+    /// 前端偏好由前端校验；桌面只负责可靠持久化和投影外观到划词浮窗。
+    pub preferences: serde_json::Value,
 }
 
 impl Default for DesktopSettings {
@@ -60,6 +62,7 @@ impl Default for DesktopSettings {
             target_lang: "auto".to_string(),
             auto_start: false,
             start_to_tray: true,
+            preferences: serde_json::Value::Null,
         }
     }
 }
@@ -123,15 +126,66 @@ fn load_settings(app: &AppHandle, cli_activation: &str) -> DesktopSettings {
     settings
 }
 
-fn persist_settings(app: &AppHandle, settings: &DesktopSettings) {
-    if let Some(path) = settings_file(app) {
-        if let Some(dir) = path.parent() {
-            let _ = fs::create_dir_all(dir);
+fn atomic_replace(source: &std::path::Path, destination: &std::path::Path) -> std::io::Result<()> {
+    #[cfg(windows)]
+    {
+        use std::os::windows::ffi::OsStrExt;
+        use windows_sys::Win32::Storage::FileSystem::{
+            MoveFileExW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
+        };
+
+        let source: Vec<u16> = source.as_os_str().encode_wide().chain(Some(0)).collect();
+        let destination: Vec<u16> = destination
+            .as_os_str()
+            .encode_wide()
+            .chain(Some(0))
+            .collect();
+        let moved = unsafe {
+            MoveFileExW(
+                source.as_ptr(),
+                destination.as_ptr(),
+                MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+            )
+        };
+        if moved == 0 {
+            return Err(std::io::Error::last_os_error());
         }
-        if let Ok(text) = serde_json::to_string_pretty(settings) {
-            let _ = fs::write(path, text);
-        }
+        Ok(())
     }
+    #[cfg(not(windows))]
+    {
+        fs::rename(source, destination)
+    }
+}
+
+fn persist_settings(app: &AppHandle, settings: &DesktopSettings) -> Result<(), String> {
+    let path = settings_file(app).ok_or_else(|| "无法确定桌面设置目录".to_string())?;
+    let parent = path
+        .parent()
+        .ok_or_else(|| "桌面设置路径无效".to_string())?;
+    fs::create_dir_all(parent).map_err(|error| format!("无法创建桌面设置目录：{error}"))?;
+    let text = serde_json::to_vec_pretty(settings)
+        .map_err(|error| format!("无法序列化桌面设置：{error}"))?;
+    let suffix = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|time| time.as_nanos())
+        .unwrap_or_default();
+    let temporary = parent.join(format!(
+        ".desktop-settings.json.{}.{}.tmp",
+        std::process::id(),
+        suffix
+    ));
+    let mut file = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&temporary)
+        .map_err(|error| format!("无法创建桌面设置临时文件：{error}"))?;
+    use std::io::Write;
+    file.write_all(&text)
+        .and_then(|()| file.sync_all())
+        .map_err(|error| format!("无法写入桌面设置：{error}"))?;
+    drop(file);
+    atomic_replace(&temporary, &path).map_err(|error| format!("无法保存桌面设置：{error}"))
 }
 
 fn current_settings() -> DesktopSettings {
@@ -216,7 +270,12 @@ fn make_drag_overlay_click_through(app: &AppHandle) {
 
         // Tauri 的拖动/缩放覆盖层铺满客户区；
         // 另外 WebView2 顶部还有一条约 25px 高的 Chrome_WidgetWin_0 也会截走点击。
-        let mut rect = RECT { left: 0, top: 0, right: 0, bottom: 0 };
+        let mut rect = RECT {
+            left: 0,
+            top: 0,
+            right: 0,
+            bottom: 0,
+        };
         GetWindowRect(child, &mut rect);
         let is_thin_overlay = name == "Chrome_WidgetWin_0" && (rect.bottom - rect.top) < 60;
 
@@ -242,52 +301,63 @@ fn make_drag_overlay_click_through(app: &AppHandle) {
 fn make_drag_overlay_click_through(_app: &AppHandle) {}
 
 // ---------------------------------------------------------------------------
-// 标题栏着色（Windows 11 DWM）：白底 + 深色字，和页面配色统一
+// 隐藏 Windows 11 DWM 激活边框；保留系统圆角和阴影
 // ---------------------------------------------------------------------------
 
 #[cfg(target_os = "windows")]
-fn apply_caption_theme(app: &AppHandle) {
+fn apply_window_border(window: &WebviewWindow) {
     use windows_sys::Win32::Graphics::Dwm::{
-        DwmSetWindowAttribute, DWMWA_BORDER_COLOR, DWMWA_CAPTION_COLOR, DWMWA_TEXT_COLOR,
-    };
-
-    let Some(window) = app.get_webview_window(APP_WINDOW_LABEL) else {
-        return;
+        DwmSetWindowAttribute, DWMWA_BORDER_COLOR, DWMWA_COLOR_NONE,
     };
     let Ok(hwnd) = window.hwnd() else {
         return;
     };
 
-    // COLORREF: 0x00BBGGRR —— 与 app/theme-liquid-glass.css 的 --lg-* 令牌一致。
-    // DWM 标题栏不支持模糊，只能对齐玻璃的底色 / 墨色 / 镜面边这三色。
-    let caption: u32 = 0x00_F8_F3_F7; // #F7F3F8 玻璃底
-    let text: u32 = 0x00_38_2A_2E;    // #2E2A38 墨
-    let border: u32 = 0x00_EC_E1_E9;  // #E9E1EC 镜面发丝边
-
-    unsafe {
-        let _ = DwmSetWindowAttribute(
-            hwnd.0 as _,
-            DWMWA_CAPTION_COLOR as u32,
-            &caption as *const u32 as *const _,
-            4,
-        );
-        let _ = DwmSetWindowAttribute(
-            hwnd.0 as _,
-            DWMWA_TEXT_COLOR as u32,
-            &text as *const u32 as *const _,
-            4,
-        );
-        let _ = DwmSetWindowAttribute(
+    let color = DWMWA_COLOR_NONE;
+    let result = unsafe {
+        DwmSetWindowAttribute(
             hwnd.0 as _,
             DWMWA_BORDER_COLOR as u32,
-            &border as *const u32 as *const _,
-            4,
+            &color as *const u32 as *const _,
+            std::mem::size_of_val(&color) as u32,
+        )
+    };
+    if result != 0 {
+        eprintln!(
+            "[IT] 禁用 Windows 窗口激活边框失败：HRESULT 0x{:08X}",
+            result as u32
         );
     }
 }
 
 #[cfg(not(target_os = "windows"))]
-fn apply_caption_theme(_app: &AppHandle) {}
+fn apply_window_border(_window: &WebviewWindow) {}
+
+fn popup_appearance(settings: &DesktopSettings) -> serde_json::Value {
+    settings
+        .preferences
+        .get("appearance")
+        .cloned()
+        .unwrap_or(serde_json::Value::Null)
+}
+
+fn popup_appearance_script(appearance: &serde_json::Value) -> String {
+    format!(
+        "(function(){{var a={};window.__itPopupAppearance=a;\
+         if(window.__popupApplyPreferences)window.__popupApplyPreferences(a);}})();",
+        appearance
+    )
+}
+
+fn sync_popup_appearance(app: &AppHandle, settings: &DesktopSettings) {
+    let Some(popup) = app.get_webview_window(POPUP_LABEL) else {
+        return;
+    };
+    let script = popup_appearance_script(&popup_appearance(settings));
+    let _ = app.run_on_main_thread(move || {
+        let _ = popup.eval(&script);
+    });
+}
 
 #[cfg(target_os = "windows")]
 fn wide(value: &str) -> Vec<u16> {
@@ -356,13 +426,10 @@ fn apply_autostart(enabled: bool) -> Result<(), String> {
     let name = wide(RUN_VALUE);
 
     let result = if enabled {
-        let executable = std::env::current_exe()
-            .map_err(|error| format!("取不到程序路径：{error}"))?;
+        let executable =
+            std::env::current_exe().map_err(|error| format!("取不到程序路径：{error}"))?;
         let value = wide(&format!("\"{}\"", executable.display()));
-        let data: Vec<u8> = value
-            .iter()
-            .flat_map(|unit| unit.to_le_bytes())
-            .collect();
+        let data: Vec<u8> = value.iter().flat_map(|unit| unit.to_le_bytes()).collect();
         unsafe {
             RegSetValueExW(
                 key,
@@ -429,17 +496,13 @@ pub fn it_window_action(app: AppHandle, action: String) -> Result<(), String> {
         "minimize" => window
             .minimize()
             .map_err(|error| format!("无法最小化：{error}")),
-        "maximize" => {
-            if window.is_maximized().unwrap_or(false) {
-                window.unmaximize()
-            } else {
-                window.maximize()
-            }
-            .map_err(|error| format!("无法切换最大化：{error}"))
+        "maximize" => if window.is_maximized().unwrap_or(false) {
+            window.unmaximize()
+        } else {
+            window.maximize()
         }
-        "close" => window
-            .close()
-            .map_err(|error| format!("无法关闭：{error}")),
+        .map_err(|error| format!("无法切换最大化：{error}")),
+        "close" => window.close().map_err(|error| format!("无法关闭：{error}")),
         _ => Err(format!("未知窗口动作：{action}")),
     }
 }
@@ -533,14 +596,16 @@ fn popup_payload_script(payload: &str) -> String {
 
 /// 模板 + 数据一起投递：WebView 还没建好时 eval 会丢，Rust 侧会重复调本函数，
 /// JS 用 payload.id 去重，不会重复发翻译请求。
-fn deliver_popup(window: &WebviewWindow, payload: &str) {
+fn deliver_popup(window: &WebviewWindow, payload: &str, appearance: &serde_json::Value) {
     let _ = window.eval(POPUP_BOOTSTRAP);
+    let _ = window.eval(&popup_appearance_script(appearance));
     let _ = window.eval(&popup_payload_script(payload));
 }
 
 /// notice 非空时只显示提示，不发翻译请求。
 fn show_popup(app: &AppHandle, text: &str, notice: &str) {
     let settings = current_settings();
+    let appearance = popup_appearance(&settings);
     let id = POPUP_SEQ.fetch_add(1, Ordering::Relaxed) + 1;
     let payload = serde_json::json!({
         "id": id,
@@ -559,7 +624,7 @@ fn show_popup(app: &AppHandle, text: &str, notice: &str) {
         let Some(window) = ensure_popup(&main_thread_app) else {
             return;
         };
-        deliver_popup(&window, &payload);
+        deliver_popup(&window, &payload, &appearance);
         position_popup(&main_thread_app, &window);
         let _ = window.show();
         let _ = window.set_focus();
@@ -569,7 +634,8 @@ fn show_popup(app: &AppHandle, text: &str, notice: &str) {
             let payload = payload.clone();
             std::thread::spawn(move || {
                 std::thread::sleep(Duration::from_millis(delay));
-                deliver_popup(&window, &payload);
+                let appearance = popup_appearance(&current_settings());
+                deliver_popup(&window, &payload, &appearance);
             });
         }
         watch_popup(main_thread_app.clone(), window, generation);
@@ -708,6 +774,9 @@ fn watch_popup(app: AppHandle, window: WebviewWindow, generation: u64) {
 const POPUP_BOOTSTRAP: &str = r#"
 (function () {
 if (window.__popupBooted && window.__popupApply && document.getElementById('out')) {
+  if (window.__itPopupAppearance && window.__popupApplyPreferences) {
+    window.__popupApplyPreferences(window.__itPopupAppearance);
+  }
   if (window.__itPopupPayload) window.__popupApply(window.__itPopupPayload);
   return;
 }
@@ -717,8 +786,10 @@ document.documentElement.innerHTML = `
      不走网页注入，只能内联一份；改主题时两处必须同步。 */
   :root{--lg-tint-2:rgba(255,255,255,.72);--lg-tint-popup:rgba(255,255,255,.82);
     --lg-edge:rgba(255,255,255,.74);--lg-edge-dark:rgba(70,52,96,.09);
+    --lg-scrollbar-thumb:rgba(70,52,96,.14);
     --lg-ink:#2E2A38;--lg-ink-sub:#6E687E;
     --lg-ink-faint:#A29CAC;--lg-accent:#E28BA6;--lg-accent-deep:#C96F90;
+    --lg-accent-wash:rgba(226,139,166,.18);--user-font-scale:1;
     --lg-r-lg:26px;--lg-blur-strong:34px;--lg-saturate:1.7;
     --lg-duration-fast:140ms;--lg-duration-control:220ms;--lg-duration-panel:280ms;
     --lg-ease-enter:cubic-bezier(.18,.8,.22,1);
@@ -739,20 +810,20 @@ document.documentElement.innerHTML = `
     backdrop-filter:blur(var(--lg-blur-strong)) saturate(var(--lg-saturate));
     transform-origin:center;animation:popup-arrive var(--lg-duration-panel) var(--lg-ease-enter) both;}
   #card::before{content:"";position:absolute;inset:0;pointer-events:none;z-index:0;
-    background:linear-gradient(150deg,rgba(255,255,255,.34),rgba(226,139,166,.08) 48%,transparent 72%);}
+    background:linear-gradient(150deg,rgba(255,255,255,.34),var(--lg-accent-wash) 48%,transparent 72%);}
   #card>*{position:relative;z-index:1;}
   .head{display:flex;align-items:center;justify-content:space-between;gap:8px;
     padding:10px 14px 8px;font-size:11.5px;color:var(--lg-ink-sub);}
   .head b{font-weight:600;color:var(--lg-accent-deep);}
-  .body{flex:1;overflow-y:auto;padding:2px 14px 12px;font-size:14px;line-height:1.8;
+  .body{flex:1;overflow-y:auto;padding:2px 14px 12px;font-size:calc(14px * var(--user-font-scale));line-height:1.8;
     letter-spacing:.02em;color:var(--lg-ink);white-space:pre-wrap;word-break:break-word;}
   .body::-webkit-scrollbar{width:6px}
-  .body::-webkit-scrollbar-thumb{background:rgba(70,52,96,.14);border-radius:99px}
+  .body::-webkit-scrollbar-thumb{background:var(--lg-scrollbar-thumb);border-radius:99px}
   .ph{color:var(--lg-ink-faint);font-size:13px;}
   .err{color:var(--lg-accent-deep);font-size:13px;}
   .foot{display:flex;align-items:center;justify-content:space-between;
     padding:8px 12px 9px;border-top:1px solid var(--lg-edge-dark);font-size:11px;color:var(--lg-ink-faint);}
-  .foot button{border:1px solid var(--lg-edge);background:rgba(226,139,166,.18);
+  .foot button{border:1px solid var(--lg-edge);background:var(--lg-accent-wash);
     color:var(--lg-accent-deep);border-radius:999px;
     box-shadow:inset 1px 1px 1px rgba(255,255,255,.68);
     padding:5px 12px;font-size:11.5px;cursor:pointer;
@@ -761,7 +832,21 @@ document.documentElement.innerHTML = `
   @keyframes popup-arrive{from{opacity:0;transform:translateY(7px) scale(.985)}to{opacity:1;transform:none}}
   .stream-segment{animation:stream-arrive 200ms ease-out both}
   @keyframes stream-arrive{from{opacity:0}to{opacity:1}}
-  @media(prefers-reduced-motion:reduce){#card,.stream-segment,.foot button{animation:none;transition:none}}
+  html[data-theme-scheme="dark"]{color-scheme:dark;}
+  html[data-theme-scheme="light"]{color-scheme:light;}
+  html[data-material="solid"] #card{backdrop-filter:none;-webkit-backdrop-filter:none;box-shadow:none;}
+  html[data-material="solid"] #card::before{display:none;}
+  html[data-radius="standard"]{--lg-r-lg:18px;}
+  html[data-radius="small"]{--lg-r-lg:10px;}
+  html[data-radius="standard"] .foot button{border-radius:10px;}
+  html[data-radius="small"] .foot button{border-radius:7px;}
+  html[data-ambient-light="false"] #card::before{display:none;}
+  html[data-motion="reduced"] #card{animation:none;}
+  html[data-motion="off"] *,html[data-motion="off"] *::before,html[data-motion="off"] *::after{animation:none!important;transition:none!important;}
+  html[data-motion="reduced"] .foot button{transition:color 140ms ease,background 140ms ease;}
+  html[data-font="serif"],html[data-font="serif"] body{font-family:ui-serif,"Noto Serif CJK SC",serif;}
+  html[data-font="mono"],html[data-font="mono"] body{font-family:ui-monospace,"Cascadia Mono",monospace;}
+  @media(prefers-reduced-motion:reduce){#card,.stream-segment,.foot button{animation:none!important;transition:none!important}}
 </style></head>
 <body><div id="card">
   <div class="head"><b id="meta">翻译中</b><span id="badge"></span></div>
@@ -791,7 +876,7 @@ document.documentElement.innerHTML = `
     var count = final ? paintQueue.length : Math.max(4, Math.min(70, Math.ceil(paintQueue.length / 5)));
     var chunk = paintQueue.slice(0, count);
     paintQueue = paintQueue.slice(count);
-    if (window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+    if (popupMotionDisabled()) {
       output.appendChild(document.createTextNode(chunk));
     } else {
       var segment = document.createElement('span');
@@ -810,7 +895,7 @@ document.documentElement.innerHTML = `
 
   function queueOutput(text) {
     if (output.querySelector('.ph')) output.textContent = '';
-    if (window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+    if (popupMotionDisabled()) {
       output.appendChild(document.createTextNode(text));
       return;
     }
@@ -912,6 +997,84 @@ document.documentElement.innerHTML = `
     });
   });
 
+  var activePopupAppearance = null;
+
+  function popupSystemDark() {
+    return !!(window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches);
+  }
+
+  function popupMotionDisabled() {
+    var motion = activePopupAppearance && activePopupAppearance.motion || 'system';
+    return motion === 'off' || !!(window.matchMedia &&
+      window.matchMedia('(prefers-reduced-motion: reduce)').matches);
+  }
+
+  function applyPopupPreferences(appearance) {
+    if (!appearance) return;
+    activePopupAppearance = appearance;
+    var root = document.documentElement;
+    var mode = appearance.mode || 'system';
+    var dark = mode === 'dark' || (mode === 'system' && popupSystemDark());
+    var palettes = {
+      sakura: ['#E28BA6', '#C96F90', '#F0A8BE', '#E28BA6'],
+      mist: ['#54AEB2', '#388D94', '#7DD0D0', '#54AEB2'],
+      sage: ['#83A58B', '#66876F', '#A4C9A5', '#83A58B'],
+      amber: ['#E3A253', '#C88733', '#F2BC72', '#E3A253']
+    };
+    var colors = palettes[appearance.palette] || palettes.sakura;
+    var strengthValue = Number(appearance.glassStrength);
+    var strength = Number.isFinite(strengthValue) ? Math.max(0, Math.min(100, strengthValue)) / 100 : 1;
+    var scaleValue = Number(appearance.fontScale);
+    var fontScale = Number.isFinite(scaleValue) ? Math.max(90, Math.min(140, scaleValue)) / 100 : 1;
+    var radius = appearance.radius || 'round';
+    var material = appearance.material || 'glass';
+    var blur = material === 'frosted' ? 34 + 12 * strength : 4 + 30 * strength;
+    var tint = material === 'solid' ? .98 : (dark ? .78 + .16 * (1 - strength) : .96 - .24 * strength);
+
+    root.dataset.themeMode = mode;
+    root.dataset.themeScheme = dark ? 'dark' : 'light';
+    root.dataset.palette = appearance.palette || 'sakura';
+    root.dataset.material = material;
+    root.dataset.radius = radius;
+    root.dataset.font = appearance.font || 'sans';
+    root.dataset.motion = appearance.motion || 'system';
+    root.dataset.layout = appearance.layout || 'standard';
+    root.dataset.ambientLight = appearance.ambientLight === false ? 'false' : 'true';
+    root.style.setProperty('--lg-accent', dark ? colors[2] : colors[0]);
+    root.style.setProperty('--lg-accent-deep', dark ? colors[3] : colors[1]);
+    root.style.setProperty('--lg-accent-wash', dark ? 'rgba(255,255,255,.12)' :
+      'color-mix(in srgb, ' + colors[0] + ' 18%, transparent)');
+    root.style.setProperty('--lg-ink', dark ? '#F1EEF5' : '#2E2A38');
+    root.style.setProperty('--lg-ink-sub', dark ? '#C4BFCC' : '#6E687E');
+    root.style.setProperty('--lg-ink-faint', dark ? '#96909F' : '#A29CAC');
+    root.style.setProperty('--lg-edge', dark ? 'rgba(255,255,255,.18)' : 'rgba(255,255,255,.74)');
+    root.style.setProperty('--lg-edge-dark', dark ? 'rgba(255,255,255,.12)' : 'rgba(70,52,96,.09)');
+    root.style.setProperty('--lg-scrollbar-thumb', dark ? 'rgba(255,255,255,.22)' : 'rgba(70,52,96,.14)');
+    root.style.setProperty('--lg-tint-2', dark
+      ? 'rgba(34,31,42,' + tint + ')' : 'rgba(255,255,255,' + tint + ')');
+    root.style.setProperty('--lg-tint-popup', dark ? 'rgba(34,31,42,.92)' : 'rgba(255,255,255,.82)');
+    root.style.setProperty('--lg-blur-strong', blur + 'px');
+    root.style.setProperty('--lg-r-lg', (radius === 'small' ? 10 : radius === 'standard' ? 18 : 26) + 'px');
+    root.style.setProperty('--lg-control-radius', radius === 'small' ? '7px' : radius === 'standard' ? '10px' : '999px');
+    root.style.setProperty('--user-font-scale', String(fontScale));
+    root.style.setProperty('--lg-shine', dark
+      ? 'inset 1.5px 1.5px 1px rgba(255,255,255,.12),inset -1px -1px 1px rgba(255,255,255,.06)'
+      : 'inset 1.5px 1.5px 1px rgba(255,255,255,.78),inset -1px -1px 1px rgba(255,255,255,.5)');
+  }
+
+  window.__popupApplyPreferences = applyPopupPreferences;
+  if (window.__itPopupAppearance) applyPopupPreferences(window.__itPopupAppearance);
+
+  var colorSchemeQuery = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)');
+  if (colorSchemeQuery) {
+    var onColorSchemeChange = function () {
+      if (activePopupAppearance && activePopupAppearance.mode === 'system') {
+        applyPopupPreferences(activePopupAppearance);
+      }
+    };
+    if (colorSchemeQuery.addEventListener) colorSchemeQuery.addEventListener('change', onColorSchemeChange);
+    else if (colorSchemeQuery.addListener) colorSchemeQuery.addListener(onColorSchemeChange);
+  }
   window.__popupBooted = true;
   if (window.__itPopupPayload) window.__popupApply(window.__itPopupPayload);
 })();
@@ -1015,7 +1178,7 @@ fn wait_hotkey_release() {}
 #[cfg(target_os = "windows")]
 fn send_copy_shortcut() {
     use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
-        keybd_event, KEYEVENTF_KEYUP, VK_CONTROL, VK_C,
+        keybd_event, KEYEVENTF_KEYUP, VK_C, VK_CONTROL,
     };
     unsafe {
         keybd_event(VK_CONTROL as u8, 0, 0, 0);
@@ -1147,6 +1310,26 @@ pub fn it_debug_log(message: String) {
     }
 }
 
+fn rollback_settings_changes(
+    app: &AppHandle,
+    previous: &DesktopSettings,
+    attempted: &DesktopSettings,
+    hotkeys_changed: bool,
+    auto_start_changed: bool,
+) -> Vec<String> {
+    let mut errors = Vec::new();
+    if auto_start_changed {
+        if let Err(error) = apply_autostart(previous.auto_start) {
+            errors.push(format!("恢复开机自启状态失败：{error}"));
+        }
+    }
+    if hotkeys_changed {
+        unregister_shortcuts(app, attempted);
+        errors.extend(register_shortcuts(app, previous));
+    }
+    errors
+}
+
 // 同步命令会在 WebView 的 IPC 线程（Windows 上是主线程）里执行，
 // 内部又要调全局快捷键插件与注册表，容易把消息循环堵住、前端收不到返回。
 // 用 command(async) 让它在阻塞线程池里跑。
@@ -1162,7 +1345,6 @@ pub fn it_save_settings(app: AppHandle, settings: DesktopSettings) -> Result<Vec
     }
 
     let previous = current_settings();
-    unregister_shortcuts(&app, &previous);
 
     let next = DesktopSettings {
         activation_shortcut: activation.to_string(),
@@ -1175,16 +1357,53 @@ pub fn it_save_settings(app: AppHandle, settings: DesktopSettings) -> Result<Vec
         },
         auto_start: settings.auto_start,
         start_to_tray: settings.start_to_tray,
+        preferences: settings.preferences,
     };
 
-    let mut errors = register_shortcuts(&app, &next);
-    if let Err(error) = apply_autostart(next.auto_start) {
-        errors.push(error);
+    let hotkeys_changed = next.activation_shortcut != previous.activation_shortcut
+        || next.selection_shortcut != previous.selection_shortcut;
+    let auto_start_changed = next.auto_start != previous.auto_start;
+
+    if hotkeys_changed {
+        unregister_shortcuts(&app, &previous);
+        let errors = register_shortcuts(&app, &next);
+        if !errors.is_empty() {
+            let rollback = rollback_settings_changes(&app, &previous, &next, true, false);
+            let detail = if rollback.is_empty() {
+                String::new()
+            } else {
+                format!("；{}", rollback.join("；"))
+            };
+            return Err(format!("{}{}", errors.join("；"), detail));
+        }
+    }
+
+    if auto_start_changed {
+        if let Err(error) = apply_autostart(next.auto_start) {
+            let rollback = rollback_settings_changes(&app, &previous, &next, hotkeys_changed, true);
+            let detail = if rollback.is_empty() {
+                String::new()
+            } else {
+                format!("；{}", rollback.join("；"))
+            };
+            return Err(format!("{error}{detail}"));
+        }
+    }
+
+    if let Err(error) = persist_settings(&app, &next) {
+        let rollback =
+            rollback_settings_changes(&app, &previous, &next, hotkeys_changed, auto_start_changed);
+        let detail = if rollback.is_empty() {
+            String::new()
+        } else {
+            format!("；{}", rollback.join("；"))
+        };
+        return Err(format!("{error}{detail}"));
     }
 
     store_settings(next.clone());
-    persist_settings(&app, &next);
-    Ok(errors)
+    sync_popup_appearance(&app, &next);
+    Ok(Vec::new())
 }
 
 pub fn set_system_tray(
@@ -1204,8 +1423,8 @@ pub fn set_system_tray(
     let new_window = MenuItemBuilder::with_id("tray_new_window", labels.new_window).build(app)?;
     let hide_app = MenuItemBuilder::with_id("hide_app", labels.hide).build(app)?;
     let show_app = MenuItemBuilder::with_id("show_app", labels.show).build(app)?;
-    let translate = MenuItemBuilder::with_id("tray_translate_selection", labels.translate)
-        .build(app)?;
+    let translate =
+        MenuItemBuilder::with_id("tray_translate_selection", labels.translate).build(app)?;
     let settings = MenuItemBuilder::with_id("tray_settings", labels.settings).build(app)?;
     let quit = MenuItemBuilder::with_id("quit", labels.quit).build(app)?;
 
@@ -1319,6 +1538,17 @@ pub fn set_global_shortcut(
             if let Err(error) = window.set_decorations(false) {
                 eprintln!("[IT] 隐藏系统边框失败：{error}");
             }
+            apply_window_border(&window);
+
+            let border_window = window.clone();
+            window.on_window_event(move |event| {
+                if matches!(
+                    event,
+                    tauri::WindowEvent::Focused(_) | tauri::WindowEvent::ThemeChanged(_)
+                ) {
+                    apply_window_border(&border_window);
+                }
+            });
         }
         // 覆盖层是窗口创建后才挂上的，延迟几次确保能抓到
         let handle = app.clone();
