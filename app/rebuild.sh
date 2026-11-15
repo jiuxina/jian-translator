@@ -15,7 +15,7 @@ set -euo pipefail
 # Node 在 Windows 上会把它解析成 F:\f\...，导致 --icon / 本地目录找不到。
 APP_DIR="$(cd "$(dirname "$0")" && { pwd -W 2>/dev/null || pwd; })"
 ROOT_DIR="$(cd "$(dirname "$0")/.." && { pwd -W 2>/dev/null || pwd; })"
-OUT_DIR="$ROOT_DIR/output"
+OUT_DIR="${IT_OUT_DIR:-$ROOT_DIR/output}"
 DESKTOP_DIR="$ROOT_DIR/desktop"
 WEB_DIR="$ROOT_DIR/web"
 
@@ -31,9 +31,8 @@ cd "$OUT_DIR"
 
 # 本机全局 npm 目录不可写，打过补丁的 pake-cli 放在 .build/npm-global 下。
 # 优先用这份，避免构建到未打补丁的全局模板；副本不存在时回退 PATH 里的 pake。
-WORK_ROOT="$(cd "$OUT_DIR/.." && pwd)"
-WORK_ROOT_WIN="$(cd "$OUT_DIR/.." && { pwd -W 2>/dev/null || pwd; })"
-PAKE_LOCAL="$WORK_ROOT/.build/npm-global/node_modules/pake-cli/dist/cli.js"
+WORK_ROOT_WIN="$(cd "$ROOT_DIR" && { pwd -W 2>/dev/null || pwd; })"
+PAKE_LOCAL="$ROOT_DIR/.build/npm-global/node_modules/pake-cli/dist/cli.js"
 if [ -f "$PAKE_LOCAL" ]; then
   PAKE=(node "$WORK_ROOT_WIN/.build/npm-global/node_modules/pake-cli/dist/cli.js")
 else
@@ -51,7 +50,7 @@ fi
   --no-restore-last-url \
   --keep-binary \
   --installer-language zh-CN \
-  --app-version 2.0.0 \
+  --app-version 2.1.0 \
   --show-system-tray \
   --system-tray-icon "$APP_DIR/icon.png" \
   --hide-on-close true \

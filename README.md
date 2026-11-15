@@ -3,6 +3,10 @@
 Windows、Android 与网页共用的翻译界面。`web/` 是当前界面、主题和交互的源码；
 Windows 通过 Pake/Tauri 加载本地页面，Android 使用 WebView 加载同一份资源。
 
+当前发布包为 `output/笺-2.1.0.exe`、`output/笺-2.1.0.msi`、`output/笺-2.1.0.apk`。
+旧版包保留原文件名；发布包不纳入 Git，校验值见 `output/SHA256SUMS.txt`。
+点击界面左上角“笺”打开菜单，再进入“设置”即可调整三端共用的外观与翻译偏好。
+
 ## 本地验证
 
 需要 Node.js 22 或以上以及 Chrome。无需安装前端依赖。

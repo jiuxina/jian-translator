@@ -26,6 +26,24 @@
 - Android 原生色板缓存会在创建 Activity 根视图前应用；操作系统最初显示的静态浅色启动画面仍可能
   在深色冷启动时短暂出现，进入应用内容后使用已保存色板。
 
+### v7 发布包（2.1.0）
+
+| 文件 | 字节数 | 构建时间（Asia/Shanghai） |
+| --- | ---: | --- |
+| `output/笺-2.1.0.exe` | 9,370,112 | 2026-11-15 15:36:50 |
+| `output/笺-2.1.0.msi` | 4,280,320 | 2026-11-15 15:36:46 |
+| `output/笺-2.1.0.apk` | 3,570,744 | 2026-11-15 15:35:10 |
+
+- Windows Release 编译及中文 MSI 打包成功；只读查询 MSI 的 `ProductVersion` 为 `2.1.0`。
+  EXE 的 PE FileVersion/ProductVersion 仍由 Pake 模板标为 `3.18.0`，应用内版本与安装包版本为 `2.1.0`。
+- Android Release 构建成功，包名 `ink.jian.translate`、versionCode `4`、versionName `2.1.0`；
+  `apksigner verify` 确认 APK v2 签名有效，保留既有签名身份。
+- APK 内四个前端资源与当前 `web/` 逐字节哈希一致，包含最终的保存快照、分组重置和原生色板修复。
+- 三个发布文件均从隔离构建目录复制并再次校验 SHA-256；完整校验值在 `output/SHA256SUMS.txt`，
+  同时保留旧版本校验值。旧文件另备份到 `.build/release-backup-v7-20261115/`。
+- 新设置截图为 `output/preview-settings-light.png`、`output/preview-settings-dark.png`、
+  `output/preview-settings-mobile.png`。这些是前端实际渲染，不代表 DWM 原生画面已验收。
+
 ## 仓库与构建基线（2026-11-15）
 
 本项目已开始纳入本地 Git 管理；源码、资源、测试与文档入库，构建缓存与发布二进制不入库。
