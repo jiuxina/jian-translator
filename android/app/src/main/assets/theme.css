@@ -1042,7 +1042,7 @@ textarea.src::placeholder { color: var(--lg-ink-faint); }
     transition: color var(--lg-dur) var(--lg-ease), background var(--lg-dur) var(--lg-ease);
   }
   .mobile-settings[aria-expanded="true"],
-  .mobile-settings:active { color: var(--lg-accent-deep); background: var(--it-liquid-fill-high); }
+  .mobile-settings:active { color: var(--lg-accent-deep); }
   html.it-desktop .mobile-settings { display: none; }
   .menu button { min-height: 48px; padding: 10px 14px; }
 

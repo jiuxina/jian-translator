@@ -312,7 +312,7 @@ try {
     await window.__probeFrames(3);
     const after = snapshot();
     const changedAll = after.blur === '2.3' && after.saturation === '4' &&
-      after.alpha === '0.73' && after.opacity === '1' &&
+      after.alpha === '0.73' && after.opacity === '${BASELINE ? '1' : '0'}' &&
       Math.abs(Number(after.scale) - state.maps.maxDisplacement * (.4 * .67)) < 1e-9;
     const nondefaultNoop = { filterAttributes: 0, surfaceStyles: 0, rootStyles: 0 };
     const observer = new MutationObserver((records) => {
@@ -379,11 +379,89 @@ try {
       beforeOpacity, activeOpacity,
       restoredOpacity: pill.style.getPropertyValue('--it-liquid-background-opacity') };
   })()`);
-  check('Pressed pills preserve their stronger refraction and restore on release',
-    interaction.before > 0 && Math.abs(interaction.active / interaction.before - .9 / .4) < 1e-9 &&
-    interaction.restored === interaction.before && interaction.activeOpacity === '0.1' &&
-    interaction.restoredOpacity === interaction.beforeOpacity);
+  if (BASELINE) {
+    check('Baseline pressed pills strengthen refraction and restore on release',
+      interaction.before > 0 && Math.abs(interaction.active / interaction.before - .9 / .4) < 1e-9 &&
+      interaction.restored === interaction.before && interaction.activeOpacity === '0.1' &&
+      interaction.restoredOpacity === interaction.beforeOpacity);
+  } else {
+    check('Tab glass remains clear with stable refraction while pressed and released',
+      interaction.before > 0 && interaction.active === interaction.before &&
+      interaction.restored === interaction.before && interaction.activeOpacity === '0' &&
+      interaction.beforeOpacity === '0' && interaction.restoredOpacity === interaction.beforeOpacity);
+  }
   report.measurements.interaction = interaction;
+
+  if (!BASELINE) {
+    report.measurements.steadyMaterials = await page.evaluate(`(async () => {
+      function exercise(scopeSelector, thumbSelector) {
+        const scope = document.querySelector(scopeSelector);
+        const thumb = scope.querySelector(thumbSelector);
+        const state = ItLiquidGlass.stateOf(thumb);
+        const target = scope.querySelector('button.on');
+        function snapshot() {
+          return {
+            scale: state.refract.getAttribute('scale'),
+            opacity: thumb.style.getPropertyValue('--it-liquid-background-opacity'),
+            blur: state.baseBlur.getAttribute('stdDeviation'),
+            saturation: state.specularColor.getAttribute('values'),
+            highlight: state.alphaFunction.getAttribute('slope')
+          };
+        }
+        const initial = snapshot();
+        const phases = [];
+        for (const release of ['pointerup', 'pointercancel', 'blur']) {
+          target.dispatchEvent(new PointerEvent('pointerdown', {
+            bubbles: true, button: 0, pointerId: 79, isPrimary: true
+          }));
+          phases.push(snapshot());
+          if (release === 'blur') window.dispatchEvent(new Event('blur'));
+          else target.dispatchEvent(new PointerEvent(release, {
+            bubbles: true, button: 0, pointerId: 79, isPrimary: true
+          }));
+          phases.push(snapshot());
+        }
+        const custom = JSON.parse(JSON.stringify(ItLiquidGlass.defaults));
+        custom.pill.refractionLevel = 63;
+        ItLiquidGlass.configure(custom);
+        const configured = snapshot();
+        target.dispatchEvent(new PointerEvent('pointerdown', {
+          bubbles: true, button: 0, pointerId: 79, isPrimary: true
+        }));
+        const customHeld = snapshot();
+        target.dispatchEvent(new PointerEvent('pointercancel', {
+          bubbles: true, button: 0, pointerId: 79, isPrimary: true
+        }));
+        const customReleased = snapshot();
+        ItLiquidGlass.configure(ItLiquidGlass.defaults);
+        return {
+          ready: !!state.maps && state.maps.maxDisplacement > 0,
+          initial, configured,
+          steady: phases.every((phase) => JSON.stringify(phase) === JSON.stringify(initial)),
+          customSteady: JSON.stringify(configured) === JSON.stringify(customHeld) &&
+            JSON.stringify(configured) === JSON.stringify(customReleased),
+          expectedRefraction: Math.abs(Number(initial.scale) - state.maps.maxDisplacement * .9) < 1e-9 &&
+            Math.abs(Number(configured.scale) - state.maps.maxDisplacement * .9 * .63) < 1e-9
+        };
+      }
+      const model = exercise('#model-text', '.models-thumb');
+      window.__itOpenSettings({ trigger: document.getElementById('brand') });
+      for (let index = 0; index < 30 &&
+          !ItLiquidGlass.stateOf(document.querySelector('.it-set-nav-thumb'))?.maps; index++) {
+        await window.__probeFrames(1);
+      }
+      const navigation = exercise('.it-set-nav', '.it-set-nav-thumb');
+      document.querySelector('.it-set [data-close]').click();
+      await Promise.all(document.querySelector('.it-set').getAnimations().map((animation) =>
+        animation.finished.catch(() => {})));
+      return { model, navigation };
+    })()`);
+    for (const [name, material] of Object.entries(report.measurements.steadyMaterials)) {
+      check(`${name} slider retains liquid glass through press, release, cancellation and blur`,
+        material.ready && material.steady && material.initial.opacity === '0.1' &&
+        material.customSteady && material.expectedRefraction, JSON.stringify(material));
+    }
+  }
 
   const wheelStart = await page.metrics();
   const wheelReads = await page.evaluate('({...window.__performanceProbe})');

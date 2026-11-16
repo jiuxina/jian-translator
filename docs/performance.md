@@ -227,3 +227,19 @@ Chrome 仍采用上文所述的独立无界面 profile，调试端口改为 `923
 Android，交付包为 `output/笺-2.2.0-交互玻璃与磨砂-debug.apk`。
 该包为独立无签名工程生成的 Debug APK，当前未连接 Android 真机，
 合成焦点测试确认没有自动编辑焦点，仍需实际输入法与设备确认体验。
+
+## 按压前后保持相同材质
+
+2026-11-16，模型选择器与设置分类滑块持续使用原按住时的液态玻璃，
+不再在静止时覆盖不透明白底。透明 Tab 滑块保留原静止时的折射强度，
+按住时不再更新光学参数；其它按钮与下拉入口同样保持原有透明材质。
+指针状态仍用于记录按压与清理，不再触发滤镜或底色写入；
+拖动和选中动画继续按原几何路径运行。
+
+`tests/verify-performance.mjs` 覆盖默认与自定义强度下的模型和设置分类滑块，
+检查按下、松开、取消与失焦前后光学参数相等，并保留 Tab 透明与折射强度检查。
+数学与归一化测试另见 `tests/verify-liquid-glass.mjs`。
+独立 Chromium 的定向状态检查为 20/20，报告和按住前后截图位于
+`.build/steady-materials/`；最终唯一一次全量回归日志为
+`.build/steady-material-final-verification.log`，退出状态清单为
+`.build/steady-material-final-results.json`。

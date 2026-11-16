@@ -34,7 +34,7 @@
 | --- | --- | --- |
 | `specularOpacity` | 0–100%；pill/button 50 | 交互玻璃镜面层透明度；card 历史值保留但不应用。 |
 | `specularSaturation` | 0–50；pill 6、button 9 | 交互玻璃采用 SVG 饱和度倍率，1 为中性。 |
-| `refractionLevel` | 0–100%；pill/button 100 | pill 内部按按住状态使用 0.4/0.9 倍系数。 |
+| `refractionLevel` | 0–100%；pill/button 100 | 模型与设置分类滑块固定使用 0.9 倍系数；透明 Tab 滑块固定为 0.4 倍。按压不改变材质。 |
 | `blurLevel` | 0–40 px；pill 0.2 | 当前设置只对 pill 提供。 |
 | `progressiveBlurStrength` | 历史 card 0–10；默认 1 | 仅保留旧配置及引擎 API 兼容，实际内容面板无三层模糊。 |
 | `backgroundOpacity` | 0–100%；card 60 | 静态磨砂不透明度；button 底色固定透明，移动导航滑块也保持透明。 |
@@ -43,6 +43,8 @@
 `liquidGlass.card` 六个历史值仍归一化并保存，不丢弃既有偏好。
 不再公开轮廓、边缘宽度、厚度和折射率。
 这些内部几何保持参考比例，按元素尺寸重新生成，不与用户滑条形成第二套强度控制。
+模型与设置分类滑块底色不透明度固定为 0.1，首次显示、按压和拖动结束后保持一致；
+Tab 滑块使用透明材质，保留原有静止外观。该材质选择由组件决定，不增加保存字段或设置开关。
 主界面与桌面浮窗共享对应预设，不能单独为浮窗保存另一套玻璃强度或透明度。
 `background.opacity/blur` 只处理壁纸图像，`liquidGlass.card.backgroundOpacity`
 处理面板静态色层与纹理，作用层不同；按钮不继承面板的不透明度。

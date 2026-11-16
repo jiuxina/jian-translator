@@ -58,13 +58,27 @@ for (const name of ['card', 'pill', 'button']) {
 assert.equal(glass.opticalPreset('button', 12).glassThickness, 10,
   'a 12px button bezel uses 10px thickness rather than the unscaled 50px reference thickness');
 assert.deepEqual(glass.interactionParameters('pill', glass.defaults.pill, false), {
-  refractionRatio: .4,
-  backgroundOpacity: 1,
-}, 'an idle toggle uses the reference resting refraction and fill');
+  refractionRatio: .9,
+  backgroundOpacity: .1,
+}, 'an idle toggle keeps the transparent liquid-glass material');
 assert.deepEqual(glass.interactionParameters('pill', glass.defaults.pill, true), {
   refractionRatio: .9,
   backgroundOpacity: .1,
-}, 'a held toggle uses the reference active refraction and fill without changing geometry');
+}, 'holding a toggle preserves its existing liquid-glass material');
+for (const active of [false, true]) {
+  assert.deepEqual(glass.interactionParameters('pill', glass.defaults.pill, active, { material: 'clear' }), {
+    refractionRatio: .4,
+    backgroundOpacity: 0,
+  }, 'the navigation variant keeps its original resting refraction and transparent fill while held');
+  assert.deepEqual(glass.interactionParameters('pill', { refractionLevel: 50 }, active), {
+    refractionRatio: .45,
+    backgroundOpacity: .1,
+  }, 'custom refraction applies equally to idle and held persistent sliders');
+  assert.deepEqual(glass.interactionParameters('pill', { refractionLevel: 50 }, active, { material: 'clear' }), {
+    refractionRatio: .2,
+    backgroundOpacity: 0,
+  }, 'custom refraction also applies equally to idle and held navigation sliders');
+}
 assert.deepEqual(glass.interactionParameters('card', glass.defaults.card, true), {
   refractionRatio: 1,
   backgroundOpacity: .6,

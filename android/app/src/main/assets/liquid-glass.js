@@ -129,22 +129,22 @@
     return result;
   }
 
-  function presetOpacity(name, config, active) {
-    if (name === 'pill') return active ? .1 : 1;
-    if (name === 'button') return 0;
-    return config.backgroundOpacity / 100;
+  function materialParameters(name, config, material) {
+    var clearPill = name === 'pill' && material === 'clear';
+    return {
+      refractionRatio: (name === 'pill' ? (clearPill ? .4 : .9) : 1) * config.refractionLevel / 100,
+      backgroundOpacity: name === 'pill' ? (clearPill ? 0 : .1) :
+        name === 'button' ? 0 : config.backgroundOpacity / 100
+    };
   }
 
-  function interactionParameters(name, input, active) {
+  function interactionParameters(name, input, active, options) {
+    // Keep accepting active for existing callers; held state never changes the material.
     var resolved = presetName(name);
     var source = {};
     source[resolved] = input;
     var config = normalizePresets(source)[resolved];
-    var ratio = resolved === 'pill' ? (active ? .9 : .4) : 1;
-    return {
-      refractionRatio: ratio * config.refractionLevel / 100,
-      backgroundOpacity: presetOpacity(resolved, config, !!active)
-    };
+    return materialParameters(resolved, config, options && options.material);
   }
 
   function progressiveLevels(value) {
@@ -650,7 +650,7 @@
     }
   }
 
-  function createFilter(element, name) {
+  function createFilter(element, name, material) {
     var defs = ensureDefs();
     if (!defs) return null;
     var filter = document.createElementNS(SVG_NS, 'filter');
@@ -700,6 +700,7 @@
       element: element,
       presetName: name,
       interactionActive: false,
+      material: material,
       filter: filter,
       displacementImage: displacementImage,
       refract: refract,
@@ -719,7 +720,7 @@
     element.dataset.itLiquidActive = 'false';
     element.style.setProperty('--it-liquid-filter', 'url(#' + filter.id + ')');
     element.style.setProperty('--it-liquid-background-opacity',
-      String(presetOpacity(name, config, false)));
+      String(materialParameters(name, config, material).backgroundOpacity));
     return state;
   }
 
@@ -733,8 +734,7 @@
 
   function updateFilterParameters(state, maps) {
     var config = currentConfig[state.presetName];
-    var ratio = state.presetName === 'pill' ? (state.interactionActive ? .9 : .4) : 1;
-    var opacity = presetOpacity(state.presetName, config, state.interactionActive);
+    var material = materialParameters(state.presetName, config, state.material);
     var width = state.renderWidth || maps.width;
     var height = state.renderHeight || maps.height;
     setAttributeIfChanged(state.filter, 'width', width);
@@ -746,7 +746,7 @@
     // Keep the reference demo's scale convention: normalized map maximum ×
     // slider ratio. SVG interprets each channel around .5; doubling this here
     // would produce a stronger lens than the reference's 100% preset.
-    setAttributeIfChanged(state.refract, 'scale', maps.maxDisplacement * (ratio * config.refractionLevel / 100));
+    setAttributeIfChanged(state.refract, 'scale', maps.maxDisplacement * material.refractionRatio);
     setAttributeIfChanged(state.baseBlur, 'stdDeviation', config.blurLevel || 0);
     var levels = progressiveLevels(config.progressiveBlurStrength || 0);
     state.progressiveLayers.forEach(function (layer, index) {
@@ -757,7 +757,7 @@
     });
     setAttributeIfChanged(state.specularColor, 'values', config.specularSaturation);
     setAttributeIfChanged(state.alphaFunction, 'slope', config.specularOpacity / 100);
-    setStyleIfChanged(state.element, '--it-liquid-background-opacity', opacity);
+    setStyleIfChanged(state.element, '--it-liquid-background-opacity', material.backgroundOpacity);
   }
 
   function queueResize(state) {
@@ -914,9 +914,10 @@
     }
   }
 
-  function attach(element, name) {
+  function attach(element, name, options) {
     if (!element || !element.style || !element.isConnected) return null;
     var targetPreset = presetName(name || element.dataset.itLiquidPreset);
+    var material = options && options.material === 'clear' ? 'clear' : 'default';
     var defs = ensureDefs();
     if (!defs) return null;
     var state = attached.get(element);
@@ -925,6 +926,10 @@
       state = null;
     }
     if (state) {
+      if (state.material !== material) {
+        state.material = material;
+        updateFilterParameters(state, state.maps || { width: 1, height: 1, maxDisplacement: 0 });
+      }
       ensureSurfaceLayers(state);
       setAttributeIfChanged(element, 'data-it-liquid-preset', targetPreset);
       if (!state.filter.isConnected) defs.appendChild(state.filter);
@@ -937,7 +942,7 @@
       element.dataset.itLiquidPreset = targetPreset;
       return null;
     }
-    state = createFilter(element, targetPreset);
+    state = createFilter(element, targetPreset, material);
     if (!state) return null;
     ensureObservers();
     if (resizeObserver) resizeObserver.observe(element);
@@ -989,7 +994,6 @@
           !(scope === element || (scope.contains && scope.contains(element)))) return;
       state.interactionActive = !!active;
       setAttributeIfChanged(element, 'data-it-liquid-active', state.interactionActive ? 'true' : 'false');
-      if (state.maps) updateFilterParameters(state, state.maps);
       updated++;
     });
     return updated;

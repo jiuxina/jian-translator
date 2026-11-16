@@ -2521,7 +2521,7 @@
     if (!scope) return;
     function attachSurface(surface) {
       var preset = surface.matches('.tabs-thumb, .models-thumb, .it-set-nav-thumb') ? 'pill' : 'button';
-      window.ItLiquidGlass.attach(surface, preset);
+      window.ItLiquidGlass.attach(surface, preset, { material: surface.matches('.tabs-thumb') ? 'clear' : 'default' });
     }
     if (scope.matches && scope.matches(LIQUID_GLASS_SURFACES)) attachSurface(scope);
     if (scope.querySelectorAll) scope.querySelectorAll(LIQUID_GLASS_SURFACES).forEach(function (surface) {
@@ -3022,7 +3022,7 @@
       $('it-glass-target').value = glassTarget;
       $('it-glass-preset-note').textContent = glassTarget === 'card' ?
         '原文、译文、弹层与悬浮窗使用静态磨砂，仅调整面板不透明度。' : glassTarget === 'pill' ?
-          '用于 Tab、模型与设置导航的交互滑块，保留按压折射。' :
+          'Tab 保持透明玻璃，模型与设置导航滑块始终呈现液态玻璃；静止、按住与拖动时材质不变。' :
           '透明液态玻璃用于按钮、底部导航轨道与下拉入口。';
       modal.querySelectorAll('[data-glass-control]').forEach(function (row) {
         var key = row.getAttribute('data-glass-control');
