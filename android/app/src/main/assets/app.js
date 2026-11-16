@@ -964,11 +964,29 @@
     });
   }
 
+  var lastAndroidAppearance = '';
+  var lastAndroidAppearanceBridge = null;
+  var appliedPreferenceBackground = null;
+
   function syncAndroidAppearance(preferences) {
     if (!Bridge.isAndroid || !window.NativeBridge ||
         typeof window.NativeBridge.applyAppearance !== 'function') return;
-    try { window.NativeBridge.applyAppearance(JSON.stringify(nativeAppearance(preferences))); }
-    catch (e) {}
+    var projection = JSON.stringify(nativeAppearance(preferences));
+    if (projection === lastAndroidAppearance &&
+        window.NativeBridge === lastAndroidAppearanceBridge) return;
+    try {
+      window.NativeBridge.applyAppearance(projection);
+      lastAndroidAppearance = projection;
+      lastAndroidAppearanceBridge = window.NativeBridge;
+    } catch (e) {}
+  }
+
+  function setPreferenceStyle(element, name, value) {
+    if (element.style.getPropertyValue(name) !== value) element.style.setProperty(name, value);
+  }
+
+  function setPreferenceData(element, name, value) {
+    if (element.dataset[name] !== value) element.dataset[name] = value;
   }
 
   function applyPreferences(preferences) {
@@ -976,6 +994,14 @@
     var root = document.documentElement;
     var appearance = activePreferences.appearance;
     var dark = resolvedAppearance(activePreferences) === 'dark';
+    var geometryChanged = root.dataset.itRadius !== appearance.radius ||
+      root.dataset.itLayout !== appearance.layout;
+    var motionChanged = root.dataset.itMotion !== appearance.motion;
+    var backgroundChanged = !appliedPreferenceBackground ||
+      appliedPreferenceBackground.dark !== dark ||
+      Object.keys(activePreferences.background).some(function (key) {
+        return activePreferences.background[key] !== appliedPreferenceBackground[key];
+      });
     var colors = PALETTE_COLORS[appearance.palette] || PALETTE_COLORS.sakura;
     var palette = colors[dark ? 'dark' : 'light'];
     var background = dark ? '#211F28' : '#F3EFF6';
@@ -987,50 +1013,51 @@
     var radius = appearance.radius === 'small' ? [12, 9, 7] :
       appearance.radius === 'standard' ? [19, 15, 11] : [26, 20, 14];
 
-    root.dataset.itTheme = dark ? 'dark' : 'light';
+    setPreferenceData(root, 'itTheme', dark ? 'dark' : 'light');
     var colorScheme = document.querySelector('meta[name="color-scheme"]');
-    if (colorScheme) colorScheme.setAttribute('content', dark ? 'dark light' : 'light dark');
-    root.dataset.itThemeMode = appearance.mode;
-    root.dataset.itPalette = appearance.palette;
-    root.dataset.itRadius = appearance.radius;
-    root.dataset.itLayout = appearance.layout;
-    root.dataset.itMotion = appearance.motion;
-    root.dataset.itAmbient = appearance.ambientLight ? 'true' : 'false';
-    root.style.setProperty('--lg-bg', background);
-    root.style.setProperty('--lg-bg-warm', backgroundWarm);
-    root.style.setProperty('--lg-bg-end', dark ? '#18161D' : '#EBE5F4');
-    root.style.setProperty('--lg-overlay', dark ? 'rgba(4,3,7,.54)' : 'rgba(46,42,56,.18)');
-    root.style.setProperty('--lg-ink', ink);
-    root.style.setProperty('--lg-ink-sub', inkSub);
-    root.style.setProperty('--lg-ink-faint', inkFaint);
-    root.style.setProperty('--lg-accent', palette.accent);
-    root.style.setProperty('--lg-accent-deep', palette.deep);
-    root.style.setProperty('--lg-lilac', palette.lilac);
-    root.style.setProperty('--lg-glow-a', colorRgba(palette.accent, appearance.ambientLight ? (dark ? .2 : .28) : 0));
-    root.style.setProperty('--lg-glow-b', colorRgba(palette.lilac, appearance.ambientLight ? (dark ? .14 : .2) : 0));
-    root.style.setProperty('--lg-glow-c', dark ? 'rgba(255,255,255,.08)' : 'rgba(255,255,255,.48)');
-    root.style.setProperty('--lg-accent-wash', colorRgba(palette.deep, dark ? .22 : .14));
-    root.style.setProperty('--lg-accent-wash-2', colorRgba(palette.deep, dark ? .32 : .24));
-    root.style.setProperty('--lg-edge', dark ? 'rgba(255,255,255,.13)' : 'rgba(70,52,96,.12)');
-    root.style.setProperty('--lg-edge-dark', dark ? 'rgba(255,255,255,.12)' : 'rgba(70,52,96,.09)');
-    root.style.setProperty('--lg-shadow', dark ?
+    var scheme = dark ? 'dark light' : 'light dark';
+    if (colorScheme && colorScheme.getAttribute('content') !== scheme) colorScheme.setAttribute('content', scheme);
+    setPreferenceData(root, 'itThemeMode', appearance.mode);
+    setPreferenceData(root, 'itPalette', appearance.palette);
+    setPreferenceData(root, 'itRadius', appearance.radius);
+    setPreferenceData(root, 'itLayout', appearance.layout);
+    setPreferenceData(root, 'itMotion', appearance.motion);
+    setPreferenceData(root, 'itAmbient', appearance.ambientLight ? 'true' : 'false');
+    setPreferenceStyle(root, '--lg-bg', background);
+    setPreferenceStyle(root, '--lg-bg-warm', backgroundWarm);
+    setPreferenceStyle(root, '--lg-bg-end', dark ? '#18161D' : '#EBE5F4');
+    setPreferenceStyle(root, '--lg-overlay', dark ? 'rgba(4,3,7,.54)' : 'rgba(46,42,56,.18)');
+    setPreferenceStyle(root, '--lg-ink', ink);
+    setPreferenceStyle(root, '--lg-ink-sub', inkSub);
+    setPreferenceStyle(root, '--lg-ink-faint', inkFaint);
+    setPreferenceStyle(root, '--lg-accent', palette.accent);
+    setPreferenceStyle(root, '--lg-accent-deep', palette.deep);
+    setPreferenceStyle(root, '--lg-lilac', palette.lilac);
+    setPreferenceStyle(root, '--lg-glow-a', colorRgba(palette.accent, appearance.ambientLight ? (dark ? .2 : .28) : 0));
+    setPreferenceStyle(root, '--lg-glow-b', colorRgba(palette.lilac, appearance.ambientLight ? (dark ? .14 : .2) : 0));
+    setPreferenceStyle(root, '--lg-glow-c', dark ? 'rgba(255,255,255,.08)' : 'rgba(255,255,255,.48)');
+    setPreferenceStyle(root, '--lg-accent-wash', colorRgba(palette.deep, dark ? .22 : .14));
+    setPreferenceStyle(root, '--lg-accent-wash-2', colorRgba(palette.deep, dark ? .32 : .24));
+    setPreferenceStyle(root, '--lg-edge', dark ? 'rgba(255,255,255,.13)' : 'rgba(70,52,96,.12)');
+    setPreferenceStyle(root, '--lg-edge-dark', dark ? 'rgba(255,255,255,.12)' : 'rgba(70,52,96,.09)');
+    setPreferenceStyle(root, '--lg-shadow', dark ?
       '0 12px 34px rgba(0,0,0,.32),0 3px 10px rgba(0,0,0,.18)' :
       '0 12px 34px rgba(70,52,96,.13),0 3px 10px rgba(70,52,96,.06)');
-    root.style.setProperty('--lg-shadow-strong', dark ?
+    setPreferenceStyle(root, '--lg-shadow-strong', dark ?
       '0 24px 60px rgba(0,0,0,.42),0 5px 14px rgba(0,0,0,.2)' :
       '0 24px 60px rgba(70,52,96,.20),0 5px 14px rgba(70,52,96,.08)');
-    root.style.setProperty('--lg-shadow-soft', dark ?
+    setPreferenceStyle(root, '--lg-shadow-soft', dark ?
       '0 5px 16px rgba(0,0,0,.24)' : '0 5px 16px rgba(70,52,96,.09)');
     var liquidOpacity = liquidGlass.card.backgroundOpacity / 100;
     var liquidTint = dark ? '#302C38' : '#FFFFFF';
-    root.style.setProperty('--it-liquid-tint-rgb', dark ? '48 44 56' : '255 255 255');
-    root.style.setProperty('--it-liquid-fill', colorRgba(liquidTint, liquidOpacity));
-    root.style.setProperty('--it-liquid-fill-low', colorRgba(liquidTint, liquidOpacity * .35));
-    root.style.setProperty('--it-liquid-fill-mid', colorRgba(liquidTint, liquidOpacity * .65));
-    root.style.setProperty('--it-liquid-fill-high', colorRgba(liquidTint, Math.min(1, liquidOpacity * 1.15)));
-    root.style.setProperty('--lg-r-lg', radius[0] + 'px');
-    root.style.setProperty('--lg-r-md', radius[1] + 'px');
-    root.style.setProperty('--lg-r-sm', radius[2] + 'px');
+    setPreferenceStyle(root, '--it-liquid-tint-rgb', dark ? '48 44 56' : '255 255 255');
+    setPreferenceStyle(root, '--it-liquid-fill', colorRgba(liquidTint, liquidOpacity));
+    setPreferenceStyle(root, '--it-liquid-fill-low', colorRgba(liquidTint, liquidOpacity * .35));
+    setPreferenceStyle(root, '--it-liquid-fill-mid', colorRgba(liquidTint, liquidOpacity * .65));
+    setPreferenceStyle(root, '--it-liquid-fill-high', colorRgba(liquidTint, Math.min(1, liquidOpacity * 1.15)));
+    setPreferenceStyle(root, '--lg-r-lg', radius[0] + 'px');
+    setPreferenceStyle(root, '--lg-r-md', radius[1] + 'px');
+    setPreferenceStyle(root, '--lg-r-sm', radius[2] + 'px');
     var genericFont = appearance.font === 'serif' ?
       '"Noto Serif", "Songti SC", serif' : appearance.font === 'mono' ?
         '"Cascadia Code", "Consolas", monospace' :
@@ -1038,23 +1065,26 @@
     var selectedFont = Bridge.isDesktop && appearance.systemFontFamily ?
       '"' + appearance.systemFontFamily.replace(/\\/g, '\\\\').replace(/"/g, '\\"') + '", ' + genericFont :
       genericFont;
-    root.style.setProperty('--it-content-font', selectedFont);
-    root.style.setProperty('--it-content-scale', String(appearance.fontScale / 100));
-    root.style.setProperty('--it-content-weight', String(appearance.fontWeight));
-    root.style.setProperty('--it-content-color', appearance.fontColorMode === 'custom' ?
+    setPreferenceStyle(root, '--it-content-font', selectedFont);
+    setPreferenceStyle(root, '--it-content-scale', String(appearance.fontScale / 100));
+    setPreferenceStyle(root, '--it-content-weight', String(appearance.fontWeight));
+    setPreferenceStyle(root, '--it-content-color', appearance.fontColorMode === 'custom' ?
       appearance.fontColor : ink);
-    root.style.setProperty('--lg-distance-scene', appearance.motion === 'reduced' ? '0px' : '28px');
+    setPreferenceStyle(root, '--lg-distance-scene', appearance.motion === 'reduced' ? '0px' : '28px');
     if (appearance.motion === 'reduced') {
-      root.style.setProperty('--lg-duration-panel', '180ms');
-      root.style.setProperty('--lg-duration-dialog', '140ms');
+      setPreferenceStyle(root, '--lg-duration-panel', '180ms');
+      setPreferenceStyle(root, '--lg-duration-dialog', '140ms');
     } else {
-      root.style.setProperty('--lg-duration-panel', '420ms');
-      root.style.setProperty('--lg-duration-dialog', '240ms');
+      setPreferenceStyle(root, '--lg-duration-panel', '420ms');
+      setPreferenceStyle(root, '--lg-duration-dialog', '240ms');
     }
-    syncMotionConstants();
-    applyBackground(activePreferences.background.data, activePreferences.background);
+    if (motionChanged) syncMotionConstants();
+    if (backgroundChanged) {
+      applyBackground(activePreferences.background.data, activePreferences.background);
+      appliedPreferenceBackground = Object.assign({ dark: dark }, activePreferences.background);
+    }
     window.ItLiquidGlass.configure(liquidGlass);
-    setupLiquidGlassSurfaces(document);
+    if (geometryChanged) window.ItLiquidGlass.refresh(document);
     syncAndroidAppearance(activePreferences);
   }
 
@@ -1442,6 +1472,8 @@
 
   /* ---------------- 8. 玻璃滑块 ----------------
      模式标签和模型组选中态共用同一套玻璃滑块。 */
+  var segmentDragGeometry = new WeakMap();
+
   function initSegmentDrag(box) {
     if (!window.PointerEvent || box.dataset.dragReady === '1') return;
     box.dataset.dragReady = '1';
@@ -1456,6 +1488,7 @@
       if (!drag) return;
       var ending = drag;
       drag = null;
+      segmentDragGeometry.delete(box);
       box.classList.remove('is-dragging');
       if (ending.dragging) {
         ignoreClickUntil = performance.now() + 500;
@@ -1473,14 +1506,22 @@
       var index = buttons.indexOf(button);
       if (index < 0 || button.closest('[inert]')) return;
       var rect = box.getBoundingClientRect();
+      var boxWidth = box.offsetWidth;
+      var geometry = buttons.map(function (candidate) {
+        var left = candidate.offsetLeft;
+        var width = candidate.offsetWidth;
+        return { left: left, width: width, center: left + width / 2 };
+      });
       ignoreClickUntil = 0;
       drag = {
         pointerId: e.pointerId, startX: e.clientX, startY: e.clientY,
-        scale: rect.width ? box.offsetWidth / rect.width : 1,
-        startCenter: button.offsetLeft + button.offsetWidth / 2,
+        scale: rect.width ? boxWidth / rect.width : 1,
+        geometry: geometry,
+        startCenter: geometry[index].center,
         index: buttons.indexOf(box.querySelector(buttonSelector + '.on')),
         dragging: false
       };
+      segmentDragGeometry.set(box, drag);
     });
 
     on(document, 'pointermove', function (e) {
@@ -1499,7 +1540,8 @@
       e.preventDefault();
       var center = drag.startCenter + dx * drag.scale;
       var index = Math.max(0, drag.index);
-      function centerAt(i) { return buttons[i].offsetLeft + buttons[i].offsetWidth / 2; }
+      var geometry = drag.geometry;
+      function centerAt(i) { return geometry[i].center; }
       while (index < buttons.length - 1 && center > (centerAt(index) + centerAt(index + 1)) / 2 + 4) index++;
       while (index > 0 && center < (centerAt(index - 1) + centerAt(index)) / 2 - 4) index--;
       if (index !== drag.index) {
@@ -1507,11 +1549,12 @@
         buttons[index].focus({ preventScroll: true });
         buttons[index].click();
       }
-      var active = buttons[index];
-      thumb.style.width = active.offsetWidth + 'px';
-      var left = Math.max(buttons[0].offsetLeft,
-        Math.min(buttons[buttons.length - 1].offsetLeft, center - active.offsetWidth / 2));
-      thumb.style.transform = 'translateX(' + left + 'px)';
+      var width = geometry[index].width + 'px';
+      if (thumb.style.width !== width) thumb.style.width = width;
+      var left = Math.max(geometry[0].left,
+        Math.min(geometry[geometry.length - 1].left, center - geometry[index].width / 2));
+      var transform = 'translateX(' + left + 'px)';
+      if (thumb.style.transform !== transform) thumb.style.transform = transform;
     }, { passive: false });
 
     on(document, 'pointerup', function (e) {
@@ -1552,24 +1595,69 @@
     positionThumbs();
   }
 
-  function moveThumb(box, btn, animate) {
+  function measureThumb(box, btn) {
+    var drag = segmentDragGeometry.get(box);
+    // The live gesture owns its thumb. Selection handlers may run synchronously
+    // at a threshold, but must not snap it or remeasure after changing classes.
+    if (drag && drag.dragging) return null;
+    var panel = box.closest('.pane');
+    if (panel && !panel.classList.contains('on')) return null;
     var thumb = box.querySelector('.models-thumb, .tabs-thumb');
-    if (!thumb || !btn || !btn.offsetWidth) return;
-    if (!animate) thumb.style.transition = 'none';
-    thumb.style.width = btn.offsetWidth + 'px';
-    thumb.style.transform = 'translateX(' + btn.offsetLeft + 'px)';
-    thumb.classList.add('ready');
-    if (!animate) {
-      void thumb.offsetWidth;         // 无动画地就位，避免首次显示从 0 滑过来
-      thumb.style.transition = '';
+    if (!thumb || !btn) return null;
+    var width = btn.offsetWidth;
+    if (!width) return null;
+    return { thumb: thumb, width: width + 'px', transform: 'translateX(' + btn.offsetLeft + 'px)' };
+  }
+
+  function applyThumbPosition(measurement, animate, instant) {
+    if (!measurement) return;
+    var thumb = measurement.thumb;
+    // Hidden groups are measured when first shown. Their initial position
+    // must already match the restored model before regular sliding begins.
+    if (!thumb.classList.contains('ready')) animate = false;
+    var changed = thumb.style.width !== measurement.width ||
+      thumb.style.transform !== measurement.transform || !thumb.classList.contains('ready');
+    if (!changed) {
+      // A resize/reduced-motion boundary can arrive during a CSS transition
+      // whose inline target is already correct. Finish it without another flush.
+      if (!animate && thumb.getAnimations) thumb.getAnimations().forEach(function (animation) {
+        if (animation.transitionProperty === 'transform' || animation.transitionProperty === 'width') {
+          animation.finish();
+        }
+      });
+      return;
     }
+    if (!animate) thumb.style.transition = 'none';
+    if (thumb.style.width !== measurement.width) thumb.style.width = measurement.width;
+    if (thumb.style.transform !== measurement.transform) thumb.style.transform = measurement.transform;
+    if (!thumb.classList.contains('ready')) thumb.classList.add('ready');
+    if (!animate) instant.push(thumb);
+  }
+
+  function finishThumbPositions(instant) {
+    if (!instant.length) return;
+    // All groups have been measured and written; one flush settles every
+    // immediate position before restoring their regular transitions.
+    void instant[0].offsetWidth;
+    instant.forEach(function (thumb) { thumb.style.transition = ''; });
+  }
+
+  function moveThumb(box, btn, animate) {
+    var instant = [];
+    applyThumbPosition(measureThumb(box, btn), animate, instant);
+    finishThumbPositions(instant);
   }
 
   function positionThumbs(animate) {
-    document.querySelectorAll('.models, .tabs').forEach(function (box) {
+    var measurements = Array.prototype.map.call(document.querySelectorAll('.models, .tabs'), function (box) {
       var btn = box.querySelector('button.on') || box.querySelector('button');
-      moveThumb(box, btn, animate === true);
+      return measureThumb(box, btn);
     });
+    var instant = [];
+    measurements.forEach(function (measurement) {
+      applyThumbPosition(measurement, animate === true, instant);
+    });
+    finishThumbPositions(instant);
   }
 
   function initModelGroups() {
@@ -2857,6 +2945,9 @@
     var sectionTransitionSeq = 0;
     var sectionTransitionTimer = 0;
     var sectionTransitionFrame = 0;
+    var preferencePreviewFrame = 0;
+    var preferencePreviewPending = false;
+    var preferencePreviewSequence = 0;
     var updateChecking = false;
     var updateMessage = '尚未检查。';
     var updateError = false;
@@ -2949,6 +3040,7 @@
       });
     }
     on($('it-glass-target'), 'change', function () {
+      flushPreferencePreview();
       glassTarget = enumValue(this.value, ['card', 'pill', 'button'], 'card');
       fill();
     });
@@ -2980,16 +3072,14 @@
       }
       var overlayAlpha = Math.max(0, Math.min(80, preferences.background.opacity)) / 100;
       var popupCard = popupPreviewScene.querySelector('.it-popup-preview-card');
-      popupPreviewScene.style.setProperty('--it-popup-preview-overlay',
+      setPreferenceStyle(popupPreviewScene, '--it-popup-preview-overlay',
         dark ? 'rgba(18,16,24,' + overlayAlpha + ')' : 'rgba(255,255,255,' + overlayAlpha + ')');
-      popupPreviewScene.style.setProperty('--it-popup-preview-fit', preferences.background.fit);
-      popupPreviewScene.style.setProperty('--it-popup-preview-blur', preferences.background.blur + 'px');
-      popupPreviewScene.style.setProperty('--it-popup-preview-inset',
+      setPreferenceStyle(popupPreviewScene, '--it-popup-preview-fit', preferences.background.fit);
+      setPreferenceStyle(popupPreviewScene, '--it-popup-preview-blur', preferences.background.blur + 'px');
+      setPreferenceStyle(popupPreviewScene, '--it-popup-preview-inset',
         (preferences.background.fit === 'contain' ? 0 : -2 * preferences.background.blur) + 'px');
-      popupCard.style.setProperty('--it-liquid-fill',
+      setPreferenceStyle(popupCard, '--it-liquid-fill',
         colorRgba(dark ? '#302C38' : '#FFFFFF', preferences.liquidGlass.card.backgroundOpacity / 100));
-      window.ItLiquidGlass.configure(preferences.liquidGlass);
-      window.ItLiquidGlass.refresh(popupCard);
     }
 
     function updateSettingsNavigation(animate) {
@@ -3044,6 +3134,7 @@
     function switchSettingsSection(section) {
       var target = modal.querySelector('[data-pref-section="' + section + '"]');
       if (!target || section === activeSection) return;
+      flushPreferencePreview();
       closeSelect();
       activeSection = section;
       updateSettingsNavigation(true);
@@ -3105,26 +3196,68 @@
       }, duration + 24);
     }
 
+    function updatePreferenceControl(control) {
+      var value = valueAtPath(settingsState.preferences, control.getAttribute('data-pref'));
+      if (control.type === 'checkbox') {
+        if (control.checked !== !!value) control.checked = !!value;
+      } else {
+        var text = value == null ? '' : String(value);
+        if (control.value !== text) control.value = text;
+      }
+      if (control.type === 'range') {
+        var span = Number(control.max) - Number(control.min);
+        setPreferenceStyle(control, '--it-range-fill', span > 0 ?
+          (100 * (Number(control.value) - Number(control.min)) / span) + '%' : '0%');
+      }
+    }
+
+    function updatePreferenceOutput(output) {
+      var path = output.getAttribute('data-pref-output');
+      var value = valueAtPath(settingsState.preferences, path);
+      var suffix = path === 'background.blur' || /\.blurLevel$/.test(path) ? ' px' :
+        /\.(specularSaturation|progressiveBlurStrength)$/.test(path) ? '' : '%';
+      var text = value + suffix;
+      if (output.textContent !== text) output.textContent = text;
+    }
+
+    function cancelPreferencePreview() {
+      preferencePreviewSequence++;
+      if (preferencePreviewFrame) cancelAnimationFrame(preferencePreviewFrame);
+      preferencePreviewFrame = 0;
+      preferencePreviewPending = false;
+    }
+
+    function flushPreferencePreview() {
+      if (preferencePreviewFrame) cancelAnimationFrame(preferencePreviewFrame);
+      preferencePreviewFrame = 0;
+      if (!preferencePreviewPending) return;
+      preferencePreviewPending = false;
+      preferencePreviewSequence++;
+      applyPreferences(settingsState.preferences);
+      updatePopupPreview();
+    }
+
+    function schedulePreferencePreview() {
+      preferencePreviewPending = true;
+      if (preferencePreviewFrame) return;
+      var session = settingsSeq;
+      var sequence = ++preferencePreviewSequence;
+      preferencePreviewFrame = requestAnimationFrame(function () {
+        if (sequence !== preferencePreviewSequence) return;
+        preferencePreviewFrame = 0;
+        if (session !== settingsSeq || !modal.classList.contains('on')) {
+          preferencePreviewPending = false;
+          return;
+        }
+        flushPreferencePreview();
+      });
+    }
+
     function fill() {
       if (!settingsState) return;
       updateGlassControls();
-      modal.querySelectorAll('[data-pref]').forEach(function (control) {
-        var value = valueAtPath(settingsState.preferences, control.getAttribute('data-pref'));
-        if (control.type === 'checkbox') control.checked = !!value;
-        else control.value = value == null ? '' : String(value);
-        if (control.type === 'range') {
-          var span = Number(control.max) - Number(control.min);
-          control.style.setProperty('--it-range-fill', span > 0 ?
-            (100 * (Number(control.value) - Number(control.min)) / span) + '%' : '0%');
-        }
-      });
-      modal.querySelectorAll('[data-pref-output]').forEach(function (output) {
-        var path = output.getAttribute('data-pref-output');
-        var value = valueAtPath(settingsState.preferences, path);
-        var suffix = path === 'background.blur' || /\.blurLevel$/.test(path) ? ' px' :
-          /\.(specularSaturation|progressiveBlurStrength)$/.test(path) ? '' : '%';
-        output.textContent = value + suffix;
-      });
+      modal.querySelectorAll('[data-pref]').forEach(updatePreferenceControl);
+      modal.querySelectorAll('[data-pref-output]').forEach(updatePreferenceOutput);
       $('it-set-selection').value = settingsState.selection_shortcut || '';
       $('it-set-activation').value = settingsState.activation_shortcut || '未设置';
       $('it-set-mode').value = settingsState.open_main_window ? 'main' : 'popup';
@@ -3240,6 +3373,7 @@
     function close() {
       if (!modal.classList.contains('on')) return false;
       if (settingsSaving) return true;
+      cancelPreferencePreview();
       stopRecord();
       closeSelect();
       cancelSettingsSectionTransition(activeSection);
@@ -3264,6 +3398,7 @@
 
     window.__itOpenSettings = function (source) {
       if (modal.classList.contains('on')) return;
+      cancelPreferencePreview();
       closeSelect();
       var seq = ++settingsSeq;
       activeSection = source && source.section ? source.section : 'appearance';
@@ -3326,6 +3461,7 @@
         switchSettingsSection(tab.getAttribute('data-pref-tab'));
       }
       if (e.target.closest && e.target.closest('[data-reset-section]')) {
+        cancelPreferencePreview();
         var defaults = copyObject(DEFAULT_PREFERENCES);
         if (activeSection === 'desktop') {
           var preservedPreferences = copyObject(settingsState.preferences);
@@ -3370,6 +3506,7 @@
             if (!settingsState || session !== settingsSeq || selection !== backgroundPickSeq ||
                 !modal.classList.contains('on')) return;
             settingsState.preferences.background.data = compressed;
+            cancelPreferencePreview();
             applyPreferences(settingsState.preferences);
             fill();
           });
@@ -3378,6 +3515,7 @@
       if (e.target.closest && e.target.closest('#it-pref-reset-background')) {
         backgroundPickSeq++;
         settingsState.preferences.background.data = '';
+        cancelPreferencePreview();
         applyPreferences(settingsState.preferences);
         fill();
       }
@@ -3429,7 +3567,14 @@
         e.preventDefault(); first.focus();
       }
     });
-    on(window, 'resize', function () { updateSettingsNavigation(false); });
+    var settingsNavigationFrame = 0;
+    on(window, 'resize', function () {
+      if (!modal.classList.contains('on') || settingsNavigationFrame) return;
+      settingsNavigationFrame = requestAnimationFrame(function () {
+        settingsNavigationFrame = 0;
+        if (modal.classList.contains('on')) updateSettingsNavigation(false);
+      });
+    });
     on(modal.querySelector('.it-set-body'), 'scroll', function () {
       if (openSelect && dialog.contains(openSelect.select)) closeSelect();
     }, { passive: true });
@@ -3440,20 +3585,36 @@
     on($('it-set-autostart'), 'change', function () { settingsState.auto_start = this.checked; });
     on($('it-set-starttotray'), 'change', function () { settingsState.start_to_tray = this.checked; });
 
-    function updatePreference(control) {
+    function updatePreference(control, final) {
       if (settingsSaving || !settingsState || !control.hasAttribute('data-pref')) return;
+      var path = control.getAttribute('data-pref');
       var value = control.type === 'checkbox' ? control.checked : control.value;
       if (control.getAttribute('data-pref-type') === 'number') value = Number(value);
-      assignAtPath(settingsState.preferences, control.getAttribute('data-pref'), value);
+      var previous = valueAtPath(settingsState.preferences, path);
+      if (previous === value) {
+        if (final) flushPreferencePreview();
+        return;
+      }
+      assignAtPath(settingsState.preferences, path, value);
       settingsState.preferences = normalizePreferences(settingsState.preferences);
-      applyPreferences(settingsState.preferences);
-      fill();
+      updatePreferenceControl(control);
+      var row = control.closest('.it-set-range, .it-set-row');
+      if (row) row.querySelectorAll('[data-pref-output]').forEach(updatePreferenceOutput);
+      if (control.type === 'range' || control.type === 'color') {
+        schedulePreferencePreview();
+        if (final) flushPreferencePreview();
+      } else {
+        cancelPreferencePreview();
+        applyPreferences(settingsState.preferences);
+        fill();
+      }
     }
-    on(modal, 'input', function (e) { updatePreference(e.target); });
-    on(modal, 'change', function (e) { updatePreference(e.target); });
+    on(modal, 'input', function (e) { updatePreference(e.target, false); });
+    on(modal, 'change', function (e) { updatePreference(e.target, true); });
 
     on($('it-set-save'), 'click', function () {
       if (settingsSaving) return;
+      flushPreferencePreview();
       stopRecord();
       closeSelect();
       backgroundPickSeq++;
@@ -3608,10 +3769,15 @@
     refreshSelectButtons(false);
     positionThumbs();
 
+    var resizeFrame = 0;
     on(window, 'resize', function () {
-      finishMotions();
-      positionThumbs(false);
-      if (openSelect && openSelect.position) openSelect.position();
+      if (resizeFrame) return;
+      resizeFrame = requestAnimationFrame(function () {
+        resizeFrame = 0;
+        finishMotions();
+        positionThumbs(false);
+        if (openSelect && openSelect.position) openSelect.position();
+      });
     });
     var reducedMotionQuery = window.matchMedia('(prefers-reduced-motion: reduce)');
     function updateMotionPreference() {

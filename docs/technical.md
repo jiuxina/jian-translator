@@ -44,6 +44,8 @@ node tests/verify-motion.mjs
 node tests/verify-liquid-glass.mjs
 node tests/verify-stream-writer.mjs
 node tests/verify-image-import.mjs
+node tests/verify-settings-preview.mjs
+node tests/verify-segment-drag.mjs
 node tests/verify-updates.mjs
 node app/macos/build.mjs --prepare-only
 node tests/verify-macos.mjs
@@ -52,6 +54,11 @@ node tests/verify-macos.mjs
 回归使用本地桥接替身并拦截外部请求，不调用翻译接口。界面设计、验证记录和历史成品说明见
 [ui-theme.md](ui-theme.md)。
 `IT_CDP_ORIGIN` 可指定其他 Chrome 调试地址，`IT_PREVIEW_ORIGIN` 可指定其他本地预览地址。
+Android 连续输入、拖动、窗口变化与后台光学图生成另由
+`node tests/verify-android-interactions.mjs` 验证；该探针使用合成 Android 桥、
+390 × 844 / DPR 3 视口和 CPU 4 倍降速，不依赖真实照片或翻译内容。
+支持 Worker / OffscreenCanvas 的 Android WebView 使用后台生成光学贴图，
+不支持或生成失败时使用原算法完整回退；六项网页资源与桌面共用的方式不变。
 上一任务最终离线浏览器回归为 `127/128`；覆盖连续动画、设置事务、窗口桥接契约、
 移动端触控、旧偏好迁移和高对比背景下真实折射像素变化。唯一失败是语言轮盘反向动画的固定帧采样，
 针对性动画时钟探针已确认正向与反向位移正常；液态玻璃计算测试由

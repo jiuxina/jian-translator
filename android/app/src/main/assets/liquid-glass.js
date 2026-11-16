@@ -49,6 +49,15 @@
   var resizeQueue = new Set();
   var mutationObserver = null;
   var unsupportedReported = false;
+  var mapWorker = null;
+  var mapWorkerUrl = '';
+  var mapWorkerReady = false;
+  var mapWorkerDisabled = false;
+  var mapWorkerTimer = 0;
+  var mapJobSequence = 0;
+  var activeMapJob = null;
+  var mapJobs = new Map();
+  var mapWorkCounts = { main: 0, worker: 0, discarded: 0 };
 
   function reportError(code, error) {
     if (typeof document === 'undefined' || typeof CustomEvent !== 'function') return;
@@ -384,24 +393,187 @@
       geometryCache.set(key, cached);
       return cached;
     }
+    mapWorkCounts.main++;
     var maps = generateMaps(width, height, radius, config);
     var result = {
       // The filter only needs these scalars after the two PNGs are encoded.
       // Retaining the RGBA arrays here also pins them in every attached state.
-      maps: {
-        width: maps.width,
-        height: maps.height,
-        mapWidth: maps.mapWidth,
-        mapHeight: maps.mapHeight,
-        radius: maps.radius,
-        maxDisplacement: maps.maxDisplacement
-      },
+      maps: mapMetadata(maps),
       displacementUrl: canvasPng(maps.displacement, maps.mapWidth, maps.mapHeight),
       specularUrl: canvasPng(maps.specular, maps.mapWidth, maps.mapHeight)
     };
+    cacheMapResult(key, result);
+    return result;
+  }
+
+  function mapMetadata(maps) {
+    return {
+      width: maps.width, height: maps.height,
+      mapWidth: maps.mapWidth, mapHeight: maps.mapHeight,
+      radius: maps.radius, maxDisplacement: maps.maxDisplacement
+    };
+  }
+
+  function cacheMapResult(key, result) {
+    geometryCache.delete(key);
     geometryCache.set(key, result);
     while (geometryCache.size > 32) geometryCache.delete(geometryCache.keys().next().value);
-    return result;
+  }
+
+  // This function runs inside a dedicated worker. The exact same optical
+  // functions below are included in its source; no lower-quality map exists.
+  function opticalWorkerMain() {
+    async function png(rgba, width, height) {
+      var canvas = new OffscreenCanvas(width, height);
+      var context = canvas.getContext('2d', { alpha: true, willReadFrequently: false });
+      if (!context) throw new Error('Offscreen Canvas is unavailable.');
+      var image = context.createImageData(width, height);
+      image.data.set(rgba);
+      context.putImageData(image, 0, 0);
+      var blob = await canvas.convertToBlob({ type: 'image/png' });
+      var result = new FileReaderSync().readAsDataURL(blob);
+      canvas.width = 1;
+      canvas.height = 1;
+      return result;
+    }
+    self.onmessage = async function (event) {
+      var job = event.data;
+      try {
+        var maps = generateMaps(job.width, job.height, job.radius, job.optics);
+        var displacementUrl = await png(maps.displacement, maps.mapWidth, maps.mapHeight);
+        var specularUrl = await png(maps.specular, maps.mapWidth, maps.mapHeight);
+        self.postMessage({ id: job.id, result: {
+          maps: mapMetadata(maps), displacementUrl: displacementUrl, specularUrl: specularUrl
+        } });
+      } catch (error) {
+        self.postMessage({ id: job.id, error: String(error.message || error) });
+      }
+    };
+    self.postMessage({ ready: true });
+  }
+
+  function wantsMap(state, key) {
+    return state.pendingGeometry === key && state.element.isConnected &&
+      attached.get(state.element) === state;
+  }
+
+  function failMapWorker(error) {
+    clearTimeout(mapWorkerTimer);
+    if (mapWorker) mapWorker.terminate();
+    mapWorker = null;
+    mapWorkerReady = false;
+    mapWorkerDisabled = true;
+    if (mapWorkerUrl) URL.revokeObjectURL(mapWorkerUrl);
+    mapWorkerUrl = '';
+    activeMapJob = null;
+    // A denied worker or older WebView keeps the original renderer, including
+    // its full optical map and PNG precision.
+    mapJobs.forEach(function (job) {
+      job.states.forEach(function (state) {
+        if (wantsMap(state, job.key)) queueResize(state);
+      });
+    });
+    mapJobs.clear();
+    if (typeof console !== 'undefined' && console.warn) {
+      console.warn('[笺] Background optical renderer unavailable; using the original renderer.', error);
+    }
+  }
+
+  function pumpMapJobs() {
+    if (!mapWorkerReady || activeMapJob || !mapWorker) return;
+    mapJobs.forEach(function (job, key) {
+      if (activeMapJob) return;
+      job.states = job.states.filter(function (state) { return wantsMap(state, key); });
+      if (!job.states.length) {
+        mapJobs.delete(key);
+        mapWorkCounts.discarded++;
+        return;
+      }
+      activeMapJob = job;
+      mapWorkerTimer = setTimeout(function () {
+        failMapWorker(new Error('Background optical generation timed out.'));
+      }, 10000);
+      try {
+        mapWorker.postMessage({
+          id: job.id, width: job.width, height: job.height, radius: job.radius, optics: job.optics
+        });
+      } catch (error) {
+        failMapWorker(error);
+      }
+    });
+  }
+
+  function ensureMapWorker() {
+    if (mapWorker) return true;
+    // Android benefits from moving raster generation off its WebView thread.
+    // Other platforms keep their existing renderer and startup contract.
+    if (mapWorkerDisabled || typeof window === 'undefined' || !window.NativeBridge ||
+        typeof Worker !== 'function' || typeof OffscreenCanvas !== 'function' ||
+        typeof Blob !== 'function' || typeof URL === 'undefined' || !URL.createObjectURL) return false;
+    try {
+      var source = [
+        "'use strict';",
+        'var MAX_MAP_SIDE=' + MAX_MAP_SIDE + ';var MAX_MAP_PIXELS=' + MAX_MAP_PIXELS + ';',
+        'var OPTICAL_DEFAULTS=' + JSON.stringify(OPTICAL_DEFAULTS) + ';',
+        'var PROFILES=' + JSON.stringify(PROFILES) + ';',
+        clamp, numberOr, roundedNumber, normalizeOptics, circleHeight, squircleHeight,
+        profileHeight, roundedRectDistance, mapDimensions, generateMaps, mapMetadata
+      ].map(String).join('\n') + '\n(' + opticalWorkerMain.toString() + ')();';
+      mapWorkerUrl = URL.createObjectURL(new Blob([source], { type: 'text/javascript' }));
+      mapWorker = new Worker(mapWorkerUrl);
+      mapWorkerTimer = setTimeout(function () {
+        failMapWorker(new Error('Background optical renderer did not start.'));
+      }, 10000);
+      mapWorker.onerror = function (event) {
+        event.preventDefault();
+        failMapWorker(new Error(event.message || 'Background optical renderer failed.'));
+      };
+      mapWorker.onmessage = function (event) {
+        var message = event.data;
+        if (message.ready) {
+          clearTimeout(mapWorkerTimer);
+          URL.revokeObjectURL(mapWorkerUrl);
+          mapWorkerUrl = '';
+          mapWorkerReady = true;
+          pumpMapJobs();
+          return;
+        }
+        var job = activeMapJob;
+        if (!job || message.id !== job.id) return;
+        clearTimeout(mapWorkerTimer);
+        if (message.error) {
+          failMapWorker(new Error(message.error));
+          return;
+        }
+        activeMapJob = null;
+        mapJobs.delete(job.key);
+        mapWorkCounts.worker++;
+        cacheMapResult(job.key, message.result);
+        job.states.forEach(function (state) {
+          if (wantsMap(state, job.key)) applyGeometry(state, job.key, message.result);
+        });
+        pumpMapJobs();
+      };
+      return true;
+    } catch (error) {
+      failMapWorker(error);
+      return false;
+    }
+  }
+
+  function requestMap(state, key, width, height, radius, optics) {
+    if (!ensureMapWorker()) return false;
+    var job = mapJobs.get(key);
+    if (!job) {
+      job = {
+        id: ++mapJobSequence, key: key, width: width, height: height, radius: radius,
+        optics: optics, states: []
+      };
+      mapJobs.set(key, job);
+    }
+    if (job.states.indexOf(state) < 0) job.states.push(state);
+    pumpMapJobs();
+    return true;
   }
 
   function ensureDefs() {
@@ -563,12 +735,14 @@
     var config = currentConfig[state.presetName];
     var ratio = state.presetName === 'pill' ? (state.interactionActive ? .9 : .4) : 1;
     var opacity = presetOpacity(state.presetName, config, state.interactionActive);
-    setAttributeIfChanged(state.filter, 'width', maps.width);
-    setAttributeIfChanged(state.filter, 'height', maps.height);
-    setAttributeIfChanged(state.displacementImage, 'width', maps.width);
-    setAttributeIfChanged(state.displacementImage, 'height', maps.height);
-    setAttributeIfChanged(state.specularImage, 'width', maps.width);
-    setAttributeIfChanged(state.specularImage, 'height', maps.height);
+    var width = state.renderWidth || maps.width;
+    var height = state.renderHeight || maps.height;
+    setAttributeIfChanged(state.filter, 'width', width);
+    setAttributeIfChanged(state.filter, 'height', height);
+    setAttributeIfChanged(state.displacementImage, 'width', width);
+    setAttributeIfChanged(state.displacementImage, 'height', height);
+    setAttributeIfChanged(state.specularImage, 'width', width);
+    setAttributeIfChanged(state.specularImage, 'height', height);
     // Keep the reference demo's scale convention: normalized map maximum ×
     // slider ratio. SVG interprets each channel around .5; doubling this here
     // would produce a stronger lens than the reference's 100% preset.
@@ -642,6 +816,7 @@
     var width = measurement.width;
     var height = measurement.height;
     if (width < 4 || height < 4) {
+      state.pendingGeometry = '';
       // Attribute observers refresh newly shown surfaces. Rewriting the same
       // pending value for a hidden surface would schedule another refresh on
       // every frame forever.
@@ -649,22 +824,31 @@
       return;
     }
     var radius = measurement.radius;
+    state.renderWidth = width;
+    state.renderHeight = height;
     var optics = opticalPreset(state.presetName, radius);
     var key = geometryKey(width, height, radius, optics);
+    state.pendingGeometry = key;
     if (state.geometry === key) {
       updateFilterParameters(state, state.maps);
       markReady(element);
       return;
     }
     try {
+      var existing = geometryCache.get(key);
+      if (existing) {
+        cacheMapResult(key, existing);
+        applyGeometry(state, key, existing);
+        return;
+      }
+      if (requestMap(state, key, width, height, radius, optics)) {
+        if (state.maps) updateFilterParameters(state, {
+          width: width, height: height, maxDisplacement: state.maps.maxDisplacement
+        });
+        return;
+      }
       var cached = cachedMaps(width, height, radius, optics);
-      setImageSource(state.displacementImage, cached.displacementUrl);
-      setImageSource(state.specularImage, cached.specularUrl);
-      state.maps = cached.maps;
-      state.geometry = key;
-      state.errorReported = false;
-      updateFilterParameters(state, cached.maps);
-      markReady(element);
+      applyGeometry(state, key, cached);
     } catch (error) {
       element.dataset.itLiquidState = 'error';
       document.documentElement.dataset.itLiquidGlass = 'error';
@@ -676,6 +860,16 @@
         console.error('[笺] Liquid Glass filter generation failed.', error);
       }
     }
+  }
+
+  function applyGeometry(state, key, cached) {
+    setImageSource(state.displacementImage, cached.displacementUrl);
+    setImageSource(state.specularImage, cached.specularUrl);
+    state.maps = cached.maps;
+    state.geometry = key;
+    state.errorReported = false;
+    updateFilterParameters(state, cached.maps);
+    markReady(state.element);
   }
 
   function supportsRenderer() {
@@ -754,6 +948,12 @@
   function discardState(state, element) {
     attached.delete(element);
     resizeQueue.delete(state);
+    var pending = mapJobs.get(state.pendingGeometry);
+    state.pendingGeometry = '';
+    if (pending) {
+      pending.states = pending.states.filter(function (waiting) { return waiting !== state; });
+      if (!pending.states.length && pending !== activeMapJob) mapJobs.delete(pending.key);
+    }
     if (resizeObserver) resizeObserver.unobserve(element);
     if (state.filter && state.filter.parentNode) state.filter.parentNode.removeChild(state.filter);
     if (state.background && state.background.parentNode) state.background.parentNode.removeChild(state.background);
@@ -776,7 +976,7 @@
       ensureSurfaceLayers(state);
       setStyleIfChanged(element, '--it-liquid-filter', 'url(#' + state.filter.id + ')');
       updateFilterParameters(state, state.maps || { width: 1, height: 1, maxDisplacement: 0 });
-      queueResize(state);
+      if (!state.maps) queueResize(state);
     });
     return currentConfig;
   }
@@ -840,6 +1040,16 @@
     setInteraction: setInteraction,
     refresh: refresh,
     ensure: ensure,
-    stateOf: stateOf
+    stateOf: stateOf,
+    diagnostics: function () {
+      return {
+        mainThreadMaps: mapWorkCounts.main,
+        workerMaps: mapWorkCounts.worker,
+        discardedJobs: mapWorkCounts.discarded,
+        queuedJobs: mapJobs.size,
+        workerActive: !!mapWorker,
+        workerDisabled: mapWorkerDisabled
+      };
+    }
   };
 });

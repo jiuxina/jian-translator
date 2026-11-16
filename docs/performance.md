@@ -118,3 +118,70 @@ Android 已在 `.build/android-performance-validation` 的独立无签名工程�
 最终 Android 构建前同步六项网页资源，并将 `ANDROID_USER_HOME` 指向隔离目录内的新文件夹。
 当前 Windows 环境的离线回归与编译覆盖共享界面和原生代码，Mac 原生运行、
 Android 实机图片交互与 Windows WebView2 帧率仍需相应平台的运行测量。
+
+## Android 连续交互优化
+
+用户反馈第一轮优化后 Android 操作仍不跟手，第二轮以 `ff3e51d` 为基线，
+进一步处理持续输入和拖动的同步开销。以下修改保留所有设置、玻璃层与动画：
+
+- 范围与颜色滑杆同步更新草稿、读数及填充，重预览合并到每帧一次。
+  `change`、保存和类别切换会立即提交待预览值；取消、关闭和重开会撤销旧回调。
+  离散选项仍同步应用。相同根 CSS / 属性与原生外观投影不再重复写入，
+  弹窗预览也不再二次配置整个引擎。半径和布局变化仍显式刷新准确几何。
+- 拖动开始时缓存按钮几何，同一手势的移动只计算坐标并写滑块位置；
+  越阈值仍在抬手前切换，结束时按最终排版校准。批量定位先读后写，
+  隐藏页面不再测量，首次显示时即时定位到已保存模型，再恢复后续滑动动画；
+  重复 resize 按帧合并，设置关闭时不测量其导航。
+- Android 使用一个 Blob Worker 执行原 `generateMaps` 数学函数和 OffscreenCanvas PNG 编码，
+  未改变尺寸上限、数值精度、像素、滤镜图元、三层渐进模糊或背景柔光。
+  相同几何请求合并，等待中的过期尺寸跳过，旧结果无法覆盖新尺寸或恢复已删除的表面。
+  新贴图尚未完成时保留现有玻璃，并用最新边界绘制；配置和按压也沿用最新边界。
+  不支持该能力、启动失败、运行异常或超时时，待处理表面按原主线程算法完整恢复。
+  Worker 源码由现有光学函数生成，不新增第七项网页资源；其他平台保留原渲染路径。
+
+`tests/verify-android-interactions.mjs` 在独立 Chromium、390 × 844 / DPR 3、
+CPU 4 倍降速下比较同一组合成操作。一次采样如下：
+
+| 操作 | 第一轮版本 | 连续交互优化后 |
+| --- | ---: | ---: |
+| 同一帧 20 次滑杆输入与最终 change：玻璃配置次数 | 42 | 1 |
+| 上述光学调整的原生外观调用 | 21 | 0 |
+| 上述操作的 LayoutCount | 41 | 1 |
+| 20 次同索引拖动的布局读取 | 160 | 0 |
+| 12 次 resize 的同步布局读取 | 336 | 0 |
+| resize 合批后总布局读取 | 346 | 12 |
+| 391 × 607 新贴图生成阶段观察到的主线程长任务 | 154 ms | 无 |
+
+该次新尺寸生成的主线程 ScriptDuration 为约 146 ms → 5.5 ms；
+Worker 承担原有计算，并非省去计算或降低玻璃质量。时间只描述该次合成测量，
+不等同于手机帧率或端到端触摸延迟。报告保存在
+`.build/android-interactions-before.json` 与 `.build/android-interactions-after.json`。
+原始副本位于 `.build/android-touch-baseline/web`。
+
+探针还逐像素比较 Worker 与原算法的 displacement / specular PNG，
+两类均为 0 个不同字节；验证本地 `file:` 页面可启动 Worker、连续尺寸覆盖、
+生成期间修改配置不回退边界、祖先删除后不恢复、Worker 异常后的完整回退，
+以及主题改变仍同步原生、取消还原和待预览值立即保存。
+`ItLiquidGlass.diagnostics()` 仅返回生成次数、队列长度和 Worker 状态等开发诊断标量。
+
+```powershell
+node tests/verify-settings-preview.mjs
+node tests/verify-segment-drag.mjs
+$env:IT_PREVIEW_ORIGIN = 'http://127.0.0.1:8871'
+$env:IT_CDP_ORIGIN = 'http://127.0.0.1:9236'
+node tests/verify-android-interactions.mjs
+```
+
+本轮预览使用 `node tests/serve-preview.mjs web 8871`，基线目录使用端口 `8872`。
+Chrome 仍采用上文所述的独立无界面 profile，调试端口改为 `9236`。
+探针不枚举其他标签；所有数据、原生接口和文件页面内容均为测试自身创建或项目公开源码。
+`IT_ANDROID_INTERACTION_REPORT` 和 `IT_ANDROID_INTERACTION_SCREENSHOT`
+可以分别指定报告与合成截图路径。
+
+最终全量验证在原有套件之外加入 `verify-settings-preview`、
+`verify-segment-drag` 和 `verify-android-interactions`；日志保存到
+`.build/android-responsiveness-final-verification.log`。
+测试 APK 从同一独立无签名 Android 工程的 Debug 构建生成，
+交付路径为 `output/笺-2.2.0-安卓响应优化-debug.apk`。
+当前没有连接 Android 设备，以上结论来自合成移动场景与构建验证，
+仍需在实际设备上确认 WebView 支持情况和操作体验。
