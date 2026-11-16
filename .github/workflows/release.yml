@@ -19,6 +19,8 @@ jobs:
   windows:
     name: Build Windows packages
     runs-on: windows-latest
+    env:
+      PYTHONUTF8: "1"
     outputs:
       artifact: ${{ steps.paths.outputs.artifact }}
     steps:
@@ -87,6 +89,8 @@ jobs:
           distribution: temurin
           java-version: 17
       - uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
       - name: Copy web assets into Android project
         shell: pwsh
         run: Copy-Item web/* android/app/src/main/assets/ -Force
