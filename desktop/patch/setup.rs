@@ -961,7 +961,7 @@ if (window.__popupBooted && window.__popupApply && document.getElementById('out'
 }
 document.documentElement.innerHTML = `
 <head><meta charset="utf-8"><style>
-  /* 主题排版由悬浮窗内联；液态玻璃滤镜与主界面共用 ItLiquidGlass。 */
+  /* 悬浮窗卡片使用静态磨砂；复制按钮与主界面共用液态玻璃引擎。 */
   :root{--lg-edge:rgba(255,255,255,.38);--lg-edge-dark:rgba(70,52,96,.09);
     --lg-scrollbar-thumb:rgba(70,52,96,.22);
     --lg-ink:#2E2A38;--lg-ink-sub:#6E687E;
@@ -993,17 +993,18 @@ document.documentElement.innerHTML = `
     background:var(--it-popup-bg-overlay);}
   #card{box-sizing:border-box;height:100%;display:flex;flex-direction:column;
     position:relative;z-index:1;isolation:isolate;overflow:hidden;
-    background:transparent;
+    background-color:rgb(var(--it-liquid-tint-rgb) / var(--it-liquid-background-opacity,.6));
+    background-image:
+      linear-gradient(145deg,rgb(var(--it-liquid-tint-rgb) / calc(var(--it-liquid-background-opacity,.6) * .12)),transparent),
+      repeating-linear-gradient(135deg,rgb(var(--it-liquid-tint-rgb) / calc(var(--it-liquid-background-opacity,.6) * .045)) 0 1px,transparent 1px 3px);
     border:0;border-radius:var(--lg-r-lg);
     -webkit-backdrop-filter:none;backdrop-filter:none;}
-  #card>*:not([data-it-liquid-background]):not([data-it-liquid-progressive]){position:relative;z-index:1;}
+  #card>*{position:relative;z-index:1;}
   [data-it-liquid-preset]{position:relative;isolation:isolate;}
-  [data-it-liquid-background],[data-it-liquid-progressive]{position:absolute;inset:0;z-index:-1;
+  [data-it-liquid-background]{position:absolute;inset:0;z-index:-1;
     border-radius:inherit;pointer-events:none;}
   [data-it-liquid-background]{background:rgb(var(--it-liquid-tint-rgb) / var(--it-liquid-background-opacity,0));
     -webkit-backdrop-filter:var(--it-liquid-filter,none);backdrop-filter:var(--it-liquid-filter,none);}
-  [data-it-liquid-progressive]{overflow:hidden;}
-  [data-it-liquid-progressive]>span{position:absolute;inset:0;border-radius:inherit;pointer-events:none;}
   .head{display:flex;align-items:center;justify-content:space-between;gap:8px;
     padding:10px 14px 8px;font-size:11.5px;color:var(--lg-ink-sub);}
   .head b{font-weight:600;color:var(--lg-accent-deep);}
@@ -1030,7 +1031,6 @@ document.documentElement.innerHTML = `
   .foot button:hover{border-color:var(--lg-accent);color:var(--lg-ink);}
   #glass-status{margin:0;padding:0 14px 4px;font-size:10px;color:var(--lg-accent-deep);}
   #glass-status[hidden]{display:none;}
-  :root[data-it-liquid-glass="unsupported"] #card{background:transparent;}
   @keyframes popup-arrive{from{opacity:0;transform:translateY(7px) scale(.985)}to{opacity:1;transform:none}}
   .stream-segment{animation:stream-arrive 200ms ease-out both}
   @keyframes stream-arrive{from{opacity:0}to{opacity:1}}
@@ -1061,7 +1061,6 @@ document.addEventListener('it-liquid-glass-error', function (event) {
   status.textContent = event.detail && event.detail.code === 'unsupported' ?
     '当前运行环境无法绘制液态玻璃。' : '液态玻璃初始化失败，请重新打开悬浮窗。';
 });
-window.ItLiquidGlass.attach(document.getElementById('card'), 'card');
 window.ItLiquidGlass.attach(document.getElementById('copy'), 'button');
 
 (function () {
@@ -1312,7 +1311,7 @@ window.ItLiquidGlass.attach(document.getElementById('copy'), 'button');
     root.style.setProperty('--lg-scrollbar-thumb', dark ? 'rgba(255,255,255,.28)' : 'rgba(70,52,96,.22)');
     root.style.setProperty('--lg-r-lg', (radius === 'small' ? 10 : radius === 'standard' ? 18 : 26) + 'px');
     window.ItLiquidGlass.configure(liquidGlass);
-    window.ItLiquidGlass.refresh(document.getElementById('card'));
+    window.ItLiquidGlass.refresh(document.getElementById('copy'));
     root.style.setProperty('--lg-control-radius', radius === 'small' ? '7px' : radius === 'standard' ? '10px' : '999px');
     root.style.setProperty('--user-font-scale', String(fontScale));
     root.style.setProperty('--it-popup-content-weight', String(fontWeight));

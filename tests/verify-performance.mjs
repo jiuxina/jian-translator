@@ -196,14 +196,22 @@ try {
   await page.evaluate('window.__probeFrames(5)');
   report.measurements.startup = delta(startMetrics, await page.metrics());
   report.measurements.startup.domReads = await page.evaluate('({...window.__performanceProbe})');
-  check('The liquid-glass renderer initializes with every effect enabled', await page.evaluate(`(() => {
-    const card = document.querySelector('#pane-text .card');
-    const state = ItLiquidGlass.stateOf(card);
+  check('Interactive controls initialize with the full optical renderer', await page.evaluate(`(() => {
+    const control = document.querySelector('.tabs-thumb');
+    const state = ItLiquidGlass.stateOf(control);
     return state && state.maps && state.maps.maxDisplacement > 0 &&
-      state.progressiveLayers.length === 3 &&
+      state.presetName === 'pill' &&
       state.filter.querySelector('feDisplacementMap') &&
       state.filter.querySelector('feBlend') &&
       document.documentElement.dataset.itLiquidGlass === 'ready';
+  })()`));
+  if (!BASELINE) check('Content cards use static frost without optical layers', await page.evaluate(`(() => {
+    const card = document.querySelector('#pane-text .card');
+    const style = card && getComputedStyle(card);
+    return card && ItLiquidGlass.stateOf(card) === null &&
+      !card.querySelector(':scope > [data-it-liquid-background], :scope > [data-it-liquid-progressive]') &&
+      style.backdropFilter === 'none' &&
+      (style.backgroundColor !== 'rgba(0, 0, 0, 0)' || style.backgroundImage !== 'none');
   })()`));
 
   const maps = await page.evaluate(`(() => {
@@ -281,7 +289,7 @@ try {
   }
 
   report.measurements.parameterChanges = await page.evaluate(`(async () => {
-    const surface = document.querySelector('#pane-text .card');
+    const surface = document.querySelector('.tabs-thumb');
     const state = ItLiquidGlass.stateOf(surface);
     function snapshot() {
       return {
@@ -291,25 +299,21 @@ try {
         blur: state.baseBlur.getAttribute('stdDeviation'),
         saturation: state.specularColor.getAttribute('values'),
         alpha: state.alphaFunction.getAttribute('slope'),
-        opacity: surface.style.getPropertyValue('--it-liquid-background-opacity'),
-        progressive: state.progressiveLayers.map((layer) => layer.style.backdropFilter)
+        opacity: surface.style.getPropertyValue('--it-liquid-background-opacity')
       };
     }
     const before = snapshot();
     const changed = JSON.parse(JSON.stringify(ItLiquidGlass.defaults));
-    Object.assign(changed.card, {
+    Object.assign(changed.pill, {
       refractionLevel: 67, blurLevel: 2.3, specularSaturation: 4,
-      specularOpacity: 73, backgroundOpacity: 35, progressiveBlurStrength: 4
+      specularOpacity: 73
     });
     ItLiquidGlass.configure(changed);
     await window.__probeFrames(3);
     const after = snapshot();
-    const levels = ItLiquidGlass.progressiveLevels(4);
     const changedAll = after.blur === '2.3' && after.saturation === '4' &&
-      after.alpha === '0.73' && after.opacity === '0.35' &&
-      Math.abs(Number(after.scale) - state.maps.maxDisplacement * .67) < 1e-9 &&
-      after.progressive.every((value, index) =>
-        value.startsWith('blur(') && Math.abs(parseFloat(value.slice(5)) - levels[index]) < .00001);
+      after.alpha === '0.73' && after.opacity === '1' &&
+      Math.abs(Number(after.scale) - state.maps.maxDisplacement * (.4 * .67)) < 1e-9;
     const nondefaultNoop = { filterAttributes: 0, surfaceStyles: 0, rootStyles: 0 };
     const observer = new MutationObserver((records) => {
       for (const record of records) {
@@ -328,8 +332,8 @@ try {
     }
     await window.__probeFrames(3);
     observer.disconnect();
-    state.progressiveLayers[0].style.backdropFilter = 'blur(7px)';
-    const externalStyleApplied = state.progressiveLayers[0].style.backdropFilter === 'blur(7px)';
+    surface.style.setProperty('--it-liquid-background-opacity', '.7');
+    const externalStyleApplied = surface.style.getPropertyValue('--it-liquid-background-opacity') === '.7';
     ItLiquidGlass.configure(changed);
     await window.__probeFrames(3);
     const repaired = snapshot();
@@ -347,13 +351,13 @@ try {
       restored: JSON.stringify(before) === JSON.stringify(restored)
     };
   })()`);
-  check('Changing glass controls updates refraction, blur, highlights and surface styles',
+  check('Changing slider glass controls updates refraction, blur and highlights',
     report.measurements.parameterChanges.changedAll &&
     report.measurements.parameterChanges.filterChanged);
   check('Filter-only controls reuse identical optical PNGs and restore their previous values',
     report.measurements.parameterChanges.mapsUnchanged && report.measurements.parameterChanges.restored);
   if (!BASELINE) {
-    check('Nondefault progressive blur refreshes without repeated SVG or CSS writes',
+    check('Nondefault interactive glass refreshes without repeated SVG or CSS writes',
       Object.values(report.measurements.parameterChanges.nondefaultNoop).every((value) => value === 0),
       JSON.stringify(report.measurements.parameterChanges.nondefaultNoop));
   }
@@ -430,6 +434,8 @@ try {
   if (!BASELINE) check('Settled stream text is coalesced without changing animation', streamState.textNodes <= 2);
 
   await page.evaluate(`(() => {
+    // Exercise the engine's retained legacy preset in isolation. Product cards
+    // above are deliberately never attached to this optical pipeline.
     const wrapper = document.createElement('div');
     wrapper.id = 'performance-surface-wrapper';
     const surface = document.createElement('div');
@@ -440,13 +446,50 @@ try {
     ItLiquidGlass.attach(surface, 'card');
   })()`);
   await page.until(`ItLiquidGlass.stateOf(document.getElementById('performance-surface'))?.maps?.width === 200`);
+  report.measurements.legacyPreset = await page.evaluate(`(async () => {
+    const surface = document.getElementById('performance-surface');
+    const state = ItLiquidGlass.stateOf(surface);
+    const config = JSON.parse(JSON.stringify(ItLiquidGlass.defaults));
+    config.card.progressiveBlurStrength = 4;
+    ItLiquidGlass.configure(config);
+    await window.__probeFrames(3);
+    const expected = state.progressiveLayers.map((layer) => layer.style.backdropFilter);
+    const levels = ItLiquidGlass.progressiveLevels(4);
+    const exactLevels = expected.every((value, index) =>
+      value.startsWith('blur(') && Math.abs(parseFloat(value.slice(5)) - levels[index]) < .00001);
+    let repeatedWrites = 0;
+    const observer = new MutationObserver((records) => { repeatedWrites += records.length; });
+    observer.observe(surface, { attributes: true, subtree: true });
+    observer.observe(state.filter, { attributes: true, subtree: true });
+    for (let index = 0; index < 3; index++) {
+      ItLiquidGlass.configure(config);
+      ItLiquidGlass.refresh(surface);
+      await window.__probeFrames(1);
+    }
+    await window.__probeFrames(3);
+    observer.disconnect();
+    state.progressiveLayers[0].style.backdropFilter = 'blur(7px)';
+    const externalStyleApplied = state.progressiveLayers[0].style.backdropFilter === 'blur(7px)';
+    ItLiquidGlass.configure(config);
+    const externalStyleRepaired = state.progressiveLayers.every((layer, index) =>
+      layer.style.backdropFilter === expected[index]);
+    ItLiquidGlass.configure(ItLiquidGlass.defaults);
+    return { exactLevels, repeatedWrites, externalStyleApplied, externalStyleRepaired };
+  })()`);
+  check('Standalone legacy progressive layers preserve precision and repair external edits',
+    report.measurements.legacyPreset.exactLevels &&
+    report.measurements.legacyPreset.externalStyleApplied &&
+    report.measurements.legacyPreset.externalStyleRepaired);
+  if (!BASELINE) check('Standalone legacy progressive layers avoid repeated rounded CSS writes',
+    report.measurements.legacyPreset.repeatedWrites === 0,
+    JSON.stringify(report.measurements.legacyPreset));
   await page.evaluate(`(() => {
     const surface = document.getElementById('performance-surface');
     window.__probeOldMap = ItLiquidGlass.stateOf(surface).displacementImage.getAttribute('href');
     surface.style.width = '240px';
   })()`);
   await page.until(`ItLiquidGlass.stateOf(document.getElementById('performance-surface'))?.maps?.width === 240`);
-  check('Resizing regenerates the full optical map', await page.evaluate(`(() => {
+  check('Standalone legacy geometry still regenerates its complete optical map', await page.evaluate(`(() => {
     const state = ItLiquidGlass.stateOf(document.getElementById('performance-surface'));
     return state.maps.height === 120 && state.maps.maxDisplacement > 0 &&
       state.displacementImage.getAttribute('href') !== window.__probeOldMap;

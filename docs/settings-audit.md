@@ -15,7 +15,7 @@
 | 分组 | 保存字段 | 生效范围与关系 |
 | --- | --- | --- |
 | 外观 | `appearance.mode/palette/radius` | 明暗、配色和卡片圆角作用于共用界面及桌面悬浮窗；桌面窗口外圆角是独立原生设置，不由此项改变。 |
-| 液态玻璃 | `liquidGlass.{card,pill,button}` | 卡片/弹层/悬浮窗用 card，Tab/模型/设置导航的滑块用 pill，按钮/下拉入口用 button；各组互不改写。 |
+| 液态玻璃 | `liquidGlass.{card,pill,button}` | 面板只消费 card.backgroundOpacity 绘制静态磨砂；Tab/模型/设置导航滑块用 pill，按钮/透明 Tab 轨道/下拉入口用 button；各组互不改写。 |
 | 背景 | `background.data/opacity/blur/fit` | 主窗口壁纸图片及其淡化、背景模糊、填充方式。PC 浮窗可用 `popup.backgroundData` 选择独立图片；为空时跟随主壁纸。两处图片继续沿用这组壁纸参数。 |
 | 阅读与布局 | `appearance.font/systemFontFamily/fontScale/fontWeight/fontColorMode/fontColor/layout` | 正文排版；系统字体仅 PC。`layout` 调整主界面内容间距。 |
 | 动效 | `appearance.motion/ambientLight` | 界面动画和环境柔光，与液态玻璃光学参数互相独立。 |
@@ -32,18 +32,20 @@
 
 | 参数 | 范围与默认值 | 作用 |
 | --- | --- | --- |
-| `specularOpacity` | 0–100%；card 40、pill/button 50 | 三组均有；调节白色镜面层透明度。 |
-| `specularSaturation` | 0–50；card/pill 6、button 9 | 三组均有；直接采用参考 SVG 饱和度倍率，1 为中性。 |
-| `refractionLevel` | 0–100%；三组默认 100 | 三组均有；pill 内部再按按住状态使用参考的 0.4/0.9 倍系数。 |
-| `blurLevel` | 0–40 px；card 1、pill 0.2 | 只对 card/pill 提供，与网站同单位。 |
-| `progressiveBlurStrength` | 0–10；card 1 | 仅 card；参考三层纵向遮罩与高斯模糊组合。 |
-| `backgroundOpacity` | 0–100%；card 60 | 仅 card；pill 底色按交互固定，button 底色固定透明。 |
+| `specularOpacity` | 0–100%；pill/button 50 | 交互玻璃镜面层透明度；card 历史值保留但不应用。 |
+| `specularSaturation` | 0–50；pill 6、button 9 | 交互玻璃采用 SVG 饱和度倍率，1 为中性。 |
+| `refractionLevel` | 0–100%；pill/button 100 | pill 内部按按住状态使用 0.4/0.9 倍系数。 |
+| `blurLevel` | 0–40 px；pill 0.2 | 当前设置只对 pill 提供。 |
+| `progressiveBlurStrength` | 历史 card 0–10；默认 1 | 仅保留旧配置及引擎 API 兼容，实际内容面板无三层模糊。 |
+| `backgroundOpacity` | 0–100%；card 60 | 静态磨砂不透明度；button 底色固定透明，移动导航滑块也保持透明。 |
 
-设置按调整对象只显示 6、4 或 3 个滑条；不再公开轮廓、边缘宽度、厚度和折射率。
+设置按调整对象只显示 1、4 或 3 个有效控件；不再向面板显示无作用的折射、高光和模糊参数。
+`liquidGlass.card` 六个历史值仍归一化并保存，不丢弃既有偏好。
+不再公开轮廓、边缘宽度、厚度和折射率。
 这些内部几何保持参考比例，按元素尺寸重新生成，不与用户滑条形成第二套强度控制。
 主界面与桌面浮窗共享对应预设，不能单独为浮窗保存另一套玻璃强度或透明度。
-`background.opacity/blur` 只处理壁纸图像，`liquidGlass.card.backgroundOpacity/blurLevel`
-及渐进模糊处理卡片，作用层不同；其它两组不继承卡片的底色滑条。
+`background.opacity/blur` 只处理壁纸图像，`liquidGlass.card.backgroundOpacity`
+处理面板静态色层与纹理，作用层不同；按钮不继承面板的不透明度。
 
 ## 父子关系与覆盖
 
@@ -60,12 +62,13 @@
 - 外观和液态玻璃草稿实时预览；取消、Esc 或系统返回会恢复已提交配置。液态玻璃页的“恢复本组默认”只重置当前调整对象，外观页重置主题、配色和卡片圆角，不影响其它组。
 - 浮窗图片设置在内嵌预览中更新；确认保存成功后才同步真实 Windows 悬浮窗。玻璃配置作为同一份顶层对象同时传给主窗口与悬浮窗。
 - 桌面先持久化原生设置再提交前端状态；失败时保留草稿。网页与 Android 使用本地偏好，Android 原生色板缓存仍只服务系统栏等原生界面。
-- 液态玻璃引擎使用 SVG displacement、specular 与 Gaussian primitives 绑定到对应表面的 `backdrop-filter`。若运行时不支持该特性，引擎明确标记 unsupported 并报告错误，不静默切换回旧磨砂、白色描边或纯色渲染。
+- 液态玻璃引擎只为交互组件生成 SVG displacement、specular 与 Gaussian primitives。若运行时不支持该特性，交互玻璃明确标记 unsupported 并报告错误；面板静态磨砂独立绘制，不依赖滤镜支持情况。
+- 底部 Tab 轨道与右侧齿轮共用透明按钮预设，齿轮无可见文字但保留可访问名称；语言列表打开、刷新及选择后不主动聚焦搜索框，搜索只在用户主动进入时唤起输入法。
 
 本审计移除了旧注入资源、扁平玻璃键、伪彩色高光与滑块轨道的重复折射；修复设置下拉的
 hover/open 样式覆盖按钮预设的问题。未发现需要保留的新旧参数映射。定向浏览器检查覆盖
 当前预设、控件数量、按住状态、滤镜尺寸和 macOS 桥接；最终全量结果见桌面集成文档。
-渲染链按参考分层：SVG 处理折射与高光，只有卡片额外使用三层 CSS 渐进模糊，
-按钮/胶囊不叠加这部分。轮盘收尾跟随本次合成动画，旧取消不能提交新选择。
+当前渲染链中 SVG 只处理交互控件的折射与高光，产品卡片不叠加三层渐进模糊；
+底层旧 card API 的单独兼容测试仍保留。轮盘收尾跟随本次合成动画，旧取消不能提交新选择。
 上一任务最终全量为 127/128，后续定向动画检查通过；不再将早先的 128/128 混写为最终结果。
 仍需目标 Windows、Mac 和 Android 设备的原生渲染、缩放与性能验收。

@@ -2,7 +2,7 @@
    笺 · 自绘前端主题（薄樱玻璃 · 一镜到底）
    --------------------------------------------------------------------------
    本文件是当前自绘前端与动效令牌的唯一真源；桌面与 Android 共用 web/。
-   卡片、切换栏与按钮分别使用参考演示对应的光学预设；不包含旧注入版玻璃。
+   液态玻璃仅用于按钮、交互轨道和滑块；卡片与弹层使用静态磨砂。
 
    液态玻璃由 SVG 位移、高光与 Gaussian 组合滤镜驱动，使用 Chromium 原生 backdrop-filter。
    ========================================================================== */
@@ -1004,7 +1004,8 @@ textarea.src::placeholder { color: var(--lg-ink-faint); }
     flex: 1 1 0;
     min-width: 0;
     justify-content: space-between;
-    background: var(--it-liquid-fill-high);
+    background: transparent;
+    border: 1px solid var(--lg-edge);
     box-shadow: var(--lg-shadow);
   }
   .tabs button {
@@ -1024,7 +1025,7 @@ textarea.src::placeholder { color: var(--lg-ink-faint); }
     width: var(--lg-mobile-tab-height);
     min-height: 48px;
     display: flex;
-    flex-direction: column;
+    flex-direction: row;
     align-items: center;
     justify-content: center;
     gap: 1px;
@@ -1402,11 +1403,9 @@ textarea.src::placeholder { color: var(--lg-ink-faint); }
 .it-popup-preview-card b { color: inherit; font-size: 11px; font-weight: var(--it-content-weight); }
 .it-popup-preview-card span { color: inherit; font-size: 11px; }
 
-/* Every translucent product surface uses the same per-element optical filter. */
-.bar, .tabs, .tabs-thumb, .models, .models-thumb, .mobile-settings,
-.sel-btn, .sel-pop, .card, .btn-secondary, .menu, .it-about,
-.it-set, .it-pref-preview-card, .it-popup-preview-card, .instruct,
-.img-preview .del, .toast {
+/* Optical filters are confined to the small interactive controls. */
+.tabs, .tabs-thumb, .models-thumb, .mobile-settings, .sel-btn,
+.btn-secondary, .img-preview .del {
   -webkit-backdrop-filter: var(--it-liquid-filter, none);
   backdrop-filter: var(--it-liquid-filter, none);
 }
@@ -1527,7 +1526,7 @@ html.it-desktop .sel-pop.on ~ .rz { display: none; }
   -webkit-backdrop-filter: none;
   backdrop-filter: none;
 }
-.tabs, .models { background: transparent; -webkit-backdrop-filter: none; backdrop-filter: none; }
+.models { background: transparent; -webkit-backdrop-filter: none; backdrop-filter: none; }
 [data-it-liquid-background], [data-it-liquid-progressive] {
   position: absolute;
   inset: 0;
@@ -1547,6 +1546,26 @@ html.it-desktop .sel-pop.on ~ .rz { display: none; }
   border-radius: inherit;
   pointer-events: none;
 }
+
+/* Static frost: ordinary background painting, without backdrop sampling,
+   displacement PNGs or overlapping progressive-blur render passes. */
+.card, .card.out, .it-set, .it-pref-preview-card, .it-popup-preview-card,
+.sel-pop, .menu, .it-about, .instruct, .instruct[open], .toast {
+  background-color: rgb(var(--it-liquid-tint-rgb) / var(--it-liquid-background-opacity, .6));
+  background-image:
+    linear-gradient(145deg,
+      rgb(var(--it-liquid-tint-rgb) / calc(var(--it-liquid-background-opacity, .6) * .12)), transparent),
+    repeating-linear-gradient(135deg,
+      rgb(var(--it-liquid-tint-rgb) / calc(var(--it-liquid-background-opacity, .6) * .045)) 0 1px,
+      transparent 1px 3px);
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+
+/* The navigation track and settings share the clear button material.
+   Its selected thumb keeps the pill optics without an opaque white fill. */
+.mobile-navigation .tabs-thumb > [data-it-liquid-background] { background: transparent; }
+.toast:not(.error) { color: var(--lg-ink); }
 :is(.btn-primary, .it-set-foot .primary)[data-it-liquid-preset] {
   color: var(--lg-accent-deep);
   background: transparent;

@@ -80,7 +80,7 @@ function appearanceFixture() {
   assert.equal(test.counts.background, first.background, 'Same background avoids rebuilding its style sheet');
   assert.equal(test.counts.reads, first.reads, 'Same motion does not force computed-style reads');
   assert.equal(test.calls.length, 1, 'Same native appearance crosses the Android bridge once');
-  vm.runInContext('activePreferences.liquidGlass.card.refractionLevel = 30; applyPreferences(activePreferences)', test.context);
+  vm.runInContext('activePreferences.liquidGlass.pill.refractionLevel = 30; applyPreferences(activePreferences)', test.context);
   assert.equal(test.calls.length, 1, 'Optical-only changes do not repaint native Android chrome');
   vm.runInContext('activePreferences.appearance.radius = "small"; applyPreferences(activePreferences)', test.context);
   assert.equal(test.counts.refresh, first.refresh + 1, 'Radius changes still refresh exact glass geometry');
@@ -184,12 +184,12 @@ function settingsFixture() {
 
 {
   const test = settingsFixture();
-  const input = test.control('liquidGlass.card.refractionLevel');
+  const input = test.control('liquidGlass.pill.refractionLevel');
   for (const value of ['80', '65', '40']) {
     input.value = value;
     test.event('input', input);
   }
-  assert.equal(test.context.settingsState.preferences.liquidGlass.card.refractionLevel, 40);
+  assert.equal(test.context.settingsState.preferences.liquidGlass.pill.refractionLevel, 40);
   assert.equal(input.output.textContent, '40%', 'The active value label follows the finger immediately');
   assert.equal(input.style.getPropertyValue('--it-range-fill'), '40%');
   assert.equal(test.frames.size, 1, 'Multiple inputs schedule only one preview frame');
@@ -197,14 +197,14 @@ function settingsFixture() {
   assert.equal(test.counts.fill, 0, 'Range input does not refill every settings control');
   test.frame();
   assert.equal(test.snapshots.length, 1);
-  assert.equal(test.snapshots[0].liquidGlass.card.refractionLevel, 40, 'The frame applies the latest draft');
+  assert.equal(test.snapshots[0].liquidGlass.pill.refractionLevel, 40, 'The frame applies the latest draft');
   test.event('change', input);
   assert.equal(test.snapshots.length, 1, 'An unchanged change event does not repeat the preview');
   input.value = '25';
   test.event('input', input);
   test.event('change', input);
   assert.equal(test.frames.size, 0);
-  assert.equal(test.snapshots.at(-1).liquidGlass.card.refractionLevel, 25, 'Release flushes the last value');
+  assert.equal(test.snapshots.at(-1).liquidGlass.pill.refractionLevel, 25, 'Release flushes the last value');
 }
 
 {

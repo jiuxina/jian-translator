@@ -643,7 +643,7 @@
       syncButton(false);
       if (openSelect && openSelect.select === select) {
         position();
-        if (searchEl) searchEl.focus({ preventScroll: true });
+        highlight(activeIndex < 0 ? 0 : activeIndex);
       }
     }
 
@@ -656,7 +656,7 @@
       var row = visibleItems[activeIndex];
       row.classList.add('active');
       if (row.scrollIntoView) row.scrollIntoView({ block: 'nearest' });
-      if (!searchEl) row.focus({ preventScroll: true });
+      if (!searchEl || document.activeElement !== searchEl) row.focus({ preventScroll: true });
     }
 
     function position() {
@@ -687,10 +687,13 @@
       render('');
       position();
       moveSurface(pop, button, true);
-      if (searchEl) { searchEl.value = ''; searchEl.focus(); }
-      else {
-        highlight(activeIndex < 0 ? 0 : activeIndex);
-        if (visibleItems[activeIndex]) visibleItems[activeIndex].focus({ preventScroll: true });
+      if (searchEl) searchEl.value = '';
+      // Opening a language list must not enter an editable field and summon
+      // the mobile keyboard. Search remains available when explicitly tapped.
+      highlight(activeIndex < 0 ? 0 : activeIndex);
+      if (!visibleItems.length) {
+        listEl.tabIndex = -1;
+        listEl.focus({ preventScroll: true });
       }
     }
 
@@ -2510,18 +2513,14 @@
   }
 
   /* ---------------- 13. Liquid Glass surfaces ---------------- */
-  var LIQUID_GLASS_SURFACES = '.card, .it-set, .it-pref-preview-card, .it-popup-preview-card, ' +
-    '.tabs-thumb, .models-thumb, .it-set-nav-thumb, .mobile-settings, .sel-btn, .sel-pop, ' +
-    '.pill, .btn-primary, .btn-secondary, .btn-ghost, .menu, .it-about, .instruct, ' +
-    '.img-preview .del, .toast, .it-set-foot button, .it-set-actions button';
+  var LIQUID_GLASS_SURFACES = '.tabs, .tabs-thumb, .models-thumb, .it-set-nav-thumb, ' +
+    '.mobile-settings, .sel-btn, .pill, .btn-primary, .btn-secondary, .btn-ghost, ' +
+    '.img-preview .del, .it-set-foot button, .it-set-actions button';
 
   function setupLiquidGlassSurfaces(scope) {
     if (!scope) return;
     function attachSurface(surface) {
-      var preset = surface.matches('.tabs-thumb, .models-thumb, .it-set-nav-thumb') ? 'pill' :
-        surface.matches('.mobile-settings, .sel-btn, .pill, .btn-primary, .btn-secondary, .btn-ghost, ' +
-          '.img-preview .del, .it-set-foot button, .it-set-actions button') ?
-          'button' : 'card';
+      var preset = surface.matches('.tabs-thumb, .models-thumb, .it-set-nav-thumb') ? 'pill' : 'button';
       window.ItLiquidGlass.attach(surface, preset);
     }
     if (scope.matches && scope.matches(LIQUID_GLASS_SURFACES)) attachSurface(scope);
@@ -2787,10 +2786,10 @@
             </section>
             <section class="it-set-page" data-pref-section="glass" hidden>
               <h2>液态玻璃</h2>
-              <div class="it-set-note">卡片、切换栏和按钮分别采用参考演示预设。选择调整对象，仅显示该演示公开的参数。</div>
+              <div class="it-set-note">液态玻璃仅用于按钮与交互滑块；内容卡片和弹层使用静态磨砂，减少绘制开销。</div>
               <label class="it-set-row"><span>调整对象</span><select id="it-glass-target">
-                <option value="card">卡片与面板</option><option value="pill">Tab 与模型切换栏</option>
-                <option value="button">按钮与下拉入口</option>
+                <option value="card">磨砂面板</option><option value="pill">Tab 与模型滑块</option>
+                <option value="button">按钮、底栏与下拉入口</option>
               </select></label>
               <div class="it-set-note" id="it-glass-preset-note"></div>
               <label class="it-set-range" data-glass-control="specularOpacity"><span>镜面高光 <output></output></span>
@@ -2803,7 +2802,7 @@
                 <input type="range" min="0" max="40" step="0.1" data-pref-type="number"></label>
               <label class="it-set-range" data-glass-control="progressiveBlurStrength"><span>渐进模糊 <output></output></span>
                 <input type="range" min="0" max="10" step="0.01" data-pref-type="number"></label>
-              <label class="it-set-range" data-glass-control="backgroundOpacity"><span>玻璃底色不透明度 <output></output></span>
+              <label class="it-set-range" data-glass-control="backgroundOpacity"><span>磨砂不透明度 <output></output></span>
                 <input type="range" min="0" max="100" step="1" data-pref-type="number"></label>
             </section>
             <section class="it-set-page" data-pref-section="updates" hidden>
@@ -3018,11 +3017,13 @@
     modal.querySelectorAll('select').forEach(enhanceSelect);
 
     function updateGlassControls() {
-      var preset = DEFAULT_PREFERENCES.liquidGlass[glassTarget];
+      var preset = glassTarget === 'card' ? { backgroundOpacity: DEFAULT_PREFERENCES.liquidGlass.card.backgroundOpacity } :
+        DEFAULT_PREFERENCES.liquidGlass[glassTarget];
       $('it-glass-target').value = glassTarget;
       $('it-glass-preset-note').textContent = glassTarget === 'card' ?
-        '参考内容面板：用于原文、译文、弹层与悬浮窗。' : glassTarget === 'pill' ?
-          '参考切换栏：用于 Tab 与模型选择栏。' : '参考按钮：用于玻璃按钮与下拉入口。';
+        '原文、译文、弹层与悬浮窗使用静态磨砂，仅调整面板不透明度。' : glassTarget === 'pill' ?
+          '用于 Tab、模型与设置导航的交互滑块，保留按压折射。' :
+          '透明液态玻璃用于按钮、底部导航轨道与下拉入口。';
       modal.querySelectorAll('[data-glass-control]').forEach(function (row) {
         var key = row.getAttribute('data-glass-control');
         var control = row.querySelector('input');

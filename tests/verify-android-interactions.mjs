@@ -218,7 +218,7 @@ try {
   await page.send('Page.navigate', { url: `${ORIGIN}/?debug=1` });
   await page.send('Page.bringToFront');
   await page.until(`document.readyState === 'complete' && !!window.__itDebug &&
-    ItLiquidGlass.stateOf(document.querySelector('#pane-text .card'))?.maps &&
+    ItLiquidGlass.stateOf(document.querySelector('.tabs-thumb'))?.maps &&
     document.documentElement.dataset.itLiquidGlass === 'ready' &&
     (!ItLiquidGlass.diagnostics || ItLiquidGlass.diagnostics().queuedJobs === 0)`, 45000);
   await page.evaluate(`(() => {
@@ -229,11 +229,106 @@ try {
     };
   })()`);
   await page.evaluate('window.__probeFrames(5)');
-  check('The synthetic Android bridge and full optical renderer initialize', await page.evaluate(`(() => {
-    const state = ItLiquidGlass.stateOf(document.querySelector('#pane-text .card'));
+  check('The synthetic Android bridge and interactive optical renderer initialize', await page.evaluate(`(() => {
+    const state = ItLiquidGlass.stateOf(document.querySelector('.tabs-thumb'));
     return document.documentElement.classList.contains('it-android') &&
-      state.maps.maxDisplacement > 0 && state.progressiveLayers.length === 3;
+      state.presetName === 'pill' && state.maps.maxDisplacement > 0 &&
+      state.filter.querySelector('feDisplacementMap') && state.filter.querySelector('feBlend');
   })()`));
+  report.measurements.surfaceScope = await page.evaluate(`(() => {
+    const containers = [...document.querySelectorAll(
+      '.card,.it-set,.sel-pop,.menu,.it-about,.instruct,.toast,.it-pref-preview-card,.it-popup-preview-card')];
+    const optical = [...document.querySelectorAll('[data-it-liquid-preset]')].map((element) =>
+      ItLiquidGlass.stateOf(element)).filter((state) => state && state.maps);
+    return {
+      containerOpticalStates: containers.filter((element) => ItLiquidGlass.stateOf(element)).length,
+      containerDirectLayers: containers.filter((element) => element.querySelector(
+        ':scope > [data-it-liquid-background],:scope > [data-it-liquid-progressive]')).length,
+      containerBackdropFilters: containers.filter((element) =>
+        getComputedStyle(element).backdropFilter !== 'none').length,
+      opticalSurfaces: optical.length,
+      opticalMapPixels: optical.reduce((sum, state) =>
+        sum + state.maps.mapWidth * state.maps.mapHeight, 0)
+    };
+  })()`);
+  if (!BASELINE) {
+    check('Content panels use static frost without optical states or backdrop layers',
+      report.measurements.surfaceScope.containerOpticalStates === 0 &&
+      report.measurements.surfaceScope.containerDirectLayers === 0 &&
+      report.measurements.surfaceScope.containerBackdropFilters === 0,
+      JSON.stringify(report.measurements.surfaceScope));
+    report.measurements.navigation = await page.evaluate(`(() => {
+        const track = document.querySelector('.tabs');
+        const settings = document.getElementById('mobile-settings');
+        const trackState = ItLiquidGlass.stateOf(track);
+        const settingsState = ItLiquidGlass.stateOf(settings);
+        const thumbState = ItLiquidGlass.stateOf(track.querySelector('.tabs-thumb'));
+        return {
+          trackPreset: trackState?.presetName, settingsPreset: settingsState?.presetName,
+          trackFill: getComputedStyle(trackState.background).backgroundColor,
+          settingsFill: getComputedStyle(settingsState.background).backgroundColor,
+          thumbFill: getComputedStyle(thumbState.background).backgroundColor,
+          text: settings.textContent.trim(), name: settings.getAttribute('aria-label'),
+          width: settings.getBoundingClientRect().width, height: settings.getBoundingClientRect().height
+        };
+      })()`);
+    const transparent = (color) => color?.startsWith('rgba(') &&
+      Number(color.split(',').at(-1).replace(')', '').trim()) === 0;
+    const navigation = report.measurements.navigation;
+    check('The mobile tab track and icon-only settings button use matching transparent glass',
+      navigation.trackPreset === 'button' && navigation.settingsPreset === 'button' &&
+      transparent(navigation.trackFill) && transparent(navigation.settingsFill) &&
+      transparent(navigation.thumbFill) && navigation.text === '' && !!navigation.name &&
+      navigation.width >= 48 && navigation.height >= 48, JSON.stringify(navigation));
+    check('Opening a language selector does not focus an editable field',
+      await page.evaluate(`(() => {
+        const button = document.getElementById('src-lang').parentElement.querySelector('.sel-btn');
+        button.click();
+        const popup = document.querySelector('.sel-pop[aria-hidden="false"]');
+        const focused = document.activeElement;
+        const noKeyboardFocus = popup && popup.contains(focused) &&
+          !focused.matches('input,textarea,[contenteditable="true"]') &&
+          !focused.isContentEditable;
+        document.getElementById('src-lang').__itRefreshDropdown();
+        const refreshed = document.activeElement;
+        const noRefreshKeyboard = popup.contains(refreshed) &&
+          !refreshed.matches('input,textarea,[contenteditable="true"]') && !refreshed.isContentEditable;
+        const search = popup.querySelector('.sel-search');
+        search.focus();
+        search.value = '英';
+        search.dispatchEvent(new Event('input', { bubbles: true }));
+        document.getElementById('src-lang').__itRefreshDropdown();
+        const manualSearchWorks = document.activeElement === search &&
+          popup.querySelectorAll('.sel-item').length > 0;
+        window.__itHandleBack();
+        const closedFocus = document.activeElement === button;
+        button.click();
+        const reopened = document.querySelector('.sel-pop[aria-hidden="false"]');
+        reopened.querySelector('.sel-item[data-value="en"]').click();
+        const choiceWorks = document.getElementById('src-lang').value === 'en' &&
+          document.activeElement === button && !document.querySelector('.sel-pop[aria-hidden="false"]');
+        document.getElementById('src-lang').value = 'auto';
+        document.getElementById('src-lang').dispatchEvent(new Event('change', { bubbles: true }));
+        return noKeyboardFocus && noRefreshKeyboard && manualSearchWorks && closedFocus && choiceWorks;
+      })()`));
+    check('Static-frost notifications retain readable text in both themes',
+      await page.evaluate(`(() => {
+        const toast = document.getElementById('toast');
+        const matches = [];
+        for (const mode of ['light', 'dark']) {
+          window.__itDebug.preferences.apply(window.__itDebug.preferences.normalize({ appearance: { mode } }));
+          toast.classList.remove('error');
+          const ordinary = getComputedStyle(toast).color;
+          toast.classList.add('error');
+          const error = getComputedStyle(toast).color;
+          matches.push(ordinary === (mode === 'light' ? 'rgb(46, 42, 56)' : 'rgb(242, 237, 243)') &&
+            error === (mode === 'light' ? 'rgb(255, 255, 255)' : 'rgb(255, 245, 245)'));
+        }
+        toast.classList.remove('error');
+        window.__itDebug.preferences.apply(window.__itDebug.preferences.defaults);
+        return matches.every(Boolean);
+      })()`));
+  }
   if (process.env.IT_ANDROID_INTERACTION_SCREENSHOT) {
     const screenshotPath = path.resolve(process.env.IT_ANDROID_INTERACTION_SCREENSHOT);
     await mkdir(path.dirname(screenshotPath), { recursive: true });
@@ -246,11 +341,16 @@ try {
   await page.until(`document.querySelector('.it-set-mask').classList.contains('on') &&
     !document.querySelector('.it-set').getAnimations().length`);
   await page.evaluate('window.__probeFrames(5)');
+  await page.evaluate(`(() => {
+    const target = document.getElementById('it-glass-target');
+    target.value = 'pill';
+    target.dispatchEvent(new Event('change', { bubbles: true }));
+  })()`);
   const rangeStart = await page.metrics();
   report.measurements.range = await page.evaluate(`(async () => {
     const probe = window.__androidProbe;
-    const card = ItLiquidGlass.stateOf(document.querySelector('#pane-text .card'));
-    const oldMap = card.displacementImage.getAttribute('href');
+    const slider = ItLiquidGlass.stateOf(document.querySelector('.tabs-thumb'));
+    const oldMap = slider.displacementImage.getAttribute('href');
     const counters = { rootAttributes: 0, stylesheetWrites: 0 };
     const observer = new MutationObserver((records) => {
       for (const record of records) {
@@ -265,8 +365,8 @@ try {
       attributes: true, childList: true, characterData: true, subtree: true
     });
     window.__probeReset();
-    const range = document.querySelector('[data-pref="liquidGlass.card.refractionLevel"]');
-    if (!range) throw new Error('The card refraction control is unavailable');
+    const range = document.querySelector('[data-pref="liquidGlass.pill.refractionLevel"]');
+    if (!range) throw new Error('The slider refraction control is unavailable');
     for (let value = 51; value <= 70; value++) {
       range.value = value;
       range.dispatchEvent(new Event('input', { bubbles: true }));
@@ -277,9 +377,9 @@ try {
     observer.disconnect();
     return { ...counters, synchronous, reads: { ...probe.reads },
       configureCalls: probe.configureCalls, nativeCalls: probe.native.length,
-      value: Number(range.value), scale: Number(card.refract.getAttribute('scale')),
-      expectedScale: card.maps.maxDisplacement * .7,
-      sameMap: oldMap === card.displacementImage.getAttribute('href') };
+      value: Number(range.value), scale: Number(slider.refract.getAttribute('scale')),
+      expectedScale: slider.maps.maxDisplacement * (.4 * .7),
+      sameMap: oldMap === slider.displacementImage.getAttribute('href') };
   })()`);
   report.measurements.range.performance = delta(rangeStart, await page.metrics());
   check('Twenty same-frame range inputs preserve the last refraction value and optical PNG',
@@ -297,8 +397,8 @@ try {
   await page.until(`!document.querySelector('.it-set-mask').classList.contains('on')`);
   await page.evaluate('window.__probeFrames(5)');
   check('Cancel restores the committed refraction after a pending preview', await page.evaluate(`(() => {
-    const card = ItLiquidGlass.stateOf(document.querySelector('#pane-text .card'));
-    return Math.abs(Number(card.refract.getAttribute('scale')) - card.maps.maxDisplacement) < 1e-8;
+    const slider = ItLiquidGlass.stateOf(document.querySelector('.tabs-thumb'));
+    return Math.abs(Number(slider.refract.getAttribute('scale')) - slider.maps.maxDisplacement * .4) < 1e-8;
   })()`));
 
   report.measurements.drag = await page.evaluate(`(async () => {
@@ -357,17 +457,20 @@ try {
     mode.dispatchEvent(new Event('change', { bubbles: true }));
     await window.__probeFrames(3);
     const darkNative = window.__androidProbe.native.some((value) => value.dark);
-    const refraction = document.querySelector('[data-pref="liquidGlass.card.refractionLevel"]');
+    const target = document.getElementById('it-glass-target');
+    target.value = 'pill';
+    target.dispatchEvent(new Event('change', { bubbles: true }));
+    const refraction = document.querySelector('[data-pref="liquidGlass.pill.refractionLevel"]');
     refraction.value = '41';
     refraction.dispatchEvent(new Event('input', { bubbles: true }));
     document.getElementById('it-set-save').click();
     await window.__probeFrames(4);
     const saved = JSON.parse(localStorage.getItem('it-preferences'));
-    const card = ItLiquidGlass.stateOf(document.querySelector('#pane-text .card'));
+    const slider = ItLiquidGlass.stateOf(document.querySelector('.tabs-thumb'));
     return { darkNative, commits: window.__androidProbe.commits.length,
-      savedMode: saved.appearance.mode, savedRefraction: saved.liquidGlass.card.refractionLevel,
-      scale: Number(card.refract.getAttribute('scale')),
-      expectedScale: card.maps.maxDisplacement * .41,
+      savedMode: saved.appearance.mode, savedRefraction: saved.liquidGlass.pill.refractionLevel,
+      scale: Number(slider.refract.getAttribute('scale')),
+      expectedScale: slider.maps.maxDisplacement * (.4 * .41),
       closed: !document.querySelector('.it-set-mask').classList.contains('on') };
   })()`);
   check('A real theme change still reaches native appearance', report.measurements.save.darkNative);
@@ -378,6 +481,8 @@ try {
     Math.abs(report.measurements.save.scale - report.measurements.save.expectedScale) < 1e-8);
 
   await page.evaluate(`(() => {
+    // Product panels above remain static frost. This unattached synthetic shape
+    // explicitly exercises the retained legacy engine API and worker fallback.
     const surface = document.createElement('div');
     surface.id = 'android-geometry-probe';
     surface.style.cssText = 'position:fixed;left:-900px;top:0;width:211px;height:173px;border-radius:28px';
@@ -404,7 +509,7 @@ try {
         entry.startTime >= window.__geometryProbeStart) };
   })()`);
   report.measurements.geometry.performance = delta(geometryStart, await page.metrics());
-  check('New geometry retains full refraction and three progressive blur layers',
+  check('The standalone legacy preset retains full geometry and progressive layers',
     report.measurements.geometry.ready && report.measurements.geometry.maxDisplacement > 0 &&
     report.measurements.geometry.progressiveLayers === 3);
   if (!BASELINE) {
@@ -536,7 +641,7 @@ try {
 
     await page.send('Page.navigate', { url: FILE_PAGE });
     await page.until(`document.readyState === 'complete' && !!window.__itDebug &&
-      ItLiquidGlass.stateOf(document.querySelector('#pane-text .card'))?.maps &&
+      ItLiquidGlass.stateOf(document.querySelector('.tabs-thumb'))?.maps &&
       ItLiquidGlass.diagnostics().queuedJobs === 0`, 45000);
     report.measurements.fileWorker = await page.evaluate('ItLiquidGlass.diagnostics()');
     check('The Android file-asset page can use the full optical worker',
@@ -552,7 +657,7 @@ try {
     ready: document.readyState, debug: !!window.__itDebug,
     glass: document.documentElement.dataset.itLiquidGlass,
     stats: window.ItLiquidGlass?.diagnostics?.(),
-    cardReady: document.querySelector('#pane-text .card')?.dataset.itLiquidState
+    interactionReady: document.querySelector('.tabs-thumb')?.dataset.itLiquidState
   }))()`).catch(() => null);
   report.runtimeErrors = page?.errors;
   report.warnings = page?.warnings;

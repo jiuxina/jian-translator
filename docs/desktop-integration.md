@@ -57,12 +57,12 @@ Windows 22 DIP 外圆角与阴影、各 DPI 下缩放/最大化，以及 Android
 
 `web/liquid-glass.js` 是网页、Android 和 Windows 悬浮窗共同使用的 SVG 液态玻璃引擎。
 桌面补丁应用器会把它复制到 Pake 模板 `src/app/liquid-glass.js`；`setup.rs` 以
-`include_str!` 引入，并在执行独立 `POPUP_BOOTSTRAP` 前注入引擎。悬浮窗卡片使用独立光学背景层，
-SVG 处理 displacement、specular 与基础 Gaussian，渐进模糊按参考使用三个 CSS backdrop/mask 层；
-圆角、壁纸层和外阴影继续由卡片 frame 负责。
+`include_str!` 引入，并在执行独立 `POPUP_BOOTSTRAP` 前注入引擎。当前悬浮窗卡片
+使用静态磨砂背景色、渐变和细纹，不挂载 SVG 光学状态或渐进模糊层；只有复制按钮
+使用完整交互玻璃。圆角、壁纸层和外阴影继续由卡片 frame 负责。
 
-浮窗接收通用偏好顶层 `liquidGlass.{card,pill,button}`。卡片使用 `card` 六项公开滑条，
-复制按钮使用 `button` 三项滑条。Tab 等滑块使用 `pill` 四项滑条，默认值与范围见
+浮窗接收通用偏好顶层 `liquidGlass.{card,pill,button}`。卡片仅消费 `card.backgroundOpacity`，
+其余旧光学值保留兼容；复制按钮使用 `button` 三项滑条。Tab 等滑块使用 `pill` 四项滑条，默认值与范围见
 [界面主题](ui-theme.md)。旧材质、玻璃强度、卡片透出字段已从浮窗
 渲染路径移除。浮窗可独立选择背景图；背景图片淡化、模糊及适配继续沿用 `background.opacity/blur/fit`，
 这些壁纸参数不改写全局液态玻璃参数。
