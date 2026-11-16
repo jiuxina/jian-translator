@@ -21,6 +21,7 @@ const connections = [];
 let mainTargetId;
 let desktopTargetId;
 let popupTargetId;
+let macTargetId;
 
 class Cdp {
   constructor(socket) {
@@ -157,6 +158,19 @@ async function scenario(name, task) {
 
 const baselineScript = `
   window.__motionTest = { copied: [], invoked: [] };
+  const fetchReal = window.fetch.bind(window);
+  window.fetch = (url, options) => {
+    if (String(url) === 'https://api.github.com/repos/jiuxina/jian-translator/releases/latest') {
+      window.__motionTest.updateChecks = (window.__motionTest.updateChecks || 0) + 1;
+      const mocked = window.__motionTest.updateResponse || { status: 200, body: {
+        tag_name: 'v2.2.0', html_url: 'https://github.com/jiuxina/jian-translator/releases/tag/v2.2.0'
+      } };
+      return Promise.resolve(new Response(JSON.stringify(mocked.body || {}), {
+        status: mocked.status, headers: { 'content-type': 'application/json' }
+      }));
+    }
+    return fetchReal(url, options);
+  };
   window.alert = (message) => { window.__motionTest.alerts = [...(window.__motionTest.alerts || []), message]; };
   const inputClick = HTMLInputElement.prototype.click;
   HTMLInputElement.prototype.click = function () {
@@ -211,6 +225,21 @@ const desktopScript = `
     }
   };
 `;
+const macScript = desktopScript + `
+  const invokeDesktop = window.__TAURI_INTERNALS__.invoke;
+  delete window.__TAURI_INTERNALS__;
+  window.__JIAN_DESKTOP__ = Object.freeze({
+    platform: 'darwin',
+    invoke: (command, args) => invokeDesktop(command, args).then((result) => {
+      if (command !== 'it_get_settings') return result;
+      return { ...result, selection_shortcut: 'Cmd+Alt+T', activation_shortcut: 'Cmd+Alt+I' };
+    }),
+    onAction: (callback) => {
+      window.__motionTest.nativeAction = callback;
+      return () => { delete window.__motionTest.nativeAction; };
+    }
+  });
+`;
 
 async function prepare(connection, desktop = false, clearStorage = false) {
   await connection.send('Emulation.setDeviceMetricsOverride', {
@@ -227,7 +256,7 @@ async function prepare(connection, desktop = false, clearStorage = false) {
   await connection.send('Page.addScriptToEvaluateOnNewDocument', {
     source: (clearStorage ? 'try { if (!sessionStorage.getItem("motion-test-fresh")) {' +
       ' localStorage.clear(); sessionStorage.setItem("motion-test-fresh", "1"); } } catch (e) {}\n' : '') +
-      baselineScript + (desktop ? desktopScript : ''),
+      baselineScript + (desktop === 'mac' ? macScript : desktop ? desktopScript : ''),
   });
   await connection.send('Page.navigate', { url: PAGE_URL });
   await connection.send('Page.bringToFront');
@@ -394,7 +423,7 @@ async function menus(connection) {
     const about = document.querySelector('.it-about');
     const repository = about?.querySelector('.it-about-repository');
     return !!about && !about.querySelector('.it-about-eyebrow') &&
-      !about.querySelector('.it-about-brand')?.textContent.includes('译') &&
+      !about.querySelector('.it-about-brand') && !about.querySelector('#it-about-logo') &&
       repository?.href === 'https://github.com/jiuxina/jian-translator' &&
       repository.target === '_blank' && repository.rel.includes('noopener');
   })()`));
@@ -444,11 +473,11 @@ try {
     await page.send('Page.reload');
     await page.until(`document.readyState === 'complete' && !!window.__itDebug`);
     const migrated = await page.evaluate(`JSON.parse(localStorage.getItem('it-preferences') || 'null')`);
-    check('旧玻璃键改用新默认参数且主题、字体和壁纸偏好保留', migrated?.version === 2 &&
+    check('旧玻璃键改用新默认参数且主题、字体和壁纸偏好保留', migrated?.version === 3 &&
       migrated?.appearance?.mode === 'dark' && migrated?.appearance?.palette === 'sage' &&
       migrated?.appearance?.font === 'serif' && migrated?.appearance?.fontWeight === 500 &&
-      migrated?.background?.opacity === 28 && migrated?.liquidGlass?.backgroundOpacity === 60 &&
-      migrated?.liquidGlass?.refractionLevel === 100 && migrated?.appearance?.material === undefined &&
+      migrated?.background?.opacity === 28 && migrated?.liquidGlass?.card?.backgroundOpacity === 60 &&
+      migrated?.liquidGlass?.card?.refractionLevel === 100 && migrated?.appearance?.material === undefined &&
       migrated?.appearance?.glassStrength === undefined && migrated?.appearance?.cardReveal === undefined &&
       migrated?.popup?.cardReveal === undefined);
     await page.evaluate(`localStorage.removeItem('it-preferences')`);
@@ -614,9 +643,11 @@ try {
         primitiveUnits: filter?.getAttribute('primitiveUnits'),
         displacement: !!filter?.querySelector('feDisplacementMap'),
         refractionMap: !!map && Number(map.getAttribute('width')) > 100 && Number(map.getAttribute('height')) > 100,
-        specular: !!filter?.querySelector('feBlend'),
+        specular: !!filter?.querySelector('feComposite[in="displaced-saturated"][in2="specular-map"]') &&
+          [...(filter?.querySelectorAll('feBlend') || [])]
+            .every((blend) => blend.getAttribute('mode') === 'normal'),
         blur: !!filter?.querySelector('feGaussianBlur'),
-        progressiveBlur: !!filter?.querySelector('feImage[result="progressive-mask"]'),
+        progressiveBlur: filter?.querySelectorAll('feImage[result^="progressive-mask"]').length === 3,
         controls,
         config
       };
@@ -625,9 +656,13 @@ try {
       result.engine === 'object' && result.state === 'ready' && !!result.filterId &&
         result.primitiveUnits === 'userSpaceOnUse' && result.displacement && result.refractionMap,
       JSON.stringify(result));
-    check('完整玻璃参数与设置控件一致', result.controls.length === 10 &&
-      ['convex-squircle', 12, 14, 1.5, 100, 45, 6, 60, 50, 60].every((value, index) =>
-        Object.values(result.config)[index] === value), JSON.stringify(result.controls));
+    check('玻璃设置仅保留参考面板公开的六个滑条', result.controls.length === 6 &&
+      result.controls.every((path) => path.startsWith('liquidGlass.card.')) &&
+      Object.keys(result.config).join(',') === 'card,pill,button' &&
+      result.config.card.specularOpacity === 40 && result.config.card.specularSaturation === 6 &&
+      result.config.card.refractionLevel === 100 && result.config.card.blurLevel === 1 &&
+      result.config.card.progressiveBlurStrength === 1 && result.config.card.backgroundOpacity === 60,
+      JSON.stringify(result.controls));
     check('SVG滤镜包含镜面高光和渐进模糊图层', result.specular && result.blur && result.progressiveBlur,
       JSON.stringify({ specular: result.specular, blur: result.blur, progressiveBlur: result.progressiveBlur }));
     check('卡片直接折射且不再使用旧伪彩色描边', await page.evaluate(`(() => {
@@ -638,14 +673,20 @@ try {
         !document.documentElement.hasAttribute('data-it-material') &&
         !document.documentElement.classList.contains('no-lg-blur');
     })()`));
-    check('四种表面轮廓均能生成有界的Snell折射映射', await page.evaluate(`(() => {
+    check('卡片、切换栏与按钮分别使用独立参考预设', await page.evaluate(`(() => {
       const engine = window.ItLiquidGlass;
-      if (!engine || typeof engine.generateMaps !== 'function') return false;
-      return ['convex-circle', 'convex-squircle', 'concave', 'lip'].every((surfaceProfile) => {
-        const maps = engine.generateMaps(160, 100, 24, { ...engine.defaults, surfaceProfile });
-        return maps && maps.displacement instanceof Uint8ClampedArray &&
-          maps.displacement.length === maps.mapWidth * maps.mapHeight * 4 && maps.maxDisplacement > 0;
+      if (!engine || typeof engine.stateOf !== 'function') return false;
+      return [['#pane-text .card', 'card'], ['.tabs-thumb', 'pill'], ['.btn-secondary', 'button']].every(([selector, preset]) => {
+        const element = document.querySelector(selector);
+        const state = element && engine.stateOf(element);
+        return element?.dataset.itLiquidPreset === preset && state?.presetName === preset;
       });
+    })()`));
+    check('切换栏仅在滑块应用折射而不重复折射轨道', await page.evaluate(`(() => {
+      const track = document.querySelector('.tabs');
+      const thumb = document.querySelector('.tabs-thumb');
+      return getComputedStyle(track).backdropFilter === 'none' &&
+        getComputedStyle(thumb).backdropFilter.includes('url(');
     })()`));
     check('旧玻璃设置迁移为新默认值且保留无关偏好', await page.evaluate(`(() => {
       const api = window.__itDebug.preferences;
@@ -653,11 +694,23 @@ try {
         appearance: { material: 'solid', glassStrength: 0, cardReveal: 100, fontWeight: 600 },
         popup: { cardReveal: 100, backgroundData: 'data:image/png;base64,AA==' },
         background: { opacity: 28 } });
-      return old.version === 2 && old.appearance.material === undefined &&
+      return old.version === 3 && old.appearance.material === undefined &&
         old.appearance.glassStrength === undefined && old.appearance.cardReveal === undefined &&
         old.popup.cardReveal === undefined && old.appearance.fontWeight === 600 &&
-        old.background.opacity === 28 && old.liquidGlass.refractionLevel === 100 &&
+        old.background.opacity === 28 && old.liquidGlass.card.refractionLevel === 100 &&
         old.popup.backgroundData === 'data:image/png;base64,AA==';
+    })()`));
+    check('第二版扁平玻璃配置清除后恢复分元素预设', await page.evaluate(`(() => {
+      const old = window.__itDebug.preferences.normalize({ version: 2,
+        appearance: { fontWeight: 500 }, background: { opacity: 25 },
+        liquidGlass: { surfaceProfile: 'lip', bezelWidth: 22, glassThickness: 35,
+          refractiveIndex: 2, specularOpacity: 95, specularSaturation: 10,
+          refractionLevel: 175, blurLevel: 90, progressiveBlurStrength: 80, backgroundOpacity: 15 }
+      });
+      const defaults = window.ItLiquidGlass.defaults;
+      return old.version === 3 && JSON.stringify(old.liquidGlass) === JSON.stringify(defaults) &&
+        old.appearance.fontWeight === 500 && old.background.opacity === 25 &&
+        !('surfaceProfile' in old.liquidGlass) && !('bezelWidth' in old.liquidGlass);
     })()`));
 
     await page.evaluate(`(() => {
@@ -666,9 +719,9 @@ try {
       contrast.textContent = 'body::before{background:repeating-linear-gradient(90deg,#ff1744 0 18px,#1e40ff 18px 36px,#ffe600 36px 54px,#00bd72 54px 72px)!important;animation:none!important}body::after{display:none!important}';
       document.head.appendChild(contrast);
       window.__itDebug.preferences.apply(window.__itDebug.preferences.normalize({
-        liquidGlass: { surfaceProfile: 'convex-squircle', bezelWidth: 12, glassThickness: 14,
-          refractiveIndex: 1.5, refractionLevel: 0, specularOpacity: 0,
-          specularSaturation: 1, blurLevel: 0, progressiveBlurStrength: 0, backgroundOpacity: 0 }
+        version: 3,
+        liquidGlass: { card: { refractionLevel: 0, specularOpacity: 0,
+          specularSaturation: 1, blurLevel: 0, progressiveBlurStrength: 0, backgroundOpacity: 0 } }
       }));
     })()`);
     await page.until(`document.querySelector('#pane-text .card')?.dataset.itLiquidState === 'ready'`);
@@ -676,9 +729,9 @@ try {
     const unbentScreenshot = await page.send('Page.captureScreenshot', { format: 'png' });
     await writeFile('output/preview-liquid-glass-no-refraction.png', Buffer.from(unbentScreenshot.data, 'base64'));
     await page.evaluate(`window.__itDebug.preferences.apply(window.__itDebug.preferences.normalize({
-      liquidGlass: { surfaceProfile: 'convex-squircle', bezelWidth: 12, glassThickness: 14,
-        refractiveIndex: 1.5, refractionLevel: 100, specularOpacity: 0,
-        specularSaturation: 1, blurLevel: 0, progressiveBlurStrength: 0, backgroundOpacity: 0 }
+      version: 3,
+      liquidGlass: { card: { refractionLevel: 100, specularOpacity: 0,
+        specularSaturation: 1, blurLevel: 0, progressiveBlurStrength: 0, backgroundOpacity: 0 } }
     }))`);
     await pause(100);
     const refractedScreenshot = await page.send('Page.captureScreenshot', { format: 'png' });
@@ -1122,15 +1175,17 @@ try {
       const defaults = window.__itDebug.preferences?.normalize({});
       return defaults?.appearance?.mode === 'light' &&
         defaults?.appearance?.palette === 'sakura' &&
-        defaults?.version === 2 &&
+        defaults?.version === 3 &&
         defaults?.appearance?.fontWeight === 400 &&
         defaults?.appearance?.fontColorMode === 'theme' &&
-        defaults?.liquidGlass?.surfaceProfile === 'convex-squircle' &&
-        defaults?.liquidGlass?.bezelWidth === 12 && defaults?.liquidGlass?.glassThickness === 14 &&
-        defaults?.liquidGlass?.refractiveIndex === 1.5 && defaults?.liquidGlass?.refractionLevel === 100 &&
-        defaults?.liquidGlass?.specularOpacity === 45 && defaults?.liquidGlass?.specularSaturation === 6 &&
-        defaults?.liquidGlass?.blurLevel === 60 && defaults?.liquidGlass?.progressiveBlurStrength === 50 &&
-        defaults?.liquidGlass?.backgroundOpacity === 60 &&
+        defaults?.liquidGlass?.card?.refractionLevel === 100 &&
+        defaults?.liquidGlass?.card?.specularOpacity === 40 && defaults?.liquidGlass?.card?.specularSaturation === 6 &&
+        defaults?.liquidGlass?.card?.blurLevel === 1 && defaults?.liquidGlass?.card?.progressiveBlurStrength === 1 &&
+        defaults?.liquidGlass?.card?.backgroundOpacity === 60 &&
+        defaults?.liquidGlass?.pill?.specularOpacity === 50 && defaults?.liquidGlass?.pill?.specularSaturation === 6 &&
+        defaults?.liquidGlass?.pill?.refractionLevel === 100 && defaults?.liquidGlass?.pill?.blurLevel === 0.2 &&
+        defaults?.liquidGlass?.button?.specularOpacity === 50 && defaults?.liquidGlass?.button?.specularSaturation === 9 &&
+        defaults?.liquidGlass?.button?.refractionLevel === 100 &&
         defaults?.popup?.cardReveal === undefined && defaults?.popup?.backgroundData === '' &&
         defaults?.translation?.defaultTab === 'text';
     })()`));
@@ -1188,16 +1243,21 @@ try {
     })()`));
     check('液态玻璃全部设置值归一化并限制边界', await page.evaluate(`(() => {
       const api = window.__itDebug.preferences;
-      const normalized = api.normalize({ liquidGlass: {
-        surfaceProfile: 'bad-profile', bezelWidth: 99, glassThickness: -2,
-        refractiveIndex: 9, refractionLevel: 999, specularOpacity: -5,
-        specularSaturation: 20, blurLevel: 101, progressiveBlurStrength: -1, backgroundOpacity: 200
+      const normalized = api.normalize({ version: 3, liquidGlass: {
+        card: { surfaceProfile: 'bad-profile', bezelWidth: 99, glassThickness: -2,
+          refractiveIndex: 9, refractionLevel: 999, specularOpacity: -5,
+          specularSaturation: 99, blurLevel: 101, progressiveBlurStrength: -1, backgroundOpacity: 200 },
+        pill: { backgroundOpacity: 10, progressiveBlurStrength: 5 },
+        button: { blurLevel: 30 }
       } });
-      const glass = normalized.liquidGlass;
-      return glass.surfaceProfile === 'convex-squircle' && glass.bezelWidth === 32 &&
-        glass.glassThickness === 1 && glass.refractiveIndex === 2.5 && glass.refractionLevel === 200 &&
-        glass.specularOpacity === 0 && glass.specularSaturation === 10 && glass.blurLevel === 100 &&
-        glass.progressiveBlurStrength === 0 && glass.backgroundOpacity === 100;
+      const glass = normalized.liquidGlass.card;
+      return Object.keys(glass).length === 6 && !('surfaceProfile' in glass) &&
+        glass.refractionLevel === 100 && glass.specularOpacity === 0 &&
+        glass.specularSaturation === 50 && glass.blurLevel === 40 &&
+        glass.progressiveBlurStrength === 0 && glass.backgroundOpacity === 100 &&
+        !('backgroundOpacity' in normalized.liquidGlass.pill) &&
+        !('progressiveBlurStrength' in normalized.liquidGlass.pill) &&
+        !('blurLevel' in normalized.liquidGlass.button);
     })()`));
     check('旧配置归一化会丢弃全部旧玻璃键且背景字体仍保留', await page.evaluate(`(() => {
       const api = window.__itDebug.preferences;
@@ -1205,7 +1265,7 @@ try {
         material: 'solid', glassStrength: 0, cardReveal: 100 },
         popup: { cardReveal: 100, backgroundData: 'bad-image' }, background: { opacity: 30 } });
       return normalized.appearance.font === 'serif' && normalized.appearance.fontWeight === 700 &&
-        normalized.liquidGlass.refractionLevel === 100 &&
+        normalized.liquidGlass.card.refractionLevel === 100 &&
         ['material', 'glassStrength', 'cardReveal'].every((key) => normalized.appearance[key] === undefined) &&
         normalized.popup.cardReveal === undefined && normalized.popup.backgroundData === '' &&
         normalized.background.opacity === 30;
@@ -1221,7 +1281,12 @@ try {
         !!document.querySelector('[data-pref="appearance.fontColorMode"]') &&
         !!document.querySelector('[data-pref-tab="glass"]') &&
         !!document.querySelector('[data-pref-section="glass"]') &&
-        document.querySelectorAll('[data-pref^="liquidGlass."]').length === 10 &&
+        document.querySelectorAll('[data-pref^="liquidGlass."]').length === 6 &&
+        !!document.querySelector('#it-glass-target') &&
+        !document.querySelector('[data-pref="liquidGlass.surfaceProfile"]') &&
+        !document.querySelector('[data-pref="liquidGlass.bezelWidth"]') &&
+        !document.querySelector('[data-pref="liquidGlass.glassThickness"]') &&
+        !document.querySelector('[data-pref="liquidGlass.refractiveIndex"]') &&
         !document.querySelector('[data-pref="appearance.material"]') &&
         !document.querySelector('[data-pref="appearance.glassStrength"]') &&
         !document.querySelector('[data-pref="appearance.cardReveal"]') &&
@@ -1264,8 +1329,8 @@ try {
       setPreference('appearance.fontWeight', 600);
       setPreference('appearance.fontColorMode', 'custom');
       setPreference('appearance.fontColor', '#ff0000');
-      setPreference('liquidGlass.refractionLevel', 145);
-      setPreference('liquidGlass.backgroundOpacity', 40);
+      setPreference('liquidGlass.card.refractionLevel', 85);
+      setPreference('liquidGlass.card.backgroundOpacity', 40);
       setPreference('translation.rememberLanguages', false);
       setPreference('translation.rememberModels', false);
     })()`);
@@ -1277,7 +1342,7 @@ try {
         saved?.appearance?.mode === 'dark' && saved?.appearance?.palette === 'sage' &&
         saved?.translation?.defaultTab === 'doc' &&
         saved?.appearance?.fontWeight === 600 && saved?.appearance?.fontColor === '#FF0000' &&
-        saved?.liquidGlass?.refractionLevel === 145 && saved?.liquidGlass?.backgroundOpacity === 40 &&
+        saved?.liquidGlass?.card?.refractionLevel === 85 && saved?.liquidGlass?.card?.backgroundOpacity === 40 &&
         saved?.translation?.defaultModels?.text === 'index-mt-9b';
     })()`));
     await page.evaluate(`localStorage.setItem('it-state', JSON.stringify({
@@ -1367,7 +1432,7 @@ try {
       const select = document.querySelector('[data-pref="appearance.systemFontFamily"]');
       return !!select && [...select.options].some((option) => option.value === 'Arial') &&
         [...select.options].some((option) => option.value === 'Microsoft YaHei UI') &&
-        !!document.querySelector('[data-pref="liquidGlass.refractionLevel"]') &&
+        !!document.querySelector('[data-pref="liquidGlass.card.refractionLevel"]') &&
         !!document.getElementById('it-popup-pick-background') &&
         !!document.getElementById('it-popup-follow-background');
     })()`));
@@ -1408,42 +1473,59 @@ try {
         .filter((section) => !section.hidden && !section.inert);
       return visible.length === 1 && visible[0].dataset.prefSection === 'glass';
     })()`);
-    const profilePopup = await desktop.evaluate(`(() => {
-      const select = document.querySelector('[data-pref="liquidGlass.surfaceProfile"]');
+    const presetPopup = await desktop.evaluate(`(() => {
+      const select = document.getElementById('it-glass-target');
       const button = select?.parentElement?.querySelector('.sel-btn');
       const expectedRadius = getComputedStyle(document.documentElement).getPropertyValue('--lg-r-sm').trim();
-      return !!button && button.getAttribute('aria-label') === '表面轮廓' &&
+      return !!button && !!button.getAttribute('aria-label') &&
+        [...select.options].map((option) => option.value).join(',') === 'card,pill,button' &&
         getComputedStyle(button).borderRadius === expectedRadius &&
         getComputedStyle(button).backdropFilter.includes('url(');
     })()`);
-    check('液态玻璃轮廓下拉与滤镜控件风格统一', profilePopup);
-    await desktop.evaluate(`document.querySelector('[data-pref="liquidGlass.surfaceProfile"]')?.parentElement?.querySelector('.sel-btn')?.click()`);
+    check('玻璃调整对象下拉与滤镜控件风格统一', presetPopup);
+    await desktop.evaluate(`document.getElementById('it-glass-target')?.parentElement?.querySelector('.sel-btn')?.click()`);
     await desktop.until(`!!document.querySelector('.sel-pop[aria-hidden="false"]')`);
     const themeOptionsStyled = await desktop.evaluate(`(() => {
       const popup = document.querySelector('.sel-pop[aria-hidden="false"]');
       return !!popup && !!popup.querySelector('.sel-list .sel-item') &&
         getComputedStyle(popup).backdropFilter !== 'none';
     })()`);
-    check('玻璃轮廓选项使用统一滤镜弹层', themeOptionsStyled);
+    check('玻璃调整对象选项使用统一滤镜弹层', themeOptionsStyled);
     await desktop.key('Escape');
     await desktop.until(`!document.querySelector('.sel-pop[aria-hidden="false"]')`);
     check('设置下拉关闭后焦点返回触发控件', await desktop.evaluate(`(() =>
-      document.activeElement === document.querySelector('[data-pref="liquidGlass.surfaceProfile"]')?.parentElement?.querySelector('.sel-btn'))()`));
+      document.activeElement === document.getElementById('it-glass-target')?.parentElement?.querySelector('.sel-btn'))()`));
     await desktop.evaluate(`(() => {
-      const select = document.querySelector('[data-pref="liquidGlass.surfaceProfile"]');
-      select.value = 'convex-circle';
+      const select = document.getElementById('it-glass-target');
+      select.value = 'card';
       select.dispatchEvent(new Event('change', { bubbles: true }));
       select.parentElement.querySelector('.sel-btn').click();
     })()`);
     await desktop.key('ArrowDown');
     await desktop.key(' ');
-    check('玻璃轮廓下拉可用键盘选择', await desktop.evaluate(`(() => {
-      const select = document.querySelector('[data-pref="liquidGlass.surfaceProfile"]');
-      return select.value === 'convex-squircle' && !document.querySelector('.sel-pop[aria-hidden="false"]');
+    check('玻璃调整对象下拉可用键盘选择', await desktop.evaluate(`(() => {
+      const select = document.getElementById('it-glass-target');
+      return select.value === 'pill' && !document.querySelector('.sel-pop[aria-hidden="false"]');
     })()`));
+    const groupControls = await desktop.evaluate(`(() => {
+      const select = document.getElementById('it-glass-target');
+      const counts = {};
+      for (const group of ['card', 'pill', 'button']) {
+        select.value = group;
+        select.dispatchEvent(new Event('change', { bubbles: true }));
+        const controls = [...document.querySelectorAll('[data-pref^="liquidGlass."]')]
+          .filter((control) => !control.closest('[hidden]'));
+        counts[group] = controls.length;
+        if (controls.some((control) => !control.dataset.pref.startsWith('liquidGlass.' + group + '.'))) return null;
+      }
+      return counts;
+    })()`);
+    check('按元素仅显示参考公开的六、四、三个玻璃滑条',
+      groupControls?.card === 6 && groupControls?.pill === 4 && groupControls?.button === 3,
+      JSON.stringify(groupControls));
     await desktop.evaluate(`(() => {
-      const select = document.querySelector('[data-pref="liquidGlass.surfaceProfile"]');
-      select.value = 'convex-squircle';
+      const select = document.getElementById('it-glass-target');
+      select.value = 'card';
       select.dispatchEvent(new Event('change', { bubbles: true }));
     })()`);
     await selectSettingsSection(desktop, 'appearance');
@@ -1533,9 +1615,9 @@ try {
         control.value = value;
         control.dispatchEvent(new Event('change', { bubbles: true }));
       };
-      setValue('liquidGlass.refractionLevel', 130);
-      setValue('liquidGlass.specularOpacity', 65);
-      setValue('liquidGlass.blurLevel', 35);
+      setValue('liquidGlass.card.refractionLevel', 80);
+      setValue('liquidGlass.card.specularOpacity', 65);
+      setValue('liquidGlass.card.blurLevel', 3.5);
     })()`);
     check('液态玻璃控件实时驱动折射、高光和模糊', await desktop.evaluate(`(() => {
       const card = document.querySelector('.card');
@@ -1573,12 +1655,12 @@ try {
     }))()`);
     check('悬浮窗可恢复跟随主窗口背景', popupFollowState.status === '悬浮窗跟随主窗口背景。' &&
       popupFollowState.image === 'none', JSON.stringify(popupFollowState));
-    const glassBeforeDesktopReset = await desktop.evaluate(`document.querySelector('[data-pref="liquidGlass.refractionLevel"]').value`);
+    const glassBeforeDesktopReset = await desktop.evaluate(`document.querySelector('[data-pref="liquidGlass.card.refractionLevel"]').value`);
     await desktop.click('[data-reset-section]');
     check('恢复电脑功能默认值不会重置通用外观', await desktop.evaluate(`
       document.documentElement.dataset.itTheme === 'dark' &&
       document.documentElement.dataset.itPalette === 'sage' &&
-      String(document.querySelector('[data-pref="liquidGlass.refractionLevel"]').value) === String(${glassBeforeDesktopReset}) &&
+      String(document.querySelector('[data-pref="liquidGlass.card.refractionLevel"]').value) === String(${glassBeforeDesktopReset}) &&
       !document.querySelector('[data-pref="popup.cardReveal"]')`));
     await desktop.key('Escape');
     await desktop.until(`document.querySelector('.it-set-mask').getAttribute('aria-hidden') === 'true'`);
@@ -1626,25 +1708,45 @@ try {
     })()`);
     await selectSettingsSection(desktop, 'glass');
     await desktop.evaluate(`(() => {
+      const selectTarget = (group) => {
+        const select = document.getElementById('it-glass-target');
+        select.value = group;
+        select.dispatchEvent(new Event('change', { bubbles: true }));
+      };
       const setPreference = (path, value) => {
         const control = document.querySelector('[data-pref="' + path + '"]');
         control.value = value;
         control.dispatchEvent(new Event('change', { bubbles: true }));
       };
-      setPreference('liquidGlass.surfaceProfile', 'lip');
-      setPreference('liquidGlass.bezelWidth', 22);
-      setPreference('liquidGlass.refractionLevel', 155);
-      setPreference('liquidGlass.backgroundOpacity', 33);
+      selectTarget('pill');
+      setPreference('liquidGlass.pill.specularOpacity', 33);
+      setPreference('liquidGlass.pill.refractionLevel', 55);
+      selectTarget('button');
+      setPreference('liquidGlass.button.specularOpacity', 65);
+      selectTarget('card');
+      setPreference('liquidGlass.card.specularOpacity', 80);
+      setPreference('liquidGlass.card.refractionLevel', 55);
+      setPreference('liquidGlass.card.backgroundOpacity', 33);
     })()`);
     await desktop.click('[data-reset-section]');
-    check('液态玻璃分组重置参数且不改外观阅读草稿', await desktop.evaluate(`(() => {
+    check('恢复当前玻璃预设不会重置其他元素或外观阅读草稿', await desktop.evaluate(`(() => {
       const value = (path) => document.querySelector('[data-pref="' + path + '"]').value;
-      const defaults = window.__itDebug.preferences.defaults.liquidGlass;
-      return value('appearance.mode') === 'dark' && value('appearance.palette') === 'amber' &&
-        value('liquidGlass.surfaceProfile') === defaults.surfaceProfile &&
-        Number(value('liquidGlass.bezelWidth')) === defaults.bezelWidth &&
-        Number(value('liquidGlass.refractionLevel')) === defaults.refractionLevel &&
-        Number(value('liquidGlass.backgroundOpacity')) === defaults.backgroundOpacity &&
+      const defaults = window.__itDebug.preferences.defaults.liquidGlass.card;
+      const cardReset = Number(value('liquidGlass.card.specularOpacity')) === defaults.specularOpacity &&
+        Number(value('liquidGlass.card.refractionLevel')) === defaults.refractionLevel &&
+        Number(value('liquidGlass.card.backgroundOpacity')) === defaults.backgroundOpacity;
+      const select = document.getElementById('it-glass-target');
+      select.value = 'pill';
+      select.dispatchEvent(new Event('change', { bubbles: true }));
+      const pillPreserved = Number(value('liquidGlass.pill.specularOpacity')) === 33 &&
+        Number(value('liquidGlass.pill.refractionLevel')) === 55;
+      select.value = 'button';
+      select.dispatchEvent(new Event('change', { bubbles: true }));
+      const buttonPreserved = Number(value('liquidGlass.button.specularOpacity')) === 65;
+      select.value = 'card';
+      select.dispatchEvent(new Event('change', { bubbles: true }));
+      return cardReset && pillPreserved && buttonPreserved &&
+        value('appearance.mode') === 'dark' && value('appearance.palette') === 'amber' &&
         value('appearance.radius') === 'small' && value('appearance.fontScale') === '130' &&
         value('appearance.fontWeight') === '600' && value('appearance.fontColorMode') === 'custom' &&
         value('appearance.systemFontFamily') === 'Arial' &&
@@ -1680,12 +1782,107 @@ try {
         JSON.stringify(saved.preferences) === JSON.stringify(local) &&
         local.appearance.mode === 'dark' && local.appearance.fontScale === 130 &&
         local.appearance.fontWeight === 600 && local.appearance.fontColor === '#FF0000' &&
-        local.liquidGlass.surfaceProfile === 'convex-squircle' &&
-        local.liquidGlass.refractionLevel === 100 && local.liquidGlass.backgroundOpacity === 60 &&
+        local.version === 3 && local.liquidGlass.card.specularOpacity === 40 &&
+        local.liquidGlass.card.refractionLevel === 100 && local.liquidGlass.card.backgroundOpacity === 60 &&
+        local.liquidGlass.pill.specularOpacity === 33 && local.liquidGlass.pill.refractionLevel === 55 &&
+        local.liquidGlass.button.specularOpacity === 65 &&
         local.appearance.material === undefined && local.appearance.glassStrength === undefined &&
         local.appearance.cardReveal === undefined && local.popup.cardReveal === undefined &&
         local.appearance.layout === 'compact' && local.appearance.motion === 'reduced' &&
         local.appearance.ambientLight === false && document.documentElement.dataset.itTheme === 'dark';
+    })()`));
+  });
+
+  await scenario('精简按钮文字与更新设置', async () => {
+    check('翻译和下载按钮使用简短文字', await desktop.evaluate(`(() => {
+      return ['btn-go', 'btn-go-syllable', 'btn-go-doc'].every((id) =>
+        document.getElementById(id).textContent === '翻译') &&
+        document.getElementById('btn-dl').textContent === '下载';
+    })()`));
+    await desktop.evaluate(`window.__itOpenSettings({section:'updates'})`);
+    await desktop.until(`!document.getElementById('it-set-save').disabled &&
+      !document.querySelector('[data-pref-section="updates"]').hidden`);
+    check('更新设置提供自动检查开关与当前版本', await desktop.evaluate(`(() => {
+      const page=document.querySelector('[data-pref-section="updates"]');
+      return page.textContent.includes('2.2.0') &&
+        page.textContent.includes('24 小时') &&
+        !!page.querySelector('[data-pref="updates.autoCheck"]');
+    })()`));
+    await desktop.evaluate(`window.__motionTest.updateResponse={status:200,body:{
+      tag_name:'v2.3.0',html_url:'https://github.com/jiuxina/jian-translator/releases/tag/v2.3.0'
+    }}`);
+    await desktop.click('#it-update-check');
+    await desktop.until(`document.getElementById('it-update-status').textContent.includes('2.3.0')`);
+    check('检查发现新版本并提供固定仓库发布链接', await desktop.evaluate(`(() => {
+      const link=document.getElementById('it-update-release');
+      return link.href==='https://github.com/jiuxina/jian-translator/releases/tag/v2.3.0' &&
+        link.textContent==='获取 2.3.0' && link.rel.includes('noopener');
+    })()`));
+    await desktop.evaluate(`window.__motionTest.updateResponse={status:429}`);
+    await desktop.click('#it-update-check');
+    await desktop.until(`document.getElementById('it-update-status').textContent.includes('检查失败')`);
+    check('更新限流会显示失败并允许重试', await desktop.evaluate(`
+      document.getElementById('it-update-status').textContent.includes('次数受限') &&
+      !document.getElementById('it-update-check').disabled`));
+    await desktop.evaluate(`(() => {
+      const control=document.querySelector('[data-pref="updates.autoCheck"]');
+      control.checked=false;control.dispatchEvent(new Event('change',{bubbles:true}));
+    })()`);
+    await desktop.click('#it-set-save');
+    await desktop.until(`document.querySelector('.it-set-mask').getAttribute('aria-hidden')==='true'`);
+    check('自动检查开关随完整设置事务保存', await desktop.evaluate(`
+      window.__motionTest.savedSettings.preferences.updates.autoCheck===false &&
+      JSON.parse(localStorage.getItem('it-preferences')).updates.autoCheck===false`));
+  });
+
+  await scenario('macOS 桌面桥接与标题栏约定', async () => {
+    ({ targetId: macTargetId } = await controller.send('Target.createTarget', { url: 'about:blank' }));
+    const macTargets = await (await fetch(`${DEBUG_ORIGIN}/json`)).json();
+    const target = macTargets.find((item) => item.id === macTargetId);
+    if (!target) throw new Error('Missing isolated macOS bridge test target');
+    const mac = await Cdp.connect(target.webSocketDebuggerUrl);
+    await prepare(mac, 'mac');
+    await mac.until(`!document.documentElement.classList.contains('it-settings-boot')`);
+    check('macOS 使用桌面桥并为原生交通灯预留标题栏空间', await mac.evaluate(`(() => {
+      const bar = document.getElementById('appbar');
+      const actions = document.getElementById('win-actions');
+      return document.documentElement.classList.contains('it-desktop') &&
+        document.documentElement.classList.contains('it-macos') &&
+        bar.getBoundingClientRect().height === 40 &&
+        parseFloat(getComputedStyle(bar).paddingLeft) >= 80 &&
+        actions.hidden && actions.getClientRects().length === 0 &&
+        !document.querySelector('.rz') && !window.__TAURI_INTERNALS__ &&
+        window.__motionTest.invoked.some((entry) => entry.command === 'it_get_settings');
+    })()`));
+    await mac.evaluate(`window.__motionTest.nativeAction({ type: 'open-settings' })`);
+    await mac.until(`document.querySelector('.it-set-mask')?.getAttribute('aria-hidden') === 'false' &&
+      !document.getElementById('it-set-save').disabled`);
+    check('macOS 原生设置入口加载桌面设置与系统字体列表', await mac.evaluate(`(() => {
+      const fonts = document.querySelector('[data-pref="appearance.systemFontFamily"]');
+      return document.querySelector('.it-set').contains(document.activeElement) &&
+        document.getElementById('it-set-selection').value === 'Cmd+Alt+T' &&
+        document.getElementById('it-set-activation').value === 'Cmd+Alt+I' &&
+        !fonts.closest('#it-pref-font-family-row').hidden &&
+        [...fonts.options].some((option) => option.value === 'Arial') &&
+        window.__motionTest.invoked.some((entry) => entry.command === 'it_list_system_fonts');
+    })()`));
+    await selectSettingsSection(mac, 'desktop');
+    await mac.click('#it-set-selection');
+    await mac.send('Input.dispatchKeyEvent', {
+      type: 'keyDown', key: 'k', code: 'KeyK', windowsVirtualKeyCode: 75, modifiers: 5,
+    });
+    await mac.send('Input.dispatchKeyEvent', {
+      type: 'keyUp', key: 'k', code: 'KeyK', windowsVirtualKeyCode: 75,
+    });
+    check('macOS 快捷键录制识别 Command 与 Option', await mac.evaluate(`
+      document.getElementById('it-set-selection').value === 'Cmd+Alt+K'`));
+    await mac.click('#it-set-save');
+    await mac.until(`document.querySelector('.it-set-mask')?.getAttribute('aria-hidden') === 'true'`);
+    check('macOS 使用相同设置事务保存 Command 快捷键与分组玻璃参数', await mac.evaluate(`(() => {
+      const saved = window.__motionTest.savedSettings;
+      return saved?.selection_shortcut === 'Cmd+Alt+K' &&
+        saved.preferences.version === 3 &&
+        Object.keys(saved.preferences.liquidGlass).join(',') === 'card,pill,button';
     })()`));
   });
 
@@ -1724,9 +1921,8 @@ try {
     })()`);
     await popup.evaluate(`window.__popupApplyPreferences({
       appearance: { mode: 'light', motion: 'off' },
-      liquidGlass: { surfaceProfile: 'convex-squircle', bezelWidth: 12, glassThickness: 14,
-        refractiveIndex: 1.5, refractionLevel: 100, specularOpacity: 45,
-        specularSaturation: 6, blurLevel: 60, progressiveBlurStrength: 50, backgroundOpacity: 60 },
+      liquidGlass: { card: { refractionLevel: 100, specularOpacity: 40,
+        specularSaturation: 6, blurLevel: 1, progressiveBlurStrength: 1, backgroundOpacity: 60 } },
       background: { data: ${JSON.stringify(image)}, opacity: 0, blur: 0, fit: 'contain' },
       popup: { backgroundData: '' }
     });
@@ -1760,9 +1956,8 @@ try {
     await writeFile('output/preview-popup-clipped-contain.png', Buffer.from(light.data, 'base64'));
     await popup.evaluate(`window.__popupApplyPreferences({
       appearance: { mode: 'dark', motion: 'off' },
-      liquidGlass: { surfaceProfile: 'lip', bezelWidth: 14, glassThickness: 18,
-        refractiveIndex: 1.6, refractionLevel: 110, specularOpacity: 50,
-        specularSaturation: 7, blurLevel: 70, progressiveBlurStrength: 60, backgroundOpacity: 55 },
+      liquidGlass: { card: { refractionLevel: 90, specularOpacity: 50,
+        specularSaturation: 7, blurLevel: 1.4, progressiveBlurStrength: 2.4, backgroundOpacity: 55 } },
       background: { data: '', opacity: 34, blur: 20, fit: 'cover' },
       popup: { backgroundData: ${JSON.stringify(image)} }
     });`);
@@ -1785,7 +1980,7 @@ try {
 } catch (error) {
   check('验收环境可用', false, error.stack || error.message);
 } finally {
-  for (const targetId of [popupTargetId, desktopTargetId, mainTargetId].filter(Boolean)) {
+  for (const targetId of [popupTargetId, macTargetId, desktopTargetId, mainTargetId].filter(Boolean)) {
     if (controller?.socket.readyState === WebSocket.OPEN) {
       try { await controller.send('Target.closeTarget', { targetId }); }
       catch (error) { check('独立测试页清理', false, error.message); }

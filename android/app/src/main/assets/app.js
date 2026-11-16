@@ -11,8 +11,8 @@
      · 普通翻译   —— 官网此路径走私有 /translate_stream，服务端模板不可见，
                      这里用等价的单行指令（实测 token 量与输出一致）
 
-   三端共用：Windows 由 pake --use-local-file 打包本目录，Android 放进
-   assets/ 用 WebView 加载。平台差异只通过 Bridge 抽象层暴露。
+   多端共用：Windows 由 Pake 打包本目录，macOS 使用 Chromium 桌面壳，
+   Android 放进 assets/ 用 WebView 加载。平台差异只通过 Bridge 暴露。
    ========================================================================== */
 (function () {
   'use strict';
@@ -21,10 +21,12 @@
   var API_BASE = 'https://index-translate.bilibili.com/v1';
   var CHAT_URL = API_BASE + '/chat/completions';
   var MAX_SRC = 8000;
+  var APP_VERSION = '2.2.0';
   var LANGS = window.IT_LANGS || {};
   var COMMON = window.IT_COMMON_LANGS || [];
 
   var PLATFORM = (function () {
+    if (window.__JIAN_DESKTOP__) return 'desktop';
     if (window.__TAURI_INTERNALS__ || (window.__TAURI__ && window.__TAURI__.core)) return 'desktop';
     if (window.NativeBridge) return 'android';
     return 'web';
@@ -208,9 +210,13 @@
   /* ---------------- 2. 平台桥 ---------------- */
   var Bridge = {
     isDesktop: PLATFORM === 'desktop',
+    isMac: !!(window.__JIAN_DESKTOP__ && window.__JIAN_DESKTOP__.platform === 'darwin'),
     isAndroid: PLATFORM === 'android',
 
     invoke: function (cmd, args) {
+      if (window.__JIAN_DESKTOP__ && typeof window.__JIAN_DESKTOP__.invoke === 'function') {
+        return window.__JIAN_DESKTOP__.invoke(cmd, args || {});
+      }
       var internals = window.__TAURI_INTERNALS__;
       if (internals && typeof internals.invoke === 'function') {
         return internals.invoke(cmd, args || {}, {});
@@ -218,7 +224,7 @@
       if (window.__TAURI__ && window.__TAURI__.core && window.__TAURI__.core.invoke) {
         return window.__TAURI__.core.invoke(cmd, args || {});
       }
-      return Promise.reject(new Error('Tauri IPC 不可用'));
+      return Promise.reject(new Error('桌面通信不可用'));
     },
 
     /* 选图：桌面用原生 file input，安卓走原生相册/相机 */
@@ -723,7 +729,7 @@
     doc: ['index-nailong-2b', 'index-nailong-9b']
   };
   var DEFAULT_PREFERENCES = {
-    version: 2,
+    version: 3,
     appearance: {
       mode: 'light', palette: 'sakura', radius: 'round', font: 'sans', systemFontFamily: '',
       fontScale: 100, fontWeight: 400, fontColorMode: 'theme', fontColor: '#2E2A38', layout: 'standard',
@@ -732,6 +738,7 @@
     liquidGlass: window.ItLiquidGlass.defaults,
     background: { data: '', opacity: 34, blur: 0, fit: 'cover' },
     popup: { backgroundData: '' },
+    updates: { autoCheck: true },
     translation: {
       defaultTab: 'text', sourceLanguage: 'auto', targetLanguage: 'zh',
       defaultModels: {
@@ -760,6 +767,7 @@
     var background = source.background || {};
     var popup = source.popup || {};
     var translation = source.translation || {};
+    var updates = source.updates || {};
     var savedModels = translation.defaultModels || {};
     var result = copyObject(DEFAULT_PREFERENCES);
 
@@ -794,6 +802,7 @@
     result.background.blur = boundedNumber(background.blur, 0, 20, 0);
     result.background.fit = enumValue(background.fit, ['cover', 'contain'], 'cover');
     result.popup.backgroundData = normalizeImageData(popup.backgroundData);
+    result.updates.autoCheck = updates.autoCheck !== false;
 
     result.translation.defaultTab = enumValue(translation.defaultTab,
       ['text', 'syllable', 'doc', 'last'], 'text');
@@ -832,7 +841,7 @@
       Object.prototype.hasOwnProperty.call(oldAppearance, 'glassStrength') ||
       Object.prototype.hasOwnProperty.call(oldAppearance, 'cardReveal')) ||
       parsed && parsed.popup && Object.prototype.hasOwnProperty.call(parsed.popup, 'cardReveal'));
-    if (legacyGlass) {
+    if (legacyGlass || (parsed && parsed.version !== DEFAULT_PREFERENCES.version)) {
       try { localStorage.setItem(PREFERENCES_KEY, JSON.stringify(normalized)); }
       catch (e) {}
     }
@@ -888,7 +897,7 @@
     var background = dark ?
       [opaqueRgb(45, 41, 52), opaqueRgb(33, 31, 40), opaqueRgb(26, 25, 32)] :
       [opaqueRgb(252, 248, 251), opaqueRgb(243, 239, 246), opaqueRgb(235, 229, 244)];
-    var surface = colorArgb(dark ? '#302C38' : '#FFFFFF', preferences.liquidGlass.backgroundOpacity / 100);
+    var surface = colorArgb(dark ? '#302C38' : '#FFFFFF', preferences.liquidGlass.card.backgroundOpacity / 100);
     return {
       dark: dark,
       background: background,
@@ -967,8 +976,9 @@
       '0 24px 60px rgba(70,52,96,.20),0 5px 14px rgba(70,52,96,.08)');
     root.style.setProperty('--lg-shadow-soft', dark ?
       '0 5px 16px rgba(0,0,0,.24)' : '0 5px 16px rgba(70,52,96,.09)');
-    var liquidOpacity = liquidGlass.backgroundOpacity / 100;
+    var liquidOpacity = liquidGlass.card.backgroundOpacity / 100;
     var liquidTint = dark ? '#302C38' : '#FFFFFF';
+    root.style.setProperty('--it-liquid-tint-rgb', dark ? '48 44 56' : '255 255 255');
     root.style.setProperty('--it-liquid-fill', colorRgba(liquidTint, liquidOpacity));
     root.style.setProperty('--it-liquid-fill-low', colorRgba(liquidTint, liquidOpacity * .35));
     root.style.setProperty('--it-liquid-fill-mid', colorRgba(liquidTint, liquidOpacity * .65));
@@ -1773,11 +1783,12 @@
     on($('img-del'), 'click', function () { setImage(null); });
 
     on($('btn-paste'), 'click', function () {
-      if (!navigator.clipboard || !navigator.clipboard.readText) {
+      if (!Bridge.isMac && (!navigator.clipboard || !navigator.clipboard.readText)) {
         toast('当前环境不支持读取剪贴板');
         return;
       }
-      navigator.clipboard.readText().then(function (text) {
+      var read = Bridge.isMac ? Bridge.invoke('it_read_clipboard_text') : navigator.clipboard.readText();
+      read.then(function (text) {
         if (!text) { toast('剪贴板是空的'); return; }
         var src = $('src');
         src.value = (src.value ? src.value + '\n' : '') + text;
@@ -2204,6 +2215,11 @@
       moveSurface(aboutDialog, aboutOrigin, true);
       aboutDialog.querySelector('[data-close-about]').focus({ preventScroll: true });
     }
+    window.__itOpenAbout = function () {
+      if (closeSettingsLayer) closeSettingsLayer();
+      if (document.querySelector('.it-set-mask.on')) return;
+      openAbout();
+    };
 
     on(aboutMask, 'click', function (e) {
       if (e.target === aboutMask || (e.target.closest && e.target.closest('[data-close-about]'))) closeAbout();
@@ -2310,16 +2326,23 @@
   }
 
   /* ---------------- 13. Liquid Glass surfaces ---------------- */
-  var LIQUID_GLASS_SURFACES = '.bar, .card, .it-set, .it-pref-preview-card, .it-popup-preview-card, ' +
-    '.tabs, .models, .mobile-settings, .sel-btn, .sel-pop, ' +
-    '.btn-secondary, .btn-ghost, .menu, .it-about, .instruct, ' +
-    '.img-preview .del, .toast';
+  var LIQUID_GLASS_SURFACES = '.card, .it-set, .it-pref-preview-card, .it-popup-preview-card, ' +
+    '.tabs-thumb, .models-thumb, .it-set-nav-thumb, .mobile-settings, .sel-btn, .sel-pop, ' +
+    '.pill, .btn-primary, .btn-secondary, .btn-ghost, .menu, .it-about, .instruct, ' +
+    '.img-preview .del, .toast, .it-set-foot button, .it-set-actions button';
 
   function setupLiquidGlassSurfaces(scope) {
     if (!scope) return;
-    if (scope.matches && scope.matches(LIQUID_GLASS_SURFACES)) window.ItLiquidGlass.attach(scope);
+    function attachSurface(surface) {
+      var preset = surface.matches('.tabs-thumb, .models-thumb, .it-set-nav-thumb') ? 'pill' :
+        surface.matches('.mobile-settings, .sel-btn, .pill, .btn-primary, .btn-secondary, .btn-ghost, ' +
+          '.img-preview .del, .it-set-foot button, .it-set-actions button') ?
+          'button' : 'card';
+      window.ItLiquidGlass.attach(surface, preset);
+    }
+    if (scope.matches && scope.matches(LIQUID_GLASS_SURFACES)) attachSurface(scope);
     if (scope.querySelectorAll) scope.querySelectorAll(LIQUID_GLASS_SURFACES).forEach(function (surface) {
-      window.ItLiquidGlass.attach(surface);
+      attachSurface(surface);
     });
     window.ItLiquidGlass.refresh(scope);
   }
@@ -2329,8 +2352,14 @@
     function showLiquidGlassError(detail) {
       if (liquidGlassErrorShown) return;
       liquidGlassErrorShown = true;
-      toast(detail && detail.code === 'unsupported' ?
-        '当前内置浏览器不支持 SVG 液态玻璃滤镜。' : '液态玻璃滤镜初始化失败，请重启窗口。', true);
+      var message = detail && detail.code === 'unsupported' ?
+        '当前浏览器无法绘制液态玻璃，请使用 Chromium 内核或安装笺桌面版。' :
+        '液态玻璃滤镜初始化失败，请重启窗口。';
+      var notice = document.createElement('div');
+      notice.className = 'it-glass-error';
+      notice.setAttribute('role', 'alert');
+      notice.textContent = message;
+      document.body.appendChild(notice);
     }
     on(document, 'it-liquid-glass-error', function (event) { showLiquidGlassError(event.detail); });
     setupLiquidGlassSurfaces(document);
@@ -2359,6 +2388,28 @@
       childList: true, subtree: true, attributes: true,
       attributeFilter: ['hidden', 'class', 'data-it-liquid-state']
     });
+    var pressedPillScope = null;
+    var pressedPointer = null;
+    function releasePill(event) {
+      if (event && event.pointerId != null && pressedPointer != null &&
+          event.pointerId !== pressedPointer) return;
+      if (pressedPillScope) window.ItLiquidGlass.setInteraction(pressedPillScope, false);
+      pressedPillScope = null;
+      pressedPointer = null;
+    }
+    on(document, 'pointerdown', function (event) {
+      if (event.button !== 0) return;
+      releasePill();
+      var scope = event.target.closest && event.target.closest('.tabs, .models, .it-set-nav');
+      if (!scope) return;
+      pressedPillScope = scope;
+      pressedPointer = event.pointerId;
+      window.ItLiquidGlass.setInteraction(scope, true);
+    }, { passive: true });
+    on(document, 'pointerup', releasePill, { passive: true });
+    on(document, 'pointercancel', releasePill, { passive: true });
+    on(document, 'lostpointercapture', releasePill, { passive: true });
+    on(window, 'blur', function () { releasePill(); });
   }
   /* ---------------- 14. 桌面端标题栏 ---------------- */
   /* 顶栏本身就是标题栏：右侧窗口按钮 + 空白处拖动，菜单挂在「笺」上 */
@@ -2367,7 +2418,7 @@
 
     var actions = $('win-actions');
     if (actions) {
-      actions.hidden = false;
+      actions.hidden = Bridge.isMac;
       /* 用 mousedown 而不是 click：空白区的拖动处理会吞掉 click */
       actions.addEventListener('mousedown', function (e) {
         var button = e.target.closest && e.target.closest('button[data-act]');
@@ -2381,6 +2432,7 @@
 
     var bar = $('appbar');
     if (!bar) return;
+    if (Bridge.isMac) return;
     var lastDown = 0;
     bar.addEventListener('mousedown', function (e) {
       if (e.button !== 0) return;
@@ -2403,7 +2455,7 @@
 
   /* 无边框窗口没有系统边框，四边/四角用 5px 热区接管缩放 */
   function initResizeHandles() {
-    if (!Bridge.isDesktop) return;
+    if (!Bridge.isDesktop || Bridge.isMac) return;
     ['n', 's', 'e', 'w', 'ne', 'nw', 'se', 'sw'].forEach(function (dir) {
       var handle = document.createElement('div');
       handle.className = 'rz rz-' + dir;
@@ -2421,8 +2473,10 @@
   /* ---------------- 15. Shared settings panel ---------------- */
   var settingsState = null;
   var committedSettings = null;
+  var scheduleAppUpdateCheck = null;
   var DEFAULT_SETTINGS = {
-    selection_shortcut: 'Ctrl+Alt+T', activation_shortcut: 'Ctrl+Alt+I',
+    selection_shortcut: Bridge.isMac ? 'Cmd+Alt+T' : 'Ctrl+Alt+T',
+    activation_shortcut: Bridge.isMac ? 'Cmd+Alt+I' : 'Ctrl+Alt+I',
     open_main_window: false, target_lang: 'auto', auto_start: false, start_to_tray: true,
     preferences: copyObject(DEFAULT_PREFERENCES)
   };
@@ -2526,6 +2580,7 @@
             <button type="button" data-pref-tab="reading">阅读与布局</button>
             <button type="button" data-pref-tab="motion">动效</button>
             <button type="button" data-pref-tab="translation">翻译偏好</button>
+            <button type="button" data-pref-tab="updates">更新</button>
             <button type="button" data-pref-tab="desktop" data-desktop-only hidden>电脑功能</button>
           </nav>
           <div class="it-set-body">
@@ -2547,29 +2602,35 @@
             </section>
             <section class="it-set-page" data-pref-section="glass" hidden>
               <h2>液态玻璃</h2>
-              <div class="it-set-note">折射、边缘高光和模糊使用同一玻璃模型，设置同时作用于卡片、控件与电脑悬浮窗。</div>
-              <label class="it-set-row"><span>表面轮廓</span><select data-pref="liquidGlass.surfaceProfile">
-                <option value="convex-circle">凸面圆形</option><option value="convex-squircle">凸面圆角矩形</option>
-                <option value="concave">凹面</option><option value="lip">唇形边缘</option>
+              <div class="it-set-note">卡片、切换栏和按钮分别采用参考演示预设。选择调整对象，仅显示该演示公开的参数。</div>
+              <label class="it-set-row"><span>调整对象</span><select id="it-glass-target">
+                <option value="card">卡片与面板</option><option value="pill">Tab 与模型切换栏</option>
+                <option value="button">按钮与下拉入口</option>
               </select></label>
-              <label class="it-set-range"><span>边缘宽度 <output data-pref-output="liquidGlass.bezelWidth"></output></span>
-                <input type="range" min="4" max="32" step="1" data-pref="liquidGlass.bezelWidth" data-pref-type="number"></label>
-              <label class="it-set-range"><span>玻璃厚度 <output data-pref-output="liquidGlass.glassThickness"></output></span>
-                <input type="range" min="1" max="40" step="1" data-pref="liquidGlass.glassThickness" data-pref-type="number"></label>
-              <label class="it-set-range"><span>折射率 <output data-pref-output="liquidGlass.refractiveIndex"></output></span>
-                <input type="range" min="1" max="2.5" step="0.1" data-pref="liquidGlass.refractiveIndex" data-pref-type="number"></label>
-              <label class="it-set-range"><span>折射强度 <output data-pref-output="liquidGlass.refractionLevel"></output></span>
-                <input type="range" min="0" max="200" step="5" data-pref="liquidGlass.refractionLevel" data-pref-type="number"></label>
-              <label class="it-set-range"><span>镜面高光 <output data-pref-output="liquidGlass.specularOpacity"></output></span>
-                <input type="range" min="0" max="100" step="5" data-pref="liquidGlass.specularOpacity" data-pref-type="number"></label>
-              <label class="it-set-range"><span>高光饱和度 <output data-pref-output="liquidGlass.specularSaturation"></output></span>
-                <input type="range" min="1" max="10" step="1" data-pref="liquidGlass.specularSaturation" data-pref-type="number"></label>
-              <label class="it-set-range"><span>基础模糊 <output data-pref-output="liquidGlass.blurLevel"></output></span>
-                <input type="range" min="0" max="100" step="5" data-pref="liquidGlass.blurLevel" data-pref-type="number"></label>
-              <label class="it-set-range"><span>渐进模糊 <output data-pref-output="liquidGlass.progressiveBlurStrength"></output></span>
-                <input type="range" min="0" max="100" step="5" data-pref="liquidGlass.progressiveBlurStrength" data-pref-type="number"></label>
-              <label class="it-set-range"><span>玻璃底色不透明度 <output data-pref-output="liquidGlass.backgroundOpacity"></output></span>
-                <input type="range" min="0" max="100" step="5" data-pref="liquidGlass.backgroundOpacity" data-pref-type="number"></label>
+              <div class="it-set-note" id="it-glass-preset-note"></div>
+              <label class="it-set-range" data-glass-control="specularOpacity"><span>镜面高光 <output></output></span>
+                <input type="range" min="0" max="100" step="1" data-pref-type="number"></label>
+              <label class="it-set-range" data-glass-control="specularSaturation"><span>高光饱和度 <output></output></span>
+                <input type="range" min="0" max="50" step="1" data-pref-type="number"></label>
+              <label class="it-set-range" data-glass-control="refractionLevel"><span>折射强度 <output></output></span>
+                <input type="range" min="0" max="100" step="1" data-pref-type="number"></label>
+              <label class="it-set-range" data-glass-control="blurLevel"><span>基础模糊 <output></output></span>
+                <input type="range" min="0" max="40" step="0.1" data-pref-type="number"></label>
+              <label class="it-set-range" data-glass-control="progressiveBlurStrength"><span>渐进模糊 <output></output></span>
+                <input type="range" min="0" max="10" step="0.01" data-pref-type="number"></label>
+              <label class="it-set-range" data-glass-control="backgroundOpacity"><span>玻璃底色不透明度 <output></output></span>
+                <input type="range" min="0" max="100" step="1" data-pref-type="number"></label>
+            </section>
+            <section class="it-set-page" data-pref-section="updates" hidden>
+              <h2>更新</h2>
+              <p class="it-set-note">当前版本 ${APP_VERSION} · 检查 GitHub 正式发布。</p>
+              <label class="it-set-row"><span>启动时自动检查更新</span>
+                <input type="checkbox" data-pref="updates.autoCheck"></label>
+              <p class="it-set-note">自动检查每 24 小时最多一次，发现新版本后可前往发布页获取安装包。</p>
+              <div class="it-set-actions"><button type="button" id="it-update-check">立即检查</button></div>
+              <p class="it-set-note" id="it-update-status" role="status" aria-live="polite">尚未检查。</p>
+              <a id="it-update-release" class="it-update-release" href="https://github.com/jiuxina/jian-translator/releases"
+                target="_blank" rel="noopener noreferrer">查看发布页</a>
             </section>
             <section class="it-set-page" data-pref-section="reading" hidden>
               <h2>阅读与布局</h2>
@@ -2691,6 +2752,7 @@
     var settingsLoaded = false;
     var popupPreviewData = null;
     var settingsSaving = false;
+    var glassTarget = 'card';
     var activeSection = 'appearance';
     var shownSection = 'appearance';
     var sectionTransitionTarget = '';
@@ -2698,6 +2760,60 @@
     var sectionTransitionSeq = 0;
     var sectionTransitionTimer = 0;
     var sectionTransitionFrame = 0;
+    var updateChecking = false;
+    var updateMessage = '尚未检查。';
+    var updateError = false;
+    var updateLink = window.ItUpdates.releases;
+    var updateLinkText = '查看发布页';
+    var automaticUpdateTimer = 0;
+
+    function renderUpdateStatus() {
+      var button = $('it-update-check');
+      button.disabled = updateChecking || settingsSaving || (Bridge.isDesktop && !settingsLoaded);
+      button.textContent = updateChecking ? '检查中…' : '立即检查';
+      var status = $('it-update-status');
+      status.textContent = updateMessage;
+      status.classList.toggle('it-update-error', updateError);
+      var link = $('it-update-release');
+      link.href = updateLink;
+      link.textContent = updateLinkText;
+      if (Bridge.isAndroid) link.target = '_self';
+    }
+
+    function checkUpdates(automatic) {
+      if (updateChecking) return;
+      updateChecking = true;
+      updateError = false;
+      updateMessage = '正在检查正式发布…';
+      renderUpdateStatus();
+      try { localStorage.setItem('it-update-last-check', String(Date.now())); } catch (error) {}
+      window.ItUpdates.checkLatest(APP_VERSION).then(function (result) {
+        updateLink = result.url;
+        updateLinkText = result.status === 'available' ? '获取 ' + result.version : '查看发布页';
+        updateMessage = result.status === 'available' ? '发现新版本 ' + result.version + '。' :
+          result.status === 'unpublished' ? '仓库暂未发布正式版本，可稍后重试。' :
+            '当前已是最新版本（' + APP_VERSION + '）。';
+        if (automatic && result.status === 'available') {
+          toast('发现新版本 ' + result.version + '，可在设置 → 更新中查看。');
+        }
+      }).catch(function (error) {
+        updateError = true;
+        updateMessage = '检查失败：' + (error.message || String(error));
+      }).then(function () {
+        updateChecking = false;
+        renderUpdateStatus();
+      });
+    }
+    on($('it-update-check'), 'click', function () { checkUpdates(false); });
+    scheduleAppUpdateCheck = function () {
+      clearTimeout(automaticUpdateTimer);
+      var previous = 0;
+      try { previous = localStorage.getItem('it-update-last-check'); } catch (error) {}
+      if (!window.ItUpdates.shouldAutoCheck(activePreferences.updates.autoCheck, previous, Date.now())) return;
+      automaticUpdateTimer = setTimeout(function () {
+        if (activePreferences.updates.autoCheck) checkUpdates(true);
+      }, 1200);
+    };
 
     modal.querySelectorAll('[data-pref-tab="desktop"]').forEach(function (tab) {
       tab.hidden = !Bridge.isDesktop;
@@ -2712,6 +2828,33 @@
     $('it-pref-source').innerHTML = langOptions;
     $('it-pref-target').innerHTML = langOptions.replace('<option value="auto">自动检测</option>', '');
     modal.querySelectorAll('select').forEach(enhanceSelect);
+
+    function updateGlassControls() {
+      var preset = DEFAULT_PREFERENCES.liquidGlass[glassTarget];
+      $('it-glass-target').value = glassTarget;
+      $('it-glass-preset-note').textContent = glassTarget === 'card' ?
+        '参考内容面板：用于原文、译文、弹层与悬浮窗。' : glassTarget === 'pill' ?
+          '参考切换栏：用于 Tab 与模型选择栏。' : '参考按钮：用于玻璃按钮与下拉入口。';
+      modal.querySelectorAll('[data-glass-control]').forEach(function (row) {
+        var key = row.getAttribute('data-glass-control');
+        var control = row.querySelector('input');
+        var output = row.querySelector('output');
+        row.hidden = !Object.prototype.hasOwnProperty.call(preset, key);
+        if (row.hidden) {
+          control.removeAttribute('data-pref');
+          output.removeAttribute('data-pref-output');
+          output.textContent = '';
+        } else {
+          var path = 'liquidGlass.' + glassTarget + '.' + key;
+          control.setAttribute('data-pref', path);
+          output.setAttribute('data-pref-output', path);
+        }
+      });
+    }
+    on($('it-glass-target'), 'change', function () {
+      glassTarget = enumValue(this.value, ['card', 'pill', 'button'], 'card');
+      fill();
+    });
 
     function populateSystemFonts(fonts) {
       if (!fontFamilySelect) return;
@@ -2746,7 +2889,7 @@
       popupPreviewScene.style.setProperty('--it-popup-preview-inset',
         (preferences.background.fit === 'contain' ? 0 : -2 * preferences.background.blur) + 'px');
       popupCard.style.setProperty('--it-liquid-fill',
-        colorRgba(dark ? '#302C38' : '#FFFFFF', preferences.liquidGlass.backgroundOpacity / 100));
+        colorRgba(dark ? '#302C38' : '#FFFFFF', preferences.liquidGlass.card.backgroundOpacity / 100));
       window.ItLiquidGlass.configure(preferences.liquidGlass);
       window.ItLiquidGlass.refresh(popupCard);
     }
@@ -2866,18 +3009,23 @@
 
     function fill() {
       if (!settingsState) return;
+      updateGlassControls();
       modal.querySelectorAll('[data-pref]').forEach(function (control) {
         var value = valueAtPath(settingsState.preferences, control.getAttribute('data-pref'));
         if (control.type === 'checkbox') control.checked = !!value;
         else control.value = value == null ? '' : String(value);
+        if (control.type === 'range') {
+          var span = Number(control.max) - Number(control.min);
+          control.style.setProperty('--it-range-fill', span > 0 ?
+            (100 * (Number(control.value) - Number(control.min)) / span) + '%' : '0%');
+        }
       });
       modal.querySelectorAll('[data-pref-output]').forEach(function (output) {
         var path = output.getAttribute('data-pref-output');
         var value = valueAtPath(settingsState.preferences, path);
-        var suffix = path === 'background.blur' ||
-          path === 'liquidGlass.bezelWidth' || path === 'liquidGlass.glassThickness' ? ' px' :
-          path === 'liquidGlass.refractiveIndex' ? '' : '%';
-        output.textContent = path === 'liquidGlass.refractiveIndex' ? Number(value).toFixed(1) : value + suffix;
+        var suffix = path === 'background.blur' || /\.blurLevel$/.test(path) ? ' px' :
+          /\.(specularSaturation|progressiveBlurStrength)$/.test(path) ? '' : '%';
+        output.textContent = value + suffix;
       });
       $('it-set-selection').value = settingsState.selection_shortcut || '';
       $('it-set-activation').value = settingsState.activation_shortcut || '未设置';
@@ -2917,6 +3065,7 @@
       updatePopupPreview();
       if (!sectionTransitionTarget) updateSettingsNavigation(false);
       refreshSelectButtons(false);
+      renderUpdateStatus();
     }
 
     function loadSystemFonts(session) {
@@ -2957,10 +3106,14 @@
       if (key.length === 1) key = key.toUpperCase();
       else if (!/^F([1-9]|1[0-2])$/.test(key)) return;
       var mods = [];
+      if (Bridge.isMac && e.metaKey) mods.push('Cmd');
       if (e.ctrlKey) mods.push('Ctrl');
       if (e.altKey) mods.push('Alt');
       if (e.shiftKey) mods.push('Shift');
-      if (!mods.length) { recording.input.value = '需要 Ctrl / Alt / Shift'; return; }
+      if (!mods.length) {
+        recording.input.value = Bridge.isMac ? '需要 Cmd / Ctrl / Alt / Shift' : '需要 Ctrl / Alt / Shift';
+        return;
+      }
       settingsState[recording.key] = mods.join('+') + '+' + key;
       stopRecord();
       fill();
@@ -2983,6 +3136,7 @@
         settingsState.preferences.appearance.fontColorMode !== 'custom';
       if (fontFamilySelect) fontFamilySelect.disabled = !controlsEnabled || !systemFontsReady;
       refreshSelectButtons(false);
+      renderUpdateStatus();
     }
 
     function close() {
@@ -3092,7 +3246,9 @@
           settingsState.preferences.appearance.motion = defaults.appearance.motion;
           settingsState.preferences.appearance.ambientLight = defaults.appearance.ambientLight;
         } else if (activeSection === 'glass') {
-          settingsState.preferences.liquidGlass = copyObject(defaults.liquidGlass);
+          settingsState.preferences.liquidGlass[glassTarget] = copyObject(defaults.liquidGlass[glassTarget]);
+        } else if (activeSection === 'updates') {
+          settingsState.preferences.updates = copyObject(defaults.updates);
         } else if (activeSection === 'appearance') {
           ['mode', 'palette', 'radius'].forEach(function (key) {
             settingsState.preferences.appearance[key] = defaults.appearance[key];
@@ -3245,6 +3401,7 @@
         committedSettings = copyObject(submission);
         settingsState = copyObject(submission);
         applyPreferences(committedSettings.preferences);
+        if (scheduleAppUpdateCheck) scheduleAppUpdateCheck();
         unlock();
         toast(button.dataset.cacheError === 'true' ?
           (Bridge.isAndroid ? '设置已保存；原生外观缓存未能更新' : '设置已保存；本机缓存未能更新') :
@@ -3272,6 +3429,7 @@
   /* ---------------- 15. 初始化 ---------------- */
   function init() {
     if (PLATFORM === 'desktop') document.documentElement.classList.add('it-desktop');
+    if (Bridge.isMac) document.documentElement.classList.add('it-macos');
     if (PLATFORM === 'android') document.documentElement.classList.add('it-android');
 
     var nativeBootstrap = null;
@@ -3302,6 +3460,21 @@
     initTitlebar();
     initResizeHandles();
     initDesktopSettings();
+    if (Bridge.isMac && typeof window.__JIAN_DESKTOP__.onAction === 'function') {
+      window.__JIAN_DESKTOP__.onAction(function (action) {
+        if (action && action.type === 'window-state') {
+          document.documentElement.classList.toggle('it-window-expanded',
+            !!(action.fullscreen || action.maximized));
+        } else if (action && action.type === 'open-settings' && window.__itOpenSettings) {
+          window.__itOpenSettings();
+        } else if (action && action.type === 'open-about' && window.__itOpenAbout) {
+          window.__itOpenAbout();
+        } else if (action && action.type === 'translate-selection' && typeof action.text === 'string' &&
+            window.__itTranslateSelection) {
+          window.__itTranslateSelection(action.text);
+        }
+      });
+    }
     restoreBackground();
     refreshCount();
 
@@ -3388,17 +3561,19 @@
         document.documentElement.classList.remove('it-settings-boot');
       }, 2500);
       nativeBootstrap.then(function (savedSettings) {
-        if (bootReleased) return;
         if (savedSettings && savedSettings.preferences) {
           activePreferences = normalizePreferences(savedSettings.preferences);
           applyPreferences(activePreferences);
           restoreTranslationPreferences(activePreferences);
         }
       }).catch(function () {}).then(function () {
+        if (scheduleAppUpdateCheck) scheduleAppUpdateCheck();
         if (bootReleased) return;
         clearTimeout(bootTimer);
         document.documentElement.classList.remove('it-settings-boot');
       });
+    } else if (scheduleAppUpdateCheck) {
+      scheduleAppUpdateCheck();
     }
 
     /* 调试钩子：只在 ?debug=1 时挂载，正式运行不暴露内部状态 */

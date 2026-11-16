@@ -8,12 +8,12 @@
 <title>笺</title>
 <script>
   try {
-    if (window.__TAURI_INTERNALS__ || (window.__TAURI__ && window.__TAURI__.core)) {
+    if (window.__JIAN_DESKTOP__ || window.__TAURI_INTERNALS__ || (window.__TAURI__ && window.__TAURI__.core)) {
       document.documentElement.classList.add('it-settings-boot');
     }
   } catch (e) {}
 </script>
-<link rel="stylesheet" href="theme.css?v=18">
+<link rel="stylesheet" href="theme.css?v=19">
 </head>
 <body>
 
@@ -202,7 +202,7 @@
         </div>
         <div class="card-foot">
           <button type="button" class="pill" id="btn-copy-doc">复制</button>
-          <button type="button" class="pill" id="btn-dl">下载 .txt</button>
+          <button type="button" class="pill" id="btn-dl">下载</button>
         </div>
       </div>
     </div>
@@ -213,17 +213,17 @@
 <!-- 吸底操作区：挂在 body 上，避免被面板的 flex 高度计算挤走 -->
 <div class="dock on" data-pane="text">
   <button type="button" class="btn-secondary" id="btn-clear">清空</button>
-  <button type="button" class="btn-primary" id="btn-go">开始翻译</button>
+  <button type="button" class="btn-primary" id="btn-go">翻译</button>
 </div>
 
 <div class="dock" data-pane="syllable">
   <button type="button" class="btn-secondary" id="btn-clear-syllable">清空</button>
-  <button type="button" class="btn-primary" id="btn-go-syllable">开始翻译</button>
+  <button type="button" class="btn-primary" id="btn-go-syllable">翻译</button>
 </div>
 
 <div class="dock" data-pane="doc">
   <button type="button" class="btn-secondary" id="btn-clear-doc">清空</button>
-  <button type="button" class="btn-primary" id="btn-go-doc">开始翻译</button>
+  <button type="button" class="btn-primary" id="btn-go-doc">翻译</button>
 </div>
 
 <!-- 更多菜单 -->
@@ -237,15 +237,6 @@
     <button type="button" class="it-about-x" data-close-about aria-label="关闭关于" title="关闭">
       <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.4"><path d="m2 2 8 8M10 2 2 10"/></svg>
     </button>
-    <div class="it-about-brand" aria-hidden="true">
-      <svg viewBox="0 0 256 256" role="presentation">
-        <defs><linearGradient id="it-about-logo" x1="0" y1="0" x2="1" y2="1">
-          <stop offset="0" stop-color="#fb7299"/><stop offset="1" stop-color="#ffa26b"/>
-        </linearGradient></defs>
-        <rect width="256" height="256" rx="58" fill="url(#it-about-logo)"/>
-        <text x="128" y="128" fill="#fff" font-family="sans-serif" font-size="156" font-weight="700" text-anchor="middle" dominant-baseline="central">笺</text>
-      </svg>
-    </div>
     <h1 id="it-about-title">笺</h1>
     <p class="it-about-version">版本 2.2.0</p>
     <div class="it-about-rule"></div>
@@ -259,7 +250,8 @@
 <div class="toast" id="toast"></div>
 
 <script src="langs.js?v=15"></script>
-<script src="liquid-glass.js?v=1"></script>
+<script src="liquid-glass.js?v=3"></script>
+<script src="updates.js?v=1"></script>
 <script src="app.js?v=18"></script>
 </body>
 </html>

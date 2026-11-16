@@ -73,7 +73,7 @@ def assetsTargetDir = file('src/main/assets')
 tasks.register('syncWebAssets', Copy) {
     from webSourceDir
     into assetsTargetDir
-    include 'index.html', 'theme.css', 'app.js', 'langs.js', 'liquid-glass.js'
+    include 'index.html', 'theme.css', 'app.js', 'langs.js', 'liquid-glass.js', 'updates.js'
     doLast {
         logger.lifecycle("synced ../web -> src/main/assets")
     }

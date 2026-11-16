@@ -1,11 +1,8 @@
 /* ==========================================================================
    笺 · 自绘前端主题（薄樱玻璃 · 一镜到底）
    --------------------------------------------------------------------------
-   本文件是当前自绘前端与动效令牌的唯一真源；Windows / Android WebView 共用 web/。
-
-   与注入版主题的区别：那一份是在官网 DOM（.atcard / .panes / .pane）上
-   做覆盖，这一份直接为自绘 DOM 定义材质、布局与状态。
-   官网注入版保留仅作回退，不再被新前端引用。
+   本文件是当前自绘前端与动效令牌的唯一真源；桌面与 Android 共用 web/。
+   卡片、切换栏与按钮分别使用参考演示对应的光学预设；不包含旧注入版玻璃。
 
    液态玻璃由 SVG 位移、高光与 Gaussian 组合滤镜驱动，使用 Chromium 原生 backdrop-filter。
    ========================================================================== */
@@ -22,6 +19,7 @@
   --it-liquid-fill-low: rgba(255,255,255,.21);
   --it-liquid-fill-mid: rgba(255,255,255,.39);
   --it-liquid-fill-high: rgba(255,255,255,.69);
+  --it-liquid-tint-rgb: 255 255 255;
   --it-content-weight: 400;
   --it-content-color: var(--lg-ink);
   --lg-edge:          rgba(255, 255, 255, .74);
@@ -167,9 +165,7 @@ button:disabled { cursor: default; }
   position: sticky;
   top: 0;
   z-index: 40;
-  background: var(--it-liquid-fill-mid);
-  -webkit-backdrop-filter: var(--it-liquid-filter, none);
-  backdrop-filter: var(--it-liquid-filter, none);
+  background: transparent;
   border-bottom: 1px solid var(--lg-edge-dark);
   box-shadow: 0 2px 8px rgba(46,42,56,.08);
   user-select: none;
@@ -181,6 +177,35 @@ html.it-desktop .bar {
   height: 40px;
   padding-right: 0;
   position: static;
+}
+
+/* macOS 保留原生交通灯和拖动行为，按钮与菜单区域仍接收普通点击。 */
+html.it-macos .bar {
+  padding-left: 86px;
+  padding-right: var(--pad);
+  -webkit-app-region: drag;
+  app-region: drag;
+}
+html.it-macos .bar :is(button, input, select, a, .brand, .tabs, .sel-wrap) {
+  -webkit-app-region: no-drag;
+  app-region: no-drag;
+}
+
+.it-glass-error {
+  position: fixed;
+  z-index: 10000;
+  top: calc(48px + var(--it-safe-top));
+  left: 50%;
+  transform: translateX(-50%);
+  width: max-content;
+  max-width: calc(100vw - 32px);
+  padding: 12px 18px;
+  border: 1px solid var(--lg-accent-deep);
+  border-radius: 12px;
+  background: var(--lg-bg);
+  color: var(--lg-ink);
+  box-shadow: var(--lg-shadow);
+  font-size: 13px;
 }
 
 .brand {
@@ -205,10 +230,8 @@ html.it-desktop .brand { font-size: 13.5px; }
   padding: 3px;
   border-radius: var(--lg-r-pill);
   border: 1px solid var(--lg-edge);
-  background: var(--it-liquid-fill-mid);
+  background: transparent;
   box-shadow: var(--lg-shadow-soft);
-  -webkit-backdrop-filter: var(--it-liquid-filter, none);
-  backdrop-filter: var(--it-liquid-filter, none);
   flex: 0 1 auto;
 }
 
@@ -1153,8 +1176,6 @@ textarea.src::placeholder { color: var(--lg-ink-faint); }
   color: var(--lg-ink-faint);
 }
 .it-about-x:hover { background: var(--it-liquid-fill-mid); color: var(--lg-ink); }
-.it-about-brand { width: 58px; height: 58px; margin: 0 auto 15px; }
-.it-about-brand svg { display: block; width: 100%; height: 100%; }
 .it-about h1 { margin: 0; color: var(--lg-ink); font-size: 24px; font-weight: 600; }
 .it-about-version { margin: 4px 0 19px; color: var(--lg-ink-sub); font-size: 12px; }
 .it-about-rule { height: 1px; margin: 0 0 17px; background: var(--lg-edge-dark); }
@@ -1293,9 +1314,9 @@ textarea.src::placeholder { color: var(--lg-ink-faint); }
 .it-set-color-row select { flex: 0 0 142px; }
 .it-set-row > .it-set-select-wrap { flex: 0 0 190px; width: 190px; min-width: 0; }
 .it-set-row > .it-set-select-wrap .sel-btn { width: 100%; max-width: none; justify-content: space-between;
-  padding: 6px 28px 6px 10px; border-radius: var(--lg-r-sm); background: var(--it-liquid-fill-mid); box-shadow: none; }
+  padding: 6px 28px 6px 10px; border-radius: var(--lg-r-sm); box-shadow: none; }
 .it-set-row > .it-set-select-wrap .sel-btn:hover,
-.it-set-row > .it-set-select-wrap .sel-btn[aria-expanded="true"] { background: var(--it-liquid-fill-high); }
+.it-set-row > .it-set-select-wrap .sel-btn[aria-expanded="true"] { border-color: var(--lg-accent); }
 .it-set-row > .it-set-select-wrap .sel-value { width: 100% !important; max-width: none; }
 .it-set-row > .it-set-select-wrap .sel-btn:disabled { opacity: .52; cursor: default; }
 .it-set-color-row > .it-set-select-wrap { flex-basis: 142px; width: 142px; }
@@ -1338,12 +1359,26 @@ textarea.src::placeholder { color: var(--lg-ink-faint); }
 .it-set-range > span { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .it-set-range output { color: var(--lg-accent-deep); font-size: 11.5px; font-variant-numeric: tabular-nums; }
 .it-set-range input[type="range"] { display: block; width: 100%; height: 22px; margin: 5px 0 0;
+  -webkit-appearance: none; appearance: none; background: transparent;
   accent-color: var(--lg-accent-deep); cursor: pointer; }
+.it-set-range input[type="range"]::-webkit-slider-runnable-track {
+  height: 2px; border-radius: 2px;
+  background: linear-gradient(to right, var(--lg-accent-deep) var(--it-range-fill, 0%),
+    var(--lg-edge-dark) var(--it-range-fill, 0%));
+}
+.it-set-range input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none; appearance: none;
+  width: 12px; height: 12px; margin-top: -5px; border: none;
+  border-radius: 50%; background: var(--lg-accent-deep); box-shadow: 0 1px 4px var(--lg-edge-dark);
+}
 .it-set-actions { display: flex; flex-wrap: wrap; gap: 8px; margin: 2px 0 6px; }
 .it-set-actions button { min-height: 36px; padding: 7px 12px; border: 1px solid var(--lg-edge-dark);
   border-radius: var(--lg-r-sm); color: var(--lg-ink-sub); font-size: 12px; }
 .it-set-actions button:hover { color: var(--lg-ink); background: var(--it-liquid-fill-mid); }
 .it-set-divider { height: 1px; margin: 18px 0 12px; background: var(--lg-edge-dark); }
+.it-update-release { color: var(--lg-accent-deep); font-size: 12.5px; overflow-wrap: anywhere; }
+.it-update-release:hover { color: var(--lg-ink); }
+.it-set-note.it-update-error { color: var(--lg-accent-deep); }
 .it-set-page h3 { margin: 0 0 10px; color: var(--lg-ink); font-size: 13px; font-weight: 550; }
 .it-popup-preview-scene { position: relative; min-height: 112px; margin: 0 0 8px; padding: 22px;
   display: flex; align-items: center; justify-content: center; overflow: hidden;
@@ -1484,3 +1519,31 @@ html.it-desktop .rz-se { bottom: 0; right: 0; width: 12px; height: 12px; cursor:
 
 /* 下拉打开时，热区要让位给弹层 */
 html.it-desktop .sel-pop.on ~ .rz { display: none; }
+
+/* 材质只由对应预设产生，不再叠加旧的浅/中/深玻璃底色与均匀白色内高光。 */
+:root [data-it-liquid-preset][data-it-liquid-state] {
+  background: rgb(var(--it-liquid-tint-rgb) / var(--it-liquid-background-opacity, 0));
+  -webkit-backdrop-filter: var(--it-liquid-filter, none);
+  backdrop-filter: var(--it-liquid-filter, none);
+}
+.tabs, .models { background: transparent; -webkit-backdrop-filter: none; backdrop-filter: none; }
+:is(.tabs-thumb, .models-thumb, .it-set-nav-thumb)[data-it-liquid-preset] {
+  background: rgb(var(--it-liquid-tint-rgb) / var(--it-liquid-background-opacity, 1));
+}
+:is(.btn-primary, .it-set-foot .primary)[data-it-liquid-preset] {
+  color: var(--lg-accent-deep);
+  background: transparent;
+  box-shadow: var(--lg-shadow-soft);
+}
+html.it-macos { background: transparent; border-radius: 22px; }
+html.it-macos body { border-radius: inherit; }
+html.it-macos.it-window-expanded { border-radius: 0; }
+:root[data-it-liquid-glass="unsupported"] [data-it-liquid-preset][data-it-liquid-state="unsupported"] {
+  background: transparent;
+}
+.pane.it-tab-leave [data-it-liquid-preset] {
+  background: transparent !important;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+  box-shadow: none;
+}
