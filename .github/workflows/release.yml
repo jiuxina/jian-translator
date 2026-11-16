@@ -152,5 +152,6 @@ jobs:
             .build/release-ready/Jian-*-android.apk
             .build/release-ready/SHA256SUMS.txt
           draft: false
-          prerelease: true
+          prerelease: false
+          make_latest: "true"
           generate_release_notes: true

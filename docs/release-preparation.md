@@ -12,8 +12,8 @@ Android 使用 versionName `2.3.0` / versionCode `6`，共用网页资源同步�
 macOS universal DMG/ZIP 和 Android APK，再上传五项附件与 `SHA256SUMS.txt`。
 普通分支推送不会触发构建；发布标签后需等待三端与发布任务全部成功。
 
-工作流当前使用 `prerelease: true`。应用内更新检查只接收正式发布；
-若要让 2.3.0 进入此通道，构建上传完成后编辑该 Release，取消预发布标记。
+工作流当前使用 `prerelease: false`，标签构建成功后会自动发布正式 Release，
+应用内更新检查可直接接收该版本。
 发布准备脚本不会为 2.3.0 继承旧 2.2.0 的验收证据，最终构建结果以本次 Actions 为准。
 版本一致性检查覆盖前端、Android 镜像与 versionCode、桌面构建参数和 macOS 锁文件。
 本轮唯一一次完整离线回归的日志与退出状态清单保存为
