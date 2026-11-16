@@ -302,19 +302,93 @@ fn make_drag_overlay_click_through(app: &AppHandle) {
 fn make_drag_overlay_click_through(_app: &AppHandle) {}
 
 // ---------------------------------------------------------------------------
-// 隐藏 Windows 11 DWM 激活边框；保留系统圆角和阴影
+// Windows 主窗口使用 22 个逻辑像素圆角；最大化/全屏恢复完整工作区。
 // ---------------------------------------------------------------------------
+
+#[cfg(target_os = "windows")]
+fn update_main_window_corners(hwnd: windows_sys::Win32::Foundation::HWND) {
+    use windows_sys::Win32::Foundation::RECT;
+    use windows_sys::Win32::Graphics::Gdi::{
+        CreateRectRgn, CreateRoundRectRgn, DeleteObject, EqualRgn, GetMonitorInfoW, GetWindowRgn,
+        MonitorFromWindow, SetWindowRgn, MONITORINFO, MONITOR_DEFAULTTONEAREST,
+    };
+    use windows_sys::Win32::UI::HiDpi::GetDpiForWindow;
+    use windows_sys::Win32::UI::WindowsAndMessaging::{GetWindowRect, IsIconic, IsZoomed};
+
+    // SAFETY: the caller supplies the live main-window HWND on its window thread.
+    unsafe {
+        if IsIconic(hwnd) != 0 {
+            return;
+        }
+        let mut bounds = RECT::default();
+        if GetWindowRect(hwnd, &mut bounds) == 0 {
+            return;
+        }
+        let width = bounds.right - bounds.left;
+        let height = bounds.bottom - bounds.top;
+        if width <= 0 || height <= 0 {
+            return;
+        }
+        let monitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+        let mut info = MONITORINFO {
+            cbSize: std::mem::size_of::<MONITORINFO>() as u32,
+            ..Default::default()
+        };
+        let fullscreen = !monitor.is_null()
+            && GetMonitorInfoW(monitor, &mut info) != 0
+            && bounds.left <= info.rcMonitor.left
+            && bounds.top <= info.rcMonitor.top
+            && bounds.right >= info.rcMonitor.right
+            && bounds.bottom >= info.rcMonitor.bottom;
+        let square = IsZoomed(hwnd) != 0 || fullscreen;
+
+        let previous = CreateRectRgn(0, 0, 0, 0);
+        if previous.is_null() {
+            return;
+        }
+        let has_region = GetWindowRgn(hwnd, previous) != 0;
+        if square {
+            // A custom region must not cut the taskbar/work-area edges when maximized.
+            if has_region && SetWindowRgn(hwnd, std::ptr::null_mut(), 1) == 0 {
+                eprintln!("[IT] 清除最大化窗口圆角裁剪失败");
+            }
+            let _ = DeleteObject(previous);
+            return;
+        }
+
+        const CORNER_RADIUS_DIP: u32 = 22;
+        let dpi = GetDpiForWindow(hwnd).max(96);
+        let radius = ((CORNER_RADIUS_DIP * dpi + 48) / 96) as i32;
+        let diameter = (radius * 2).min(width).min(height);
+        let region = CreateRoundRectRgn(0, 0, width + 1, height + 1, diameter, diameter);
+        if region.is_null() {
+            let _ = DeleteObject(previous);
+            return;
+        }
+        let unchanged = has_region && EqualRgn(previous, region) != 0;
+        let _ = DeleteObject(previous);
+        if unchanged {
+            let _ = DeleteObject(region);
+        } else if SetWindowRgn(hwnd, region, 1) == 0 {
+            // Windows takes ownership only after a successful SetWindowRgn.
+            let _ = DeleteObject(region);
+            eprintln!("[IT] 应用主窗口圆角裁剪失败");
+        }
+    }
+}
 
 #[cfg(target_os = "windows")]
 fn apply_window_border(window: &WebviewWindow) {
     use windows_sys::Win32::Graphics::Dwm::{
-        DwmSetWindowAttribute, DWMWA_BORDER_COLOR, DWMWA_COLOR_NONE,
+        DwmExtendFrameIntoClientArea, DwmSetWindowAttribute, DWMWA_BORDER_COLOR, DWMWA_COLOR_NONE,
     };
+    use windows_sys::Win32::UI::Controls::MARGINS;
     let Ok(hwnd) = window.hwnd() else {
         return;
     };
 
     let color = DWMWA_COLOR_NONE;
+    // SAFETY: HWND belongs to the live main window; the pointed value remains valid for the call.
     let result = unsafe {
         DwmSetWindowAttribute(
             hwnd.0 as _,
@@ -329,6 +403,23 @@ fn apply_window_border(window: &WebviewWindow) {
             result as u32
         );
     }
+    // Keep the native frame shadow around the explicitly clipped window.
+    // The existing NCCALCSIZE handler still removes the unwanted top inset.
+    let margins = MARGINS {
+        cxLeftWidth: 1,
+        cxRightWidth: 1,
+        cyTopHeight: 1,
+        cyBottomHeight: 1,
+    };
+    // SAFETY: HWND and MARGINS are valid throughout this synchronous DWM call.
+    let result = unsafe { DwmExtendFrameIntoClientArea(hwnd.0 as _, &margins) };
+    if result != 0 {
+        eprintln!(
+            "[IT] 保留圆角窗口原生阴影失败：HRESULT 0x{:08X}",
+            result as u32
+        );
+    }
+    update_main_window_corners(hwnd.0 as _);
 }
 
 #[cfg(not(target_os = "windows"))]
@@ -345,7 +436,8 @@ unsafe extern "system" fn remove_top_frame_inset(
 ) -> windows_sys::Win32::Foundation::LRESULT {
     use windows_sys::Win32::UI::Shell::{DefSubclassProc, RemoveWindowSubclass};
     use windows_sys::Win32::UI::WindowsAndMessaging::{
-        NCCALCSIZE_PARAMS, WM_NCCALCSIZE, WM_NCDESTROY,
+        NCCALCSIZE_PARAMS, WM_DISPLAYCHANGE, WM_DPICHANGED, WM_DWMCOMPOSITIONCHANGED,
+        WM_NCCALCSIZE, WM_NCDESTROY, WM_SIZE, WM_WINDOWPOSCHANGED,
     };
 
     if message == WM_NCCALCSIZE && wparam != 0 && lparam != 0 {
@@ -363,6 +455,11 @@ unsafe extern "system" fn remove_top_frame_inset(
     let result = DefSubclassProc(hwnd, message, wparam, lparam);
     if message == WM_NCDESTROY {
         let _ = RemoveWindowSubclass(hwnd, Some(remove_top_frame_inset), subclass_id);
+    } else if matches!(
+        message,
+        WM_SIZE | WM_DPICHANGED | WM_WINDOWPOSCHANGED | WM_DISPLAYCHANGE | WM_DWMCOMPOSITIONCHANGED
+    ) {
+        update_main_window_corners(hwnd);
     }
     result
 }
@@ -875,7 +972,7 @@ document.documentElement.innerHTML = `
     --lg-ease-enter:cubic-bezier(.18,.8,.22,1);
     --it-popup-bg-overlay:rgba(255,255,255,0);--it-popup-bg-blur:0px;--it-popup-bg-fit:cover;
     --it-popup-bg-inset:0px;
-    --it-popup-card-fill:rgba(255,255,255,.6);
+    --it-liquid-tint-rgb:255 255 255;
     --it-popup-content-color:var(--lg-ink);--it-popup-content-weight:400;
     --it-popup-content-font:"PingFang SC","Microsoft YaHei UI","Noto Sans SC",system-ui,sans-serif;
     /* 悬浮窗是 436x282 的透明窗口，卡片四周只有 22px 留白。
@@ -896,10 +993,17 @@ document.documentElement.innerHTML = `
     background:var(--it-popup-bg-overlay);}
   #card{box-sizing:border-box;height:100%;display:flex;flex-direction:column;
     position:relative;z-index:1;isolation:isolate;overflow:hidden;
-    background:var(--it-popup-card-fill);border:0;border-radius:var(--lg-r-lg);
-    -webkit-backdrop-filter:var(--it-liquid-filter,none);
-    backdrop-filter:var(--it-liquid-filter,none);}
-  #card>*{position:relative;z-index:1;}
+    background:transparent;
+    border:0;border-radius:var(--lg-r-lg);
+    -webkit-backdrop-filter:none;backdrop-filter:none;}
+  #card>*:not([data-it-liquid-background]):not([data-it-liquid-progressive]){position:relative;z-index:1;}
+  [data-it-liquid-preset]{position:relative;isolation:isolate;}
+  [data-it-liquid-background],[data-it-liquid-progressive]{position:absolute;inset:0;z-index:-1;
+    border-radius:inherit;pointer-events:none;}
+  [data-it-liquid-background]{background:rgb(var(--it-liquid-tint-rgb) / var(--it-liquid-background-opacity,0));
+    -webkit-backdrop-filter:var(--it-liquid-filter,none);backdrop-filter:var(--it-liquid-filter,none);}
+  [data-it-liquid-progressive]{overflow:hidden;}
+  [data-it-liquid-progressive]>span{position:absolute;inset:0;border-radius:inherit;pointer-events:none;}
   .head{display:flex;align-items:center;justify-content:space-between;gap:8px;
     padding:10px 14px 8px;font-size:11.5px;color:var(--lg-ink-sub);}
   .head b{font-weight:600;color:var(--lg-accent-deep);}
@@ -918,11 +1022,15 @@ document.documentElement.innerHTML = `
   .err{color:var(--lg-accent-deep);font-size:13px;}
   .foot{display:flex;align-items:center;justify-content:space-between;
     padding:8px 12px 9px;border-top:1px solid var(--lg-edge-dark);font-size:11px;color:var(--lg-ink-faint);}
-  .foot button{border:1px solid var(--lg-edge);background:var(--lg-accent-wash);
+  .foot button{border:1px solid var(--lg-edge);background:transparent;
+    -webkit-backdrop-filter:none;backdrop-filter:none;
     color:var(--lg-accent-deep);border-radius:999px;
     padding:5px 12px;font-size:11.5px;cursor:pointer;
     transition:background var(--lg-duration-control),color var(--lg-duration-control);}
-  .foot button:hover{background:linear-gradient(135deg,var(--lg-accent),var(--lg-accent-deep));color:#fff;}
+  .foot button:hover{border-color:var(--lg-accent);color:var(--lg-ink);}
+  #glass-status{margin:0;padding:0 14px 4px;font-size:10px;color:var(--lg-accent-deep);}
+  #glass-status[hidden]{display:none;}
+  :root[data-it-liquid-glass="unsupported"] #card{background:transparent;}
   @keyframes popup-arrive{from{opacity:0;transform:translateY(7px) scale(.985)}to{opacity:1;transform:none}}
   .stream-segment{animation:stream-arrive 200ms ease-out both}
   @keyframes stream-arrive{from{opacity:0}to{opacity:1}}
@@ -941,11 +1049,20 @@ document.documentElement.innerHTML = `
 </style></head>
 <body><div id="card-frame"><div id="popup-background" aria-hidden="true"></div><div id="card">
   <div class="head"><b id="meta">翻译中</b><span id="badge"></span></div>
+  <p id="glass-status" role="alert" hidden></p>
   <div class="body" id="out"><span class="ph">正在翻译…</span></div>
   <div class="foot"><span>Esc 或点击别处关闭</span><button id="copy" type="button">复制</button></div>
 </div></div></body>`;
 
-window.ItLiquidGlass.attach(document.getElementById('card'));
+document.addEventListener('it-liquid-glass-error', function (event) {
+  var status = document.getElementById('glass-status');
+  if (!status) return;
+  status.hidden = false;
+  status.textContent = event.detail && event.detail.code === 'unsupported' ?
+    '当前运行环境无法绘制液态玻璃。' : '液态玻璃初始化失败，请重新打开悬浮窗。';
+});
+window.ItLiquidGlass.attach(document.getElementById('card'), 'card');
+window.ItLiquidGlass.attach(document.getElementById('copy'), 'button');
 
 (function () {
   var output = document.getElementById('out');
@@ -1094,7 +1211,9 @@ window.ItLiquidGlass.attach(document.getElementById('card'));
     copy.disabled = true;
     try {
       var internals = window.__TAURI_INTERNALS__;
-      if (internals && typeof internals.invoke === 'function') {
+      if (window.__JIAN_DESKTOP__ && typeof window.__JIAN_DESKTOP__.invoke === 'function') {
+        await window.__JIAN_DESKTOP__.invoke('it_write_clipboard_text', { text: value });
+      } else if (internals && typeof internals.invoke === 'function') {
         await internals.invoke('it_write_clipboard_text', { text: value }, {});
       } else if (window.__TAURI__ && window.__TAURI__.core && window.__TAURI__.core.invoke) {
         await window.__TAURI__.core.invoke('it_write_clipboard_text', { text: value });
@@ -1199,8 +1318,7 @@ window.ItLiquidGlass.attach(document.getElementById('card'));
     root.style.setProperty('--it-popup-content-weight', String(fontWeight));
     root.style.setProperty('--it-popup-content-color', fontColor);
     root.style.setProperty('--it-popup-content-font', fontFamily);
-    var liquidOpacity = liquidGlass.backgroundOpacity / 100;
-    root.style.setProperty('--it-popup-card-fill', 'rgba(' + (dark ? '48,44,56' : '255,255,255') + ',' + liquidOpacity + ')');
+    root.style.setProperty('--it-liquid-tint-rgb', dark ? '48 44 56' : '255 255 255');
     root.style.setProperty('--it-popup-bg-overlay', dark
       ? 'rgba(18,16,24,' + backgroundOpacity + ')'
       : 'rgba(255,255,255,' + backgroundOpacity + ')');

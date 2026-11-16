@@ -137,6 +137,11 @@
     };
   }
 
+  function progressiveLevels(value) {
+    var strength = roundedNumber(value, 0, 10, DEFAULTS.card.progressiveBlurStrength, 2);
+    return [Math.sqrt(Math.sqrt(strength)) / 2, Math.sqrt(strength), strength];
+  }
+
   function circleHeight(t) {
     return Math.sqrt(Math.max(0, 1 - Math.pow(1 - t, 2)));
   }
@@ -195,9 +200,6 @@
     var mapHeight = dimensions.height;
     var displacement = new Uint8ClampedArray(mapWidth * mapHeight * 4);
     var specular = new Uint8ClampedArray(mapWidth * mapHeight * 4);
-    var blurMasks = [0, 1, 2].map(function () {
-      return new Uint8ClampedArray(mapWidth * mapHeight * 4);
-    });
     var vectorsX = new Float32Array(mapWidth * mapHeight);
     var vectorsY = new Float32Array(mapWidth * mapHeight);
     var maxDisplacement = 0;
@@ -207,7 +209,6 @@
     var lightAngle = Math.PI / 3;
     var lightX = Math.cos(lightAngle);
     var lightY = Math.sin(lightAngle);
-    var maskStops = [[.7, 1], [.5, .75], [.2, .55]];
 
     for (var y = 0; y < mapHeight; y++) {
       var py = (y + .5) * height / mapHeight;
@@ -219,17 +220,6 @@
         var distance = Math.max(0, shape.distance);
         var inside = shape.signedDistance <= 0;
         var bevelAmount = inside ? clamp(distance / bezel, 0, 1) : 1;
-        var progress = py / height;
-        for (var maskIndex = 0; maskIndex < blurMasks.length; maskIndex++) {
-          var stops = maskStops[maskIndex];
-          var maskAlpha = inside ? 1 - clamp((progress - stops[0]) / (stops[1] - stops[0]), 0, 1) : 0;
-          var blurMask = blurMasks[maskIndex];
-          blurMask[offset] = 255;
-          blurMask[offset + 1] = 255;
-          blurMask[offset + 2] = 255;
-          blurMask[offset + 3] = Math.round(maskAlpha * 255);
-        }
-
         displacement[offset] = 128;
         displacement[offset + 1] = 128;
         displacement[offset + 2] = 128;
@@ -302,9 +292,7 @@
       radius: radius,
       maxDisplacement: maxDisplacement,
       displacement: displacement,
-      specular: specular,
-      blurMask: blurMasks[0],
-      blurMasks: blurMasks
+      specular: specular
     };
   }
 
@@ -374,10 +362,7 @@
     var result = {
       maps: maps,
       displacementUrl: canvasPng(maps.displacement, maps.mapWidth, maps.mapHeight),
-      specularUrl: canvasPng(maps.specular, maps.mapWidth, maps.mapHeight),
-      blurMaskUrls: maps.blurMasks.map(function (mask) {
-        return canvasPng(mask, maps.mapWidth, maps.mapHeight);
-      })
+      specularUrl: canvasPng(maps.specular, maps.mapWidth, maps.mapHeight)
     };
     geometryCache.set(key, result);
     while (geometryCache.size > 32) geometryCache.delete(geometryCache.keys().next().value);
@@ -416,6 +401,48 @@
     return node;
   }
 
+  function createSurfaceLayers(element, name) {
+    var background = document.createElement('span');
+    background.setAttribute('data-it-liquid-background', '');
+    background.setAttribute('aria-hidden', 'true');
+    background.inert = true;
+    background.style.pointerEvents = 'none';
+    element.insertBefore(background, element.firstChild);
+    var progressive = null;
+    var layers = [];
+    if (name === 'card') {
+      progressive = document.createElement('span');
+      progressive.setAttribute('data-it-liquid-progressive', '');
+      progressive.setAttribute('aria-hidden', 'true');
+      progressive.inert = true;
+      progressive.style.pointerEvents = 'none';
+      var fades = [[70, 100], [50, 75], [20, 55]];
+      fades.forEach(function (fade, index) {
+        var layer = document.createElement('span');
+        layer.setAttribute('data-it-liquid-progressive-layer', String(index + 1));
+        layer.style.pointerEvents = 'none';
+        var mask = 'linear-gradient(to bottom,#000 ' + fade[0] + '%,transparent ' + fade[1] + '%)';
+        layer.style.maskImage = mask;
+        layer.style.webkitMaskImage = mask;
+        progressive.appendChild(layer);
+        layers.push(layer);
+      });
+      element.insertBefore(progressive, background.nextSibling);
+    }
+    return { background: background, progressive: progressive, layers: layers };
+  }
+
+  function ensureSurfaceLayers(state) {
+    var element = state.element;
+    if (!element || !element.isConnected) return;
+    if (state.background.parentNode !== element) {
+      element.insertBefore(state.background, element.firstChild);
+    }
+    if (state.progressive && state.progressive.parentNode !== element) {
+      element.insertBefore(state.progressive, state.background.nextSibling);
+    }
+  }
+
   function createFilter(element, name) {
     var defs = ensureDefs();
     if (!defs) return null;
@@ -439,42 +466,19 @@
       in: 'base-blur', in2: 'displacement-map', scale: '0',
       xChannelSelector: 'R', yChannelSelector: 'G', result: 'refracted'
     });
-    var maskImages = [];
-    var progressiveBlurs = [];
     var previousBlur = 'refracted';
-    [0, 1, 2].forEach(function (index) {
-      var suffix = index === 0 ? '' : '-' + index;
-      var mask = appendPrimitive(filter, 'feImage', {
-        x: '0', y: '0', width: '1', height: '1', preserveAspectRatio: 'none',
-        result: 'progressive-mask' + suffix
-      });
-      var blur = appendPrimitive(filter, 'feGaussianBlur', {
-        in: previousBlur, stdDeviation: '0', result: 'progressive-blur' + suffix
-      });
-      appendPrimitive(filter, 'feComposite', {
-        in: 'progressive-blur' + suffix, in2: 'progressive-mask' + suffix,
-        operator: 'in', result: 'inner-blur' + suffix
-      });
-      appendPrimitive(filter, 'feBlend', {
-        in: 'inner-blur' + suffix, in2: previousBlur, mode: 'normal',
-        result: index === 2 ? 'blurred' : 'blurred-' + index
-      });
-      previousBlur = index === 2 ? 'blurred' : 'blurred-' + index;
-      maskImages.push(mask);
-      progressiveBlurs.push(blur);
-    });
     var specularImage = appendPrimitive(filter, 'feImage', {
       x: '0', y: '0', width: '1', height: '1', preserveAspectRatio: 'none', result: 'specular-map'
     });
     var specularColor = appendPrimitive(filter, 'feColorMatrix', {
-      in: 'blurred', type: 'saturate', values: String(config.specularSaturation),
+      in: previousBlur, type: 'saturate', values: String(config.specularSaturation),
       result: 'displaced-saturated'
     });
     appendPrimitive(filter, 'feComposite', {
       in: 'displaced-saturated', in2: 'specular-map', operator: 'in', result: 'specular-saturated'
     });
     appendPrimitive(filter, 'feBlend', {
-      in: 'specular-saturated', in2: 'blurred', mode: 'normal', result: 'with-saturation'
+      in: 'specular-saturated', in2: previousBlur, mode: 'normal', result: 'with-saturation'
     });
     var specularAlpha = appendPrimitive(filter, 'feComponentTransfer', {
       in: 'specular-map', result: 'specular'
@@ -484,6 +488,7 @@
       in: 'specular', in2: 'with-saturation', mode: 'normal', result: 'liquid-glass'
     });
     defs.appendChild(filter);
+    var layers = createSurfaceLayers(element, name);
     var state = {
       element: element,
       presetName: name,
@@ -492,10 +497,9 @@
       displacementImage: displacementImage,
       refract: refract,
       baseBlur: baseBlur,
-      maskImage: maskImages[0],
-      maskImages: maskImages,
-      progressiveBlur: progressiveBlurs[0],
-      progressiveBlurs: progressiveBlurs,
+      background: layers.background,
+      progressive: layers.progressive,
+      progressiveLayers: layers.layers,
       specularImage: specularImage,
       specularColor: specularColor,
       alphaFunction: alphaFunction,
@@ -527,10 +531,6 @@
     state.filter.setAttribute('height', String(maps.height));
     state.displacementImage.setAttribute('width', String(maps.width));
     state.displacementImage.setAttribute('height', String(maps.height));
-    state.maskImages.forEach(function (image) {
-      image.setAttribute('width', String(maps.width));
-      image.setAttribute('height', String(maps.height));
-    });
     state.specularImage.setAttribute('width', String(maps.width));
     state.specularImage.setAttribute('height', String(maps.height));
     // Keep the reference demo's scale convention: normalized map maximum ×
@@ -538,10 +538,12 @@
     // would produce a stronger lens than the reference's 100% preset.
     state.refract.setAttribute('scale', String(maps.maxDisplacement * interaction.refractionRatio));
     state.baseBlur.setAttribute('stdDeviation', String(config.blurLevel || 0));
-    var progressive = config.progressiveBlurStrength || 0;
-    var levels = [Math.sqrt(Math.sqrt(progressive)) / 2, Math.sqrt(progressive), progressive];
-    state.progressiveBlurs.forEach(function (blur, index) {
-      blur.setAttribute('stdDeviation', String(levels[index]));
+    var levels = progressiveLevels(config.progressiveBlurStrength || 0);
+    state.progressiveLayers.forEach(function (layer, index) {
+      var blur = 'blur(' + levels[index] + 'px)';
+      layer.style.backdropFilter = blur;
+      layer.style.webkitBackdropFilter = blur;
+      state.element.style.setProperty('--it-liquid-progressive-' + (index + 1), levels[index] + 'px');
     });
     state.specularColor.setAttribute('values', String(config.specularSaturation));
     state.alphaFunction.setAttribute('slope', String(config.specularOpacity / 100));
@@ -563,6 +565,15 @@
     });
   }
 
+  function markReady(element) {
+    if (element.dataset.itLiquidState !== 'ready') element.dataset.itLiquidState = 'ready';
+    if (document.documentElement.dataset.itLiquidGlass !== 'ready' &&
+        document.documentElement.dataset.itLiquidGlass !== 'error' &&
+        document.documentElement.dataset.itLiquidGlass !== 'unsupported') {
+      document.documentElement.dataset.itLiquidGlass = 'ready';
+    }
+  }
+
   function updateGeometry(state) {
     var element = state.element;
     if (!element || !element.isConnected || !state.filter) return;
@@ -577,7 +588,10 @@
     var width = typeof element.offsetWidth === 'number' ? element.offsetWidth : rect.width;
     var height = typeof element.offsetHeight === 'number' ? element.offsetHeight : rect.height;
     if (width < 4 || height < 4) {
-      element.dataset.itLiquidState = 'pending';
+      // Attribute observers refresh newly shown surfaces. Rewriting the same
+      // pending value for a hidden surface would schedule another refresh on
+      // every frame forever.
+      if (element.dataset.itLiquidState !== 'pending') element.dataset.itLiquidState = 'pending';
       return;
     }
     var radius = radiusFor(element, width, height);
@@ -585,6 +599,7 @@
     var key = geometryKey(width, height, radius, optics);
     if (state.geometry === key) {
       updateFilterParameters(state, state.maps);
+      markReady(element);
       return;
     }
     try {
@@ -594,19 +609,12 @@
       state.filter.setAttribute('width', String(width));
       state.filter.setAttribute('height', String(height));
       setImageSource(state.displacementImage, cached.displacementUrl);
-      state.maskImages.forEach(function (image, index) {
-        setImageSource(image, cached.blurMaskUrls[index]);
-      });
       setImageSource(state.specularImage, cached.specularUrl);
       state.maps = cached.maps;
       state.geometry = key;
       state.errorReported = false;
       updateFilterParameters(state, cached.maps);
-      element.dataset.itLiquidState = 'ready';
-      if (document.documentElement.dataset.itLiquidGlass !== 'error' &&
-          document.documentElement.dataset.itLiquidGlass !== 'unsupported') {
-        document.documentElement.dataset.itLiquidGlass = 'ready';
-      }
+      markReady(element);
     } catch (error) {
       element.dataset.itLiquidState = 'error';
       document.documentElement.dataset.itLiquidGlass = 'error';
@@ -645,6 +653,7 @@
       mutationObserver = new MutationObserver(function () {
         attached.forEach(function (state, element) {
           if (!element.isConnected) discardState(state, element);
+          else ensureSurfaceLayers(state);
         });
       });
       mutationObserver.observe(document.documentElement, { childList: true, subtree: true });
@@ -657,13 +666,12 @@
     var defs = ensureDefs();
     if (!defs) return null;
     var state = attached.get(element);
+    if (state && state.presetName !== targetPreset) {
+      discardState(state, element);
+      state = null;
+    }
     if (state) {
-      if (state.presetName !== targetPreset) {
-        state.geometry = '';
-        state.interactionActive = false;
-        element.dataset.itLiquidActive = 'false';
-      }
-      state.presetName = targetPreset;
+      ensureSurfaceLayers(state);
       element.dataset.itLiquidPreset = targetPreset;
       if (!state.filter.isConnected) defs.appendChild(state.filter);
       element.style.setProperty('--it-liquid-filter', 'url(#' + state.filter.id + ')');
@@ -688,6 +696,8 @@
     resizeQueue.delete(state);
     if (resizeObserver) resizeObserver.unobserve(element);
     if (state.filter && state.filter.parentNode) state.filter.parentNode.removeChild(state.filter);
+    if (state.background && state.background.parentNode) state.background.parentNode.removeChild(state.background);
+    if (state.progressive && state.progressive.parentNode) state.progressive.parentNode.removeChild(state.progressive);
   }
 
   function configure(input) {
@@ -703,6 +713,7 @@
         return;
       }
       if (!state.filter.isConnected) ensureDefs().appendChild(state.filter);
+      ensureSurfaceLayers(state);
       element.style.setProperty('--it-liquid-filter', 'url(#' + state.filter.id + ')');
       updateFilterParameters(state, state.maps || { width: 1, height: 1, maxDisplacement: 0 });
       queueResize(state);
@@ -741,6 +752,7 @@
     ensureObservers();
     attached.forEach(function (state) {
       if (!state.filter.isConnected) ensureDefs().appendChild(state.filter);
+      ensureSurfaceLayers(state);
     });
   }
 
@@ -749,7 +761,7 @@
   }
 
   return {
-    version: 3,
+    version: 4,
     defaults: normalizePresets(DEFAULTS),
     presetDefaults: normalizePresets(DEFAULTS),
     normalize: normalizePresets,
@@ -760,6 +772,7 @@
     opticalPreset: opticalPreset,
     profileHeight: profileHeight,
     interactionParameters: interactionParameters,
+    progressiveLevels: progressiveLevels,
     specularSaturationValue: specularSaturationValue,
     rendererSupport: rendererSupport,
     attach: attach,

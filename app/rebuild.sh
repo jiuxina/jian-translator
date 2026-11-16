@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # 重新打包「笺」桌面版
-# 依赖：Node 18+、Rust(MSVC)、pake-cli（npm i -g pake-cli）、WebView2
+# Windows 依赖：Node 22+、Rust(MSVC)、pake-cli、WebView2
+# macOS 依赖：Node 22+、app/macos 中 npm ci 安装的 Chromium 桌面壳构建依赖
 #
 # v2 起改为「自绘 UI + 官方公开 API」：
 #   前端源码在本仓库根目录 web/，pake 以本地目录方式打包（入口 index.html），
@@ -18,6 +19,13 @@ ROOT_DIR="$(cd "$(dirname "$0")/.." && { pwd -W 2>/dev/null || pwd; })"
 OUT_DIR="${IT_OUT_DIR:-$ROOT_DIR/output}"
 DESKTOP_DIR="$ROOT_DIR/desktop"
 WEB_DIR="$ROOT_DIR/web"
+
+case "$(uname -s)" in
+  Darwin)
+    # Safari/WKWebView 不支持参考的 SVG backdrop 链，Mac 使用同一 Chromium 光学实现。
+    exec node "$APP_DIR/macos/build.mjs" "$@"
+    ;;
+esac
 
 if [ ! -f "$WEB_DIR/index.html" ]; then
   echo "缺少 $WEB_DIR/index.html，自绘前端不完整" >&2

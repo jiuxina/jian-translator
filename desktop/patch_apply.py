@@ -329,6 +329,8 @@ def main():
             "Win32_System_DataExchange",
             "Win32_System_Memory",
             "Win32_System_Ole",
+            "Win32_UI_Controls",
+            "Win32_UI_HiDpi",
         ):
             marker = '"%s"' % feature
             if marker not in cargo:

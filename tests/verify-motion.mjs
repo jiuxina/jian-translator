@@ -158,6 +158,8 @@ async function scenario(name, task) {
 
 const baselineScript = `
   window.__motionTest = { copied: [], invoked: [] };
+  window.__glassStyle = (element) => getComputedStyle(
+    element.querySelector(':scope > [data-it-liquid-background]') || element);
   const fetchReal = window.fetch.bind(window);
   window.fetch = (url, options) => {
     if (String(url) === 'https://api.github.com/repos/jiuxina/jian-translator/releases/latest') {
@@ -450,6 +452,7 @@ async function menus(connection) {
 
 let page;
 let controller;
+let desktop;
 try {
   const targets = await (await fetch(`${DEBUG_ORIGIN}/json`)).json();
   const controlTarget = targets.find((item) => item.type === 'page' && item.url.startsWith(ORIGIN));
@@ -629,7 +632,7 @@ try {
   await scenario('液态玻璃参数驱动真实折射', async () => {
     const result = await page.evaluate(`(() => {
       const card = document.querySelector('#pane-text .card');
-      const filterUrl = getComputedStyle(card).backdropFilter || getComputedStyle(card).webkitBackdropFilter;
+      const filterUrl = window.__glassStyle(card).backdropFilter || window.__glassStyle(card).webkitBackdropFilter;
       const filterId = (filterUrl.match(/url\\(["']?#([^"')]+)["']?\\)/) || [])[1];
       const filter = filterId && document.getElementById(filterId);
       const map = filter?.querySelector('feImage[href^="data:image/png"]');
@@ -647,7 +650,8 @@ try {
           [...(filter?.querySelectorAll('feBlend') || [])]
             .every((blend) => blend.getAttribute('mode') === 'normal'),
         blur: !!filter?.querySelector('feGaussianBlur'),
-        progressiveBlur: filter?.querySelectorAll('feImage[result^="progressive-mask"]').length === 3,
+        progressiveBlur: card.querySelectorAll(':scope > [data-it-liquid-progressive] > span').length === 3 &&
+          !filter?.querySelector('[result^="progressive-blur"]'),
         controls,
         config
       };
@@ -663,13 +667,13 @@ try {
       result.config.card.refractionLevel === 100 && result.config.card.blurLevel === 1 &&
       result.config.card.progressiveBlurStrength === 1 && result.config.card.backgroundOpacity === 60,
       JSON.stringify(result.controls));
-    check('SVG滤镜包含镜面高光和渐进模糊图层', result.specular && result.blur && result.progressiveBlur,
+    check('SVG高光与独立CSS渐进模糊图层按参考组合', result.specular && result.blur && result.progressiveBlur,
       JSON.stringify({ specular: result.specular, blur: result.blur, progressiveBlur: result.progressiveBlur }));
     check('卡片直接折射且不再使用旧伪彩色描边', await page.evaluate(`(() => {
       const card = document.querySelector('#pane-text .card');
       const rim = getComputedStyle(card, '::after');
       return !rim.backgroundImage.includes('conic-gradient') &&
-        getComputedStyle(card).backdropFilter.includes('url(') &&
+        window.__glassStyle(card).backdropFilter.includes('url(') &&
         !document.documentElement.hasAttribute('data-it-material') &&
         !document.documentElement.classList.contains('no-lg-blur');
     })()`));
@@ -686,7 +690,7 @@ try {
       const track = document.querySelector('.tabs');
       const thumb = document.querySelector('.tabs-thumb');
       return getComputedStyle(track).backdropFilter === 'none' &&
-        getComputedStyle(thumb).backdropFilter.includes('url(');
+        window.__glassStyle(thumb).backdropFilter.includes('url(');
     })()`));
     check('旧玻璃设置迁移为新默认值且保留无关偏好', await page.evaluate(`(() => {
       const api = window.__itDebug.preferences;
@@ -1399,7 +1403,7 @@ try {
     const desktopTargets = await (await fetch(`${DEBUG_ORIGIN}/json`)).json();
     const target = desktopTargets.find((item) => item.id === desktopTargetId);
     if (!target) throw new Error('CDP did not expose the isolated desktop test tab.');
-    const desktop = await Cdp.connect(target.webSocketDebuggerUrl);
+    desktop = await Cdp.connect(target.webSocketDebuggerUrl);
     await prepare(desktop, true);
     await desktop.send('Emulation.setDeviceMetricsOverride', {
       width: 700, height: 800, deviceScaleFactor: 1, mobile: false,
@@ -1480,7 +1484,7 @@ try {
       return !!button && !!button.getAttribute('aria-label') &&
         [...select.options].map((option) => option.value).join(',') === 'card,pill,button' &&
         getComputedStyle(button).borderRadius === expectedRadius &&
-        getComputedStyle(button).backdropFilter.includes('url(');
+        window.__glassStyle(button).backdropFilter.includes('url(');
     })()`);
     check('玻璃调整对象下拉与滤镜控件风格统一', presetPopup);
     await desktop.evaluate(`document.getElementById('it-glass-target')?.parentElement?.querySelector('.sel-btn')?.click()`);
@@ -1488,7 +1492,7 @@ try {
     const themeOptionsStyled = await desktop.evaluate(`(() => {
       const popup = document.querySelector('.sel-pop[aria-hidden="false"]');
       return !!popup && !!popup.querySelector('.sel-list .sel-item') &&
-        getComputedStyle(popup).backdropFilter !== 'none';
+        window.__glassStyle(popup).backdropFilter !== 'none';
     })()`);
     check('玻璃调整对象选项使用统一滤镜弹层', themeOptionsStyled);
     await desktop.key('Escape');
@@ -1622,7 +1626,7 @@ try {
     check('液态玻璃控件实时驱动折射、高光和模糊', await desktop.evaluate(`(() => {
       const card = document.querySelector('.card');
       const getFilter = () => {
-        const url = getComputedStyle(card).backdropFilter;
+        const url = window.__glassStyle(card).backdropFilter;
         const id = (url.match(/url\\(["']?#([^"')]+)["']?\\)/) || [])[1];
         return id && document.getElementById(id);
       };
@@ -1939,7 +1943,8 @@ try {
     })()`));
     check('悬浮窗完整显示不把图片放大裁剪且完全透出仍保留外阴影', await popup.evaluate(`(() => {
       const layer = document.getElementById('popup-background');
-      const photo = getComputedStyle(layer, '::before'), card = getComputedStyle(document.getElementById('card'));
+      const photo = getComputedStyle(layer, '::before'),
+        card = getComputedStyle(document.querySelector('#card > [data-it-liquid-background]'));
       return photo.backgroundSize === 'contain' &&
         ['top', 'right', 'bottom', 'left'].every((side) => photo[side] === '0px') &&
         card.backdropFilter.includes('url(') &&
@@ -1966,7 +1971,7 @@ try {
       const photo = getComputedStyle(layer, '::before');
       return photo.backgroundImage.includes('data:image/png') && photo.filter === 'blur(20px)' &&
         getComputedStyle(layer, '::after').backgroundColor === 'rgba(18, 16, 24, 0.34)' &&
-        getComputedStyle(document.getElementById('card')).backdropFilter !== 'none';
+        getComputedStyle(document.querySelector('#card > [data-it-liquid-background]')).backdropFilter !== 'none';
     })()`));
     const dark = await popup.send('Page.captureScreenshot', { format: 'png' });
     await writeFile('output/preview-popup-clipped-dark.png', Buffer.from(dark.data, 'base64'));

@@ -427,7 +427,7 @@
 
     var currentLabel = '';
     var currentValue = select.value;   // 记住旧值，才能算出它在列表里的位置
-    var spinTimer = 0;
+    var spinSequence = 0;
 
     function labelOf() {
       var opt = select.options[select.selectedIndex];
@@ -472,7 +472,7 @@
       if (text === currentLabel) return;
       var from = currentLabel || text;
       currentLabel = text;
-      clearTimeout(spinTimer);
+      var sequence = ++spinSequence;
       valueEl.classList.remove('rolling');
       valueEl.style.animationDuration = '';
 
@@ -519,11 +519,20 @@
       valueEl.classList.add('rolling');
       reelEl.style.transform = 'translateY(-' + end + 'px)';
 
-      spinTimer = setTimeout(function () {
+      function settleSpin() {
+        if (sequence !== spinSequence) return;
         valueEl.classList.remove('rolling');
         valueEl.style.animationDuration = '';
         paintRow(text);
-      }, duration + 30);
+      }
+      // Follow this transition's compositor clock. A wall-clock timer can
+      // expire before the first painted frame on a busy renderer. Instance
+      // ownership also prevents an old cancellation from settling a new reel.
+      var transition = reelEl.getAnimations && reelEl.getAnimations().find(function (animation) {
+        return animation.transitionProperty === 'transform';
+      });
+      if (transition) transition.finished.then(settleSpin, settleSpin);
+      else settleSpin();
     }
 
     function syncButton(animate) {
@@ -2587,7 +2596,7 @@
             <section class="it-set-page" data-pref-section="appearance">
               <h2>外观</h2>
               <div class="it-pref-preview"><span class="it-pref-preview-label">实时预览</span>
-                <div class="it-pref-preview-card"><span>笺</span><span>原文 · 译文</span>
+                <div class="it-pref-preview-card"><span class="it-pref-preview-name">笺</span><span class="it-pref-preview-caption">原文 · 译文</span>
                   <b>清楚、舒适的阅读体验</b><i></i></div></div>
               <label class="it-set-row"><span>明暗主题</span><select id="it-pref-theme" data-pref="appearance.mode">
                 <option value="light">浅色</option><option value="dark">深色</option><option value="system">跟随系统</option>
@@ -2855,6 +2864,7 @@
       glassTarget = enumValue(this.value, ['card', 'pill', 'button'], 'card');
       fill();
     });
+    updateGlassControls();
 
     function populateSystemFonts(fonts) {
       if (!fontFamilySelect) return;

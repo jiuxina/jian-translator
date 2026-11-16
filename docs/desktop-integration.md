@@ -1,15 +1,61 @@
-# Windows 窗口与设置集成
+# 桌面窗口与设置集成
+
+## 本轮交付与验证（2026-11-16）
+
+Windows EXE/MSI 与 Android Release 构建成功，原有安装包保留，新增：
+
+| 文件 | 字节数 | SHA-256 |
+| --- | ---: | --- |
+| `output/笺-2.2.0-玻璃与更新.exe` | 9,447,424 | `78B45D00A083572ECFB872007BC28298A80019F0305E02632B7BBAD46F612EA6` |
+| `output/笺-2.2.0-玻璃与更新.msi` | 4,308,992 | `B9CDC82BD334B44CC108C06891F3FE2E2C9DCD731CC971888955CE72BF5A36E3` |
+| `output/笺-2.2.0-玻璃与更新.apk` | 3,560,624 | `47949887413D75C3FD1F94E706DF09AA85BF67DDA9C2D347EC596702B6D84AE8` |
+
+Windows 最终隔离输出为 `.build/release-stage-presets-v4-20261116/`；
+先前“分型玻璃”预览包保留，最终交付使用表中“玻璃与更新”文件。MSI ProductVersion 为 `2.2.0`。
+EXE 的 PE FileVersion/ProductVersion 仍为 Pake 模板 `3.18.0`，不是关于页的应用版本。
+Android APK 经 AAPT 核验为 versionCode `5` / versionName `2.2.0`；六项前端镜像及 APK entry
+与 `web/` 字节一致，APK 内已没有旧注入版 CSS/JS 资源。哈希清单追加在 `output/SHA256SUMS.txt`。
+
+针对性检查包括共享引擎数学、公开滑条归一化、更新版本比较/频率/错误状态、macOS IPC 与
+资源路径边界、共享悬浮窗提取、JS/Python 语法、Rust 格式与 Windows 目标 `cargo check`。
+独立 Chromium 预览确认三组 6/4/3 滑条、滑块按住状态、面板本地滤镜尺寸、Mac 界面桥接、
+去图标关于页、按钮简化及更新结果；截图见 `output/preview-presets-*.png`、
+`output/preview-updates-settings.png` 和 `output/preview-about-no-icon.png`。
+最终 v4 浮窗检查还覆盖中文多行复制桥替身、反馈文字修改后背景层恢复和透明外留白，
+结果为 `output/verify-popup-final.json`，截图为 `output/preview-popup-final-v4.png`。
+
+实现及文档完成后，只执行一次最终完整离线浏览器回归：**97/107**，
+输出为 `output/verify-presets-final.log`；同阶段 Rust **93/93**，
+输出为 `output/verify-presets-rust-final.log`。回归拦截外网、使用原生桥接替身；
+更新 API 使用响应替身而非真实发布请求。
+
+浏览器失败包括测试桌面连接的变量作用域、尚未打开设置时未初始化滑条属性，
+以及 SVG 合成开销引起的低帧率和动画帧等待超时。前两项随后修正并通过定向检查；
+另修复隐藏表面重复写入相同 `pending` 状态触发刷新循环的问题，空闲状态计数已稳定。
+引擎 v4 随后将渐进模糊从 SVG 移到参考使用的独立 CSS 层，去掉多余 PNG；
+轮盘绑定实际 transition 的完成时钟及选择代次。独立正常 Chromium 的最终定向检查
+`output/verify-animation-targets-final.json` 确认 Tab 双向、轮盘正反/快速改选和设置关闭清理通过，
+没有残留动画。本机多数帧采样约 95ms，仍有性能成本，不能称为 60fps 流畅。
+不重跑全套。唯一全量统计保持 97/107，
+不将后续局部通过改写成完整套件通过。
+
+macOS 采用新的 Chromium 桌面壳，代码、资源准备、依赖锁文件和纯 Node/界面桥接检查完成；
+构建命令和平台行为见 [macOS 适配](macos.md)。当前运行环境为 Windows，
+**未生成 DMG/ZIP，未完成 Mac 本机字体、剪贴板、权限、登录项或原生窗口验收**。
+Windows 22 DIP 外圆角与阴影、各 DPI 下缩放/最大化，以及 Android System WebView 的最终
+绘制和性能也仍需目标设备验收。构建成功和浏览器像素变化不代替这些结果。
 
 ## 液态玻璃引擎（2026-11-16）
 
 `web/liquid-glass.js` 是网页、Android 和 Windows 悬浮窗共同使用的 SVG 液态玻璃引擎。
 桌面补丁应用器会把它复制到 Pake 模板 `src/app/liquid-glass.js`；`setup.rs` 以
-`include_str!` 引入，并在执行独立 `POPUP_BOOTSTRAP` 前注入引擎。悬浮窗的 `#card` 自身绑定
-SVG displacement、specular、Gaussian 与渐进模糊滤镜；圆角、壁纸层和外阴影继续由卡片 frame 负责。
+`include_str!` 引入，并在执行独立 `POPUP_BOOTSTRAP` 前注入引擎。悬浮窗卡片使用独立光学背景层，
+SVG 处理 displacement、specular 与基础 Gaussian，渐进模糊按参考使用三个 CSS backdrop/mask 层；
+圆角、壁纸层和外阴影继续由卡片 frame 负责。
 
-浮窗接收通用偏好顶层 `liquidGlass`。参数包括 `surfaceProfile`、`bezelWidth`、`glassThickness`、
-`refractiveIndex`、`refractionLevel`、`specularOpacity`、`specularSaturation`、`blurLevel`、
-`progressiveBlurStrength` 和 `backgroundOpacity`。旧材质、玻璃强度、卡片透出字段已从浮窗
+浮窗接收通用偏好顶层 `liquidGlass.{card,pill,button}`。卡片使用 `card` 六项公开滑条，
+复制按钮使用 `button` 三项滑条。Tab 等滑块使用 `pill` 四项滑条，默认值与范围见
+[界面主题](ui-theme.md)。旧材质、玻璃强度、卡片透出字段已从浮窗
 渲染路径移除。浮窗可独立选择背景图；背景图片淡化、模糊及适配继续沿用 `background.opacity/blur/fit`，
 这些壁纸参数不改写全局液态玻璃参数。
 
@@ -22,9 +68,10 @@ Windows 窗口做视觉验收；目前也未声称 Android System WebView 支持
 
 ## 偏好迁移
 
-通用偏好版本更新为 2。`appearance.material/glassStrength/cardReveal` 和 `popup.cardReveal` 不再读作
+通用偏好版本更新为 3。`appearance.material/glassStrength/cardReveal` 和 `popup.cardReveal` 不再读作
 有效设置，旧玻璃值不映射为新光学参数；归一化后使用新的 `liquidGlass` 默认值。主题、字体、壁纸、
-翻译偏好等无关设置保留。设置“液态玻璃”分组复位顶层 `liquidGlass`；“电脑功能”复位浮窗背景与
+翻译偏好等无关设置保留。版本 2 的扁平玻璃对象同样被三种新预设替换。
+设置“液态玻璃”分组只复位当前调整对象；“电脑功能”复位浮窗背景与
 原生桌面选项时会保留顶层液态玻璃配置。
 
 维护源是 `desktop/patch/setup.rs`；`patch_apply.py` 将它同步到工作区的 Pake 3.18.0 模板，
@@ -38,7 +85,8 @@ Pake Windows Release 成功；构建输出保存在 `.build/release-stage-liquid
 `app.js`、`theme.css`、`index.html` 和新引擎均与 `web/` 的 Android 镜像一致。
 EXE、MSI、APK 的 SHA-256 均记录在 `output/SHA256SUMS.txt`。
 
-离线 GPU Chromium 回归为 **128/128**，并检查打包入口的模板同步和静态滤镜声明。
+上一任务最终唯一全量回归为 **127/128**，轮盘帧采样随后通过定向动画时钟检查；
+更早一次 GPU Chromium 曾为 128/128，不能混写为最终结果。回归检查打包入口的模板同步和静态滤镜声明。
 实际打包 WebView2 中的 SVG `backdrop-filter` 绘制及 Android System WebView 设备效果仍待验收；
 当前构建成功与浏览器像素变化不代表这两项实机验证已完成。
 
@@ -71,6 +119,11 @@ Windows 构建于 2026-11-15 20:02 完成，产物为 `output/笺-2.2.0-界面�
 EXE PE FileVersion/ProductVersion 仍为 Pake 模板的 `3.18.0`，与上一轮限制相同。
 
 ## 窗口边框
+
+主窗口普通状态增加 22 DIP 圆角区域，使用 `GetDpiForWindow` 随 DPI 缩放。
+尺寸、位置、DPI、显示器与桌面合成变化时刷新区域；最大化与全屏时移除区域，保留完整工作区。
+区域比较避免 `SetWindowRgn` 重复窗口消息；GDI 所有权仅在成功设置后转给系统。
+`DwmExtendFrameIntoClientArea` 请求保留原生阴影；自定义区域与阴影的实际组合仍需 Windows 视觉验收。
 
 主窗口安装子类处理器后关闭窗口装饰。处理器让原窗口过程先完成 `WM_NCCALCSIZE`，再恢复
 Windows 11 无装饰阴影添加的微小顶部 inset；修正范围限于顶部正向 1–8 个设备像素，不触碰

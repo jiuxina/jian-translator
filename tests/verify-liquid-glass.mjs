@@ -4,7 +4,7 @@ import { createRequire } from 'node:module';
 const require = createRequire(import.meta.url);
 const glass = require('../web/liquid-glass.js');
 
-assert.equal(glass.version, 3);
+assert.equal(glass.version, 4);
 assert.deepEqual(glass.normalize(), glass.defaults);
 assert.deepEqual(glass.normalize({
   card: {
@@ -118,7 +118,6 @@ assert.ok(refractive.maxDisplacement > 0, 'glass must produce a nonzero Snell di
 assert.ok(refractive.mapWidth <= 640 && refractive.mapHeight <= 640);
 assert.equal(refractive.displacement.length, refractive.mapWidth * refractive.mapHeight * 4);
 assert.equal(refractive.specular.length, refractive.displacement.length);
-assert.equal(refractive.blurMask.length, refractive.displacement.length);
 assert.ok(refractive.displacement.some((value, index) =>
   index % 4 === 0 && value !== 128), 'the red displacement channel must carry an optical offset');
 assert.ok(refractive.specular.some((value, index) =>
@@ -127,9 +126,12 @@ for (let index = 0; index < refractive.specular.length; index += 4) {
   assert.equal(refractive.specular[index], refractive.specular[index + 1]);
   assert.equal(refractive.specular[index + 1], refractive.specular[index + 2]);
 }
-assert.equal(refractive.blurMasks.length, 3, 'progressive blur keeps the three reference fades');
-assert.equal(new Set(refractive.blurMasks.map((mask) => Buffer.from(mask).toString('base64'))).size, 3,
-  'the three progressive blur masks use distinct vertical fade ranges');
+assert.equal('blurMask' in refractive, false,
+  'runtime optical maps must not encode CSS progressive-blur masks into unused PNGs');
+assert.deepEqual(glass.progressiveLevels(0), [0, 0, 0]);
+assert.deepEqual(glass.progressiveLevels(1), [.5, 1, 1],
+  'CSS progressive blur uses the reference Music Player levels');
+assert.deepEqual(glass.progressiveLevels(10), [Math.sqrt(Math.sqrt(10)) / 2, Math.sqrt(10), 10]);
 const filterOnly = glass.generateMaps(360, 240, 26, {
   ...optics, specularSaturation: 50, specularOpacity: 0, blurLevel: 40
 });
