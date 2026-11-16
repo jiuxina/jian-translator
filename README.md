@@ -1,11 +1,14 @@
-# 笺
-
-**一款好看又好用的翻译工具，支持 Windows、macOS、Android 和网页。**
-
-![Platform Windows](https://img.shields.io/badge/platform-Windows-blue)
-![Platform macOS](https://img.shields.io/badge/platform-macOS-black)
-![Platform Android](https://img.shields.io/badge/platform-Android-green)
-![License](https://img.shields.io/badge/license-CC%20BY--NC--SA%204.0-lightgrey)
+<div align="center">
+  <img src="app/icon.png" alt="笺图标" width="112">
+  <h1>笺</h1>
+  <p><strong>一款好看又好用的翻译工具，支持 Windows、macOS、Android 和网页。</strong></p>
+  <p>
+    <img src="https://img.shields.io/badge/platform-Windows-blue" alt="Platform Windows">
+    <img src="https://img.shields.io/badge/platform-macOS-black" alt="Platform macOS">
+    <img src="https://img.shields.io/badge/platform-Android-green" alt="Platform Android">
+    <img src="https://img.shields.io/badge/license-CC%20BY--NC--SA%204.0-lightgrey" alt="License CC BY-NC-SA 4.0">
+  </p>
+</div>
 
 ## ✨ 它能做什么
 
@@ -78,23 +81,6 @@
 | macOS | 通知或登录项授权 | 快捷键、托盘和开机启动相关能力按需申请 |
 
 应用不会上传你的壁纸、设置或本机文档；只有你主动提交翻译的内容会发送到翻译接口。
-
-## ❓ 常见问题
-
-**翻译请求失败怎么办？**  
-先检查网络连接。公开接口可能临时繁忙或限流，稍后重试；长文可以尝试更小的分块。
-
-**图片翻译没有结果？**  
-图片要清晰、文字不能过度倾斜或遮挡；也可以先把图片保存到本地，再在应用里重新选择。
-
-**快捷键没有反应？**  
-确认应用正在运行，并检查其他软件是否占用了相同快捷键；macOS 需要允许对应的辅助功能权限。
-
-**界面效果不正常？**  
-网页版和部分 WebView 可能不支持完整液态玻璃折射。更新系统浏览器或使用桌面安装包通常更稳定。
-
-**旧版本设置还在吗？**  
-应用会在升级时尽量迁移兼容的偏好；不兼容的旧外观参数会恢复默认，翻译偏好会尽量保留。
 
 ## 🤝 参与贡献
 
