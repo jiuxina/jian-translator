@@ -8,9 +8,9 @@ Android 使用 versionName `2.3.0` / versionCode `6`，共用网页资源同步�
 
 完成版本提交后，将该提交合并并推送到 `main`，再创建指向同一提交的 `v2.3.0` 标签。
 也可以在 GitHub 新建 Release 时创建该标签，Target 选择包含版本提交的 `main`。
-当前 `.github/workflows/release.yml` 在标签推送后构建 Windows EXE/MSI、
+当前 `.github/workflows/release.yml` 仅在 `v*` 标签推送后构建 Windows EXE/MSI、
 macOS universal DMG/ZIP 和 Android APK，再上传五项附件与 `SHA256SUMS.txt`。
-推送 `main` 只保存构建附件；发布标签后需等待三端与发布任务全部成功。
+普通分支推送不会触发构建；发布标签后需等待三端与发布任务全部成功。
 
 工作流当前使用 `prerelease: true`。应用内更新检查只接收正式发布；
 若要让 2.3.0 进入此通道，构建上传完成后编辑该 Release，取消预发布标记。

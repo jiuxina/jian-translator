@@ -93,8 +93,8 @@
 [技术文档](docs/technical.md)；界面细节另见
 [界面主题记录](docs/ui-theme.md)。
 
-推送到 `main` 或 `v*` 标签会自动构建 Windows、macOS 和 Android 安装包；标签构建会
-自动发布 GitHub Release 并附带安装包、Windows 便携 EXE 和 SHA-256 校验清单。
+推送 `v*` 标签会自动构建 Windows、macOS 和 Android 安装包，然后发布 GitHub
+Release 并附带安装包、Windows 便携 EXE 和 SHA-256 校验清单。
 
 ## 📄 开源协议
 

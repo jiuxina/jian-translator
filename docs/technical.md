@@ -113,11 +113,11 @@ Git Bash 安装位置因机器而异，使用本机实际路径。默认构建�
 
 ## 自动发布
 
-推送到 `main` 或推送 `v*` 标签会触发 [.github/workflows/release.yml](.github/workflows/release.yml)。
+推送 `v*` 标签会触发 [.github/workflows/release.yml](.github/workflows/release.yml)。
 工作流分别在 Windows、macOS 与 Ubuntu 运行器上构建三端产物，最后调用
 `scripts/prepare-release.mjs` 生成规范命名附件、`RELEASE_NOTES.md`、`SHA256SUMS.txt`
 和来源清单。标签构建会把附件与发布说明上传到对应的 GitHub Release；
-普通分支构建只保存 `prepared-release` 附件，用于发布前审阅。
+工作流仅在标签事件上运行，普通分支推送不会再触发构建。
 
 Android Release 优先读取 `ANDROID_KEYSTORE_BASE64` 和
 `ANDROID_SIGNING_PROPERTIES_BASE64` 两个仓库 Secrets，并在构建前还原到
