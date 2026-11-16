@@ -70,15 +70,11 @@ dependencies {
 def webSourceDir = rootProject.file('../web')
 def assetsTargetDir = file('src/main/assets')
 
-tasks.register('syncWebAssets') {
-    inputs.dir(webSourceDir)
-    outputs.dir(assetsTargetDir)
+tasks.register('syncWebAssets', Copy) {
+    from webSourceDir
+    into assetsTargetDir
+    include 'index.html', 'theme.css', 'app.js', 'langs.js', 'liquid-glass.js'
     doLast {
-        delete assetsTargetDir
-        copy {
-            from webSourceDir
-            into assetsTargetDir
-        }
         logger.lifecycle("synced ../web -> src/main/assets")
     }
 }

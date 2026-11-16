@@ -1,5 +1,9 @@
 # 设置项关系简报
 
+2026-11-16 资源审计：当前界面不再加载旧注入主题；此前 Android 仍将 `res/raw/` 中的旧
+脚本和样式打包，这四项资源及 `app/` 中对应旧文件现已移至回收站并从源码移除。
+`syncWebAssets` 改为仅覆盖五项共用前端资源的 Gradle Copy 任务，不再删除 assets 目录。
+
 审查日期：2026-11-16。依据当前 `web/app.js`、`web/theme.css`、`web/liquid-glass.js` 与
 `desktop/patch/setup.rs`，审查网页、Android 与 Windows 的偏好归一化及消费路径。
 这是代码关系审查；SVG `backdrop-filter` 的最终效果仍需在目标 Android WebView 和 Windows WebView2
