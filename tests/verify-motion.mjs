@@ -165,7 +165,7 @@ const baselineScript = `
     if (String(url) === 'https://api.github.com/repos/jiuxina/jian-translator/releases/latest') {
       window.__motionTest.updateChecks = (window.__motionTest.updateChecks || 0) + 1;
       const mocked = window.__motionTest.updateResponse || { status: 200, body: {
-        tag_name: 'v2.2.0', html_url: 'https://github.com/jiuxina/jian-translator/releases/tag/v2.2.0'
+        tag_name: 'v2.3.0', html_url: 'https://github.com/jiuxina/jian-translator/releases/tag/v2.3.0'
       } };
       return Promise.resolve(new Response(JSON.stringify(mocked.body || {}), {
         status: mocked.status, headers: { 'content-type': 'application/json' }
@@ -415,10 +415,10 @@ async function menus(connection) {
   await pause(350);
   const aboutScreenshot = await connection.send('Page.captureScreenshot', { format: 'png' });
   await mkdir('output', { recursive: true });
-  await writeFile('output/preview-2.2.0-about.png', Buffer.from(aboutScreenshot.data, 'base64'));
+  await writeFile('output/preview-2.3.0-about.png', Buffer.from(aboutScreenshot.data, 'base64'));
   check('关于页展示版本、品牌与服务说明', await connection.evaluate(`(() => {
     const about = document.querySelector('.it-about');
-    return !!about && about.textContent.includes('笺') && about.textContent.includes('2.2.0') &&
+    return !!about && about.textContent.includes('笺') && about.textContent.includes('2.3.0') &&
       about.textContent.includes('Index-Translate') && about.textContent.includes('非官方客户端');
   })()`));
   check('关于页移除译字标语并展示开源仓库链接', await connection.evaluate(`(() => {
@@ -1433,7 +1433,7 @@ try {
     await desktop.until(`document.querySelector('.it-set-mask').getAttribute('aria-hidden') === 'false'`);
     await pause(350);
     const settingsScreenshot = await desktop.send('Page.captureScreenshot', { format: 'png' });
-    await writeFile('output/preview-2.2.0-settings.png', Buffer.from(settingsScreenshot.data, 'base64'));
+    await writeFile('output/preview-2.3.0-settings.png', Buffer.from(settingsScreenshot.data, 'base64'));
     await writeFile('output/preview-settings-polish-dark.png', Buffer.from(settingsScreenshot.data, 'base64'));
     check('桌面设置将焦点带入对话框',
       await desktop.evaluate(`document.querySelector('.it-set').contains(document.activeElement)`));
@@ -1824,19 +1824,19 @@ try {
       !document.querySelector('[data-pref-section="updates"]').hidden`);
     check('更新设置提供自动检查开关与当前版本', await desktop.evaluate(`(() => {
       const page=document.querySelector('[data-pref-section="updates"]');
-      return page.textContent.includes('2.2.0') &&
+      return page.textContent.includes('2.3.0') &&
         page.textContent.includes('24 小时') &&
         !!page.querySelector('[data-pref="updates.autoCheck"]');
     })()`));
     await desktop.evaluate(`window.__motionTest.updateResponse={status:200,body:{
-      tag_name:'v2.3.0',html_url:'https://github.com/jiuxina/jian-translator/releases/tag/v2.3.0'
+      tag_name:'v2.3.1',html_url:'https://github.com/jiuxina/jian-translator/releases/tag/v2.3.1'
     }}`);
     await desktop.click('#it-update-check');
-    await desktop.until(`document.getElementById('it-update-status').textContent.includes('2.3.0')`);
+    await desktop.until(`document.getElementById('it-update-status').textContent.includes('2.3.1')`);
     check('检查发现新版本并提供固定仓库发布链接', await desktop.evaluate(`(() => {
       const link=document.getElementById('it-update-release');
-      return link.href==='https://github.com/jiuxina/jian-translator/releases/tag/v2.3.0' &&
-        link.textContent==='获取 2.3.0' && link.rel.includes('noopener');
+      return link.href==='https://github.com/jiuxina/jian-translator/releases/tag/v2.3.1' &&
+        link.textContent==='获取 2.3.1' && link.rel.includes('noopener');
     })()`));
     await desktop.evaluate(`window.__motionTest.updateResponse={status:429}`);
     await desktop.click('#it-update-check');

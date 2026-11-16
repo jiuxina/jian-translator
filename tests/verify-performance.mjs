@@ -147,8 +147,8 @@ const instrument = `
     }
     if (target.href === 'https://api.github.com/repos/jiuxina/jian-translator/releases/latest') {
       return Promise.resolve(new Response(JSON.stringify({
-        tag_name: 'v2.2.0',
-        html_url: 'https://github.com/jiuxina/jian-translator/releases/tag/v2.2.0'
+        tag_name: 'v2.3.0',
+        html_url: 'https://github.com/jiuxina/jian-translator/releases/tag/v2.3.0'
       }), { status: 200, headers: { 'content-type': 'application/json' } }));
     }
     return Promise.reject(new Error('External requests are disabled by the performance probe'));

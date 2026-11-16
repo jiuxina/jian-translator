@@ -15,9 +15,9 @@ await mkdir(macosDir);
 await mkdir(path.join(fixture, 'app', 'macos'), { recursive: true });
 await mkdir(path.join(fixture, 'docs', 'releases'), { recursive: true });
 await writeFile(path.join(fixture, 'app', 'macos', 'package.json'),
-  JSON.stringify({ version: '2.2.0' }), 'utf8');
-const notes = '# 笺 2.2.0\n\n仅供本地准备测试。\n';
-await writeFile(path.join(fixture, 'docs', 'releases', 'v2.2.0.md'), notes, 'utf8');
+  JSON.stringify({ version: '2.3.0' }), 'utf8');
+const notes = '# 笺 2.3.0\n\n仅供本地准备测试。\n';
+await writeFile(path.join(fixture, 'docs', 'releases', 'v2.3.0.md'), notes, 'utf8');
 const inputExe = Buffer.from('synthetic EXE input');
 const inputMsi = Buffer.from('synthetic MSI input');
 const inputDmg = Buffer.from('synthetic DMG input');
@@ -25,8 +25,8 @@ const inputZip = Buffer.from('synthetic ZIP input');
 const inputApk = Buffer.from('synthetic APK input');
 await writeFile(path.join(windowsDir, '笺.exe'), inputExe);
 await writeFile(path.join(windowsDir, '笺.msi'), inputMsi);
-await writeFile(path.join(macosDir, '笺-2.2.0-macOS-universal.dmg'), inputDmg);
-await writeFile(path.join(macosDir, '笺-2.2.0-macOS-universal.zip'), inputZip);
+await writeFile(path.join(macosDir, '笺-2.3.0-macOS-universal.dmg'), inputDmg);
+await writeFile(path.join(macosDir, '笺-2.3.0-macOS-universal.zip'), inputZip);
 const androidPath = path.join(fixture, 'android.apk');
 await writeFile(androidPath, inputApk);
 const options = {
@@ -41,22 +41,23 @@ for (const args of [['--unknown', 'x'], ['--android'], ['--android', 'a', '--and
   assert.throws(() => parseArguments(args));
 }
 const result = await prepareRelease(options);
-assert.equal(result.manifest.version, '2.2.0');
-assert.equal(result.manifest.tag, 'v2.2.0');
+assert.equal(result.manifest.version, '2.3.0');
+assert.equal(result.manifest.tag, 'v2.3.0');
 assert.equal(result.manifest.sourceRevision, options.revision);
 assert.equal(result.manifest.draft, true);
 assert.equal(result.manifest.prerelease, true);
 assert.equal(result.manifest.makeLatest, false);
+assert.equal(result.manifest.verification.priorTaskEvidence, null);
 assert.deepEqual((await readdir(options.outDir)).sort(), [
-  'Jian-2.2.0-android.apk', 'Jian-2.2.0-macOS-universal.dmg', 'Jian-2.2.0-macOS-universal.zip',
-  'Jian-2.2.0-windows-x64.exe', 'Jian-2.2.0-windows-x64.msi',
+  'Jian-2.3.0-android.apk', 'Jian-2.3.0-macOS-universal.dmg', 'Jian-2.3.0-macOS-universal.zip',
+  'Jian-2.3.0-windows-x64.exe', 'Jian-2.3.0-windows-x64.msi',
   'RELEASE_NOTES.md', 'SHA256SUMS.txt', 'release-manifest.json'
 ].sort());
-assert.deepEqual(await readFile(path.join(options.outDir, 'Jian-2.2.0-windows-x64.exe')), inputExe);
-assert.deepEqual(await readFile(path.join(options.outDir, 'Jian-2.2.0-windows-x64.msi')), inputMsi);
-assert.deepEqual(await readFile(path.join(options.outDir, 'Jian-2.2.0-macOS-universal.dmg')), inputDmg);
-assert.deepEqual(await readFile(path.join(options.outDir, 'Jian-2.2.0-macOS-universal.zip')), inputZip);
-assert.deepEqual(await readFile(path.join(options.outDir, 'Jian-2.2.0-android.apk')), inputApk);
+assert.deepEqual(await readFile(path.join(options.outDir, 'Jian-2.3.0-windows-x64.exe')), inputExe);
+assert.deepEqual(await readFile(path.join(options.outDir, 'Jian-2.3.0-windows-x64.msi')), inputMsi);
+assert.deepEqual(await readFile(path.join(options.outDir, 'Jian-2.3.0-macOS-universal.dmg')), inputDmg);
+assert.deepEqual(await readFile(path.join(options.outDir, 'Jian-2.3.0-macOS-universal.zip')), inputZip);
+assert.deepEqual(await readFile(path.join(options.outDir, 'Jian-2.3.0-android.apk')), inputApk);
 assert.equal(await readFile(path.join(options.outDir, 'RELEASE_NOTES.md'), 'utf8'), notes);
 const sums = (await readFile(path.join(options.outDir, 'SHA256SUMS.txt'), 'utf8')).trim().split('\n');
 assert.equal(sums.length, 5);
@@ -69,7 +70,7 @@ for (const asset of result.manifest.assets) {
 }
 await assert.rejects(prepareRelease(options), /输出目录已存在/);
 assert.equal(await readFile(path.join(options.outDir, 'RELEASE_NOTES.md'), 'utf8'), notes);
-for (const version of ['v2.2.0', '2.2.0-beta', '02.2.0', '2.3.0', '2.2.0\n']) {
+for (const version of ['v2.3.0', '2.3.0-beta', '02.3.0', '2.3.1', '2.3.0\n']) {
   await assert.rejects(prepareRelease({ ...options, version, outDir: path.join(fixture, version) }));
 }
 await assert.rejects(prepareRelease({ ...options, revision: 'main', outDir: path.join(fixture, 'bad-revision') }),
@@ -77,10 +78,10 @@ await assert.rejects(prepareRelease({ ...options, revision: 'main', outDir: path
 await assert.rejects(prepareRelease({ ...options, revision: `${options.revision}\n`,
   outDir: path.join(fixture, 'newline-revision') }), /完整的 Git/);
 await writeFile(path.join(fixture, 'app', 'macos', 'package.json'),
-  JSON.stringify({ version: '2.2.0\n' }), 'utf8');
+  JSON.stringify({ version: '2.3.0\n' }), 'utf8');
 await assert.rejects(prepareRelease({ ...options, outDir: path.join(fixture, 'newline-manifest') }), /正式三段版本/);
 await writeFile(path.join(fixture, 'app', 'macos', 'package.json'),
-  JSON.stringify({ version: '2.2.0' }), 'utf8');
+  JSON.stringify({ version: '2.3.0' }), 'utf8');
 await assert.rejects(prepareRelease({ ...options, windowsDir: fixture, outDir: path.join(fixture, 'missing') }));
 assert.equal((await readdir(fixture)).includes('missing'), false, 'preflight must leave no output directory');
 const aliases = path.join(fixture, 'aliases');

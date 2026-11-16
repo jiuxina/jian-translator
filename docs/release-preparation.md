@@ -1,6 +1,27 @@
-# 首个 Release 准备记录
+# Release 准备记录
 
-目标仓库为 `jiuxina/jian-translator`，候选版本为 `v2.2.0`。
+## 当前版本：v2.3.0
+
+2026-11-16，应用、关于页、更新检查、Windows 构建参数与 macOS 清单统一为 `2.3.0`；
+Android 使用 versionName `2.3.0` / versionCode `6`，共用网页资源同步到 assets。
+发布说明见 [v2.3.0](releases/v2.3.0.md)。此次更新未生成本地安装包。
+
+完成版本提交后，将该提交合并并推送到 `main`，再创建指向同一提交的 `v2.3.0` 标签。
+也可以在 GitHub 新建 Release 时创建该标签，Target 选择包含版本提交的 `main`。
+当前 `.github/workflows/release.yml` 在标签推送后构建 Windows EXE/MSI、
+macOS universal DMG/ZIP 和 Android APK，再上传五项附件与 `SHA256SUMS.txt`。
+推送 `main` 只保存构建附件；发布标签后需等待三端与发布任务全部成功。
+
+工作流当前使用 `prerelease: true`。应用内更新检查只接收正式发布；
+若要让 2.3.0 进入此通道，构建上传完成后编辑该 Release，取消预发布标记。
+发布准备脚本不会为 2.3.0 继承旧 2.2.0 的验收证据，最终构建结果以本次 Actions 为准。
+版本一致性检查覆盖前端、Android 镜像与 versionCode、桌面构建参数和 macOS 锁文件。
+本轮唯一一次完整离线回归的日志与退出状态清单保存为
+`.build/version-2.3.0-final-verification.log` 和 `.build/version-2.3.0-final-results.json`。
+
+## 历史记录：首个 v2.2.0 Release 准备
+
+当时候选仓库为 `jiuxina/jian-translator`，候选版本为 `v2.2.0`。
 2026-11-16 通过公开 GitHub REST API 只读核实：仓库可公开访问，
 Release 和标签均为空，默认分支为 `main`，Git 仓库尚为空。
 本地当前没有 Git remote，也没有本地标签。

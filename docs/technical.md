@@ -6,7 +6,7 @@
 Windows、macOS、Android 与网页共用的翻译界面。`web/` 是界面、主题和交互的源码；
 Windows 通过 Pake/Tauri 加载本地页面，macOS 使用 Chromium 桌面壳，Android 使用 WebView。
 
-当前源码版本为 `2.2.0`；既有发布包 `output/笺-2.1.0.exe`、`output/笺-2.1.0.msi`、
+当前源码版本为 `2.3.0`；既有发布包 `output/笺-2.1.0.exe`、`output/笺-2.1.0.msi`、
 `output/笺-2.1.0.apk` 保留不覆盖。新发布包使用版本化文件名，校验值见 `output/SHA256SUMS.txt`。
 电脑点击左上角“笺”、手机点击底栏右侧齿轮打开菜单，再进入“设置”即可调整外观与翻译偏好。
 模式和模型滑块支持按住横向拖动，越过相邻项阈值时立即切换；文本滚动条随主题显示为透明轨道与细圆角滑块。
@@ -25,13 +25,15 @@ Windows 普通窗口外圆角为 22 DIP，最大化与全屏时清除裁剪，�
 “设置 → 更新”可开关启动自动检查，也可立即检查；自动检查每 24 小时最多一次，
 读取仓库的 GitHub 正式发布并提供发布页链接，失败、限流及暂无正式版本均有明确状态。
 完整的父子依赖、覆盖顺序和平台差异见 [设置项关系简报](settings-audit.md)。
-上一轮安装包为 `output/笺-2.2.0-界面优化.exe`、`output/笺-2.2.0-界面优化.msi`、
-`output/笺-2.2.0-界面优化.apk`；应用版本保持 `2.2.0`，原有发布包继续保留。
-本轮交付为 `output/笺-2.2.0-交互优化.exe`、`output/笺-2.2.0-交互优化.msi`、
+以下为历史 2.2.0 构建记录，既有发布包继续保留：
+`output/笺-2.2.0-界面优化.exe`、`output/笺-2.2.0-界面优化.msi`、
+`output/笺-2.2.0-界面优化.apk`。交互优化包为 `output/笺-2.2.0-交互优化.exe`、`output/笺-2.2.0-交互优化.msi`、
 `output/笺-2.2.0-交互优化.apk`，包含手机底栏、安全区、拖动选择、滚动条和浮窗背景范围修正。
 全量替换液态玻璃后的包为 `output/笺-2.2.0-液态玻璃.exe`、
 `output/笺-2.2.0-液态玻璃.msi`、`output/笺-2.2.0-液态玻璃.apk`；
-Android 包使用 versionCode `5` / versionName `2.2.0`。本轮校验值见 `output/SHA256SUMS.txt`。
+这些历史 Android 包使用 versionCode `5` / versionName `2.2.0`，校验值见 `output/SHA256SUMS.txt`。
+2.3.0 发布说明见 [v2.3.0](releases/v2.3.0.md)，版本升级未重新生成本地安装包；
+推送包含本轮提交的 `v2.3.0` 标签后，由发布工作流构建并上传三端附件。
 
 ## 本地验证
 
@@ -107,7 +109,7 @@ Git Bash 安装位置因机器而异，使用本机实际路径。默认构建�
 .\gradlew.bat -g ..\.build\gradle-home :app:assembleRelease --offline --console=plain
 ```
 
-当前版本为 Android versionCode `5` / versionName `2.2.0`，Windows 安装包版本 `2.2.0`。
+当前版本为 Android versionCode `6` / versionName `2.3.0`，Windows 与 macOS 构建版本均为 `2.3.0`。
 
 ## 自动发布
 
