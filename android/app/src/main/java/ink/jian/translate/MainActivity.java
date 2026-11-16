@@ -47,6 +47,9 @@ import androidx.exifinterface.media.ExifInterface;
 import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
 import java.util.Locale;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 
 import org.json.JSONArray;
 import org.json.JSONException;
@@ -99,6 +102,10 @@ public class MainActivity extends Activity {
     private TextView photoSourceChoosePhoto;
 
     private boolean pageLoaded = false;
+    private final ExecutorService imageIo = Executors.newSingleThreadExecutor();
+    private Future<?> imageTask;
+    private int imageRequestSequence;
+    private String imageCallbackToken;
 
     // ------------------------------------------------------------------
     // 生命周期
@@ -152,6 +159,8 @@ public class MainActivity extends Activity {
 
     @Override
     protected void onDestroy() {
+        cancelImageTask();
+        imageIo.shutdownNow();
         if (photoSourceDialog != null) {
             photoSourceDialog.dismissImmediately();
         }
@@ -590,9 +599,16 @@ public class MainActivity extends Activity {
 
         @JavascriptInterface
         public void pickImage() {
+            pickImageWithToken(null);
+        }
+
+        @JavascriptInterface
+        public void pickImageWithToken(String token) {
             runOnUiThread(new Runnable() {
                 @Override
                 public void run() {
+                    cancelImageTask();
+                    imageCallbackToken = token;
                     showPhotoSourceSheet();
                 }
             });
@@ -767,6 +783,7 @@ public class MainActivity extends Activity {
             requestPermissions(new String[]{android.Manifest.permission.CAMERA}, REQ_CAMERA_PERM);
             return;
         }
+        cancelImageTask();
         startActivityForResult(new Intent(this, CameraActivity.class), REQ_CAMERA);
     }
 
@@ -775,6 +792,7 @@ public class MainActivity extends Activity {
         intent.setType("image/*");
         intent.addCategory(Intent.CATEGORY_OPENABLE);
         try {
+            cancelImageTask();
             startActivityForResult(Intent.createChooser(intent, "选择图片"), REQ_GALLERY);
         } catch (Exception e) {
             Toast.makeText(this, "没有可用的相册应用", Toast.LENGTH_SHORT).show();
@@ -786,6 +804,7 @@ public class MainActivity extends Activity {
         super.onRequestPermissionsResult(requestCode, permissions, results);
         if (requestCode == REQ_CAMERA_PERM) {
             if (results.length > 0 && results[0] == android.content.pm.PackageManager.PERMISSION_GRANTED) {
+                cancelImageTask();
                 startActivityForResult(new Intent(this, CameraActivity.class), REQ_CAMERA);
             } else {
                 Toast.makeText(this, "没有相机权限，可从相册选择图片", Toast.LENGTH_SHORT).show();
@@ -796,34 +815,60 @@ public class MainActivity extends Activity {
     @Override
     protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
-        if (resultCode != RESULT_OK || data == null) return;
+        if (resultCode != RESULT_OK || data == null || isFinishing() || isDestroyed()) return;
 
         Uri uri = data.getData();
         if (uri == null) return;
 
-        String dataUrl = uriToDataUrl(uri);
-        if (dataUrl == null) {
-            Toast.makeText(this, "读取图片失败", Toast.LENGTH_SHORT).show();
-            return;
-        }
-        deliverImage(dataUrl);
+        cancelImageTask();
+        final int request = imageRequestSequence;
+        final String callbackToken = imageCallbackToken;
+        imageTask = imageIo.submit(() -> {
+            String script = null;
+            try {
+                String dataUrl = uriToDataUrl(uri);
+                if (Thread.currentThread().isInterrupted()) return;
+                if (dataUrl != null) {
+                    // Escaping a large data URL is also CPU work; only WebView delivery belongs on UI.
+                    script = "window.__itOnImage && window.__itOnImage(" + jsString(dataUrl)
+                            + "," + jsString(callbackToken) + ")";
+                }
+            } catch (OutOfMemoryError error) {
+                Log.w(TAG, "Unable to prepare image for WebView", error);
+            }
+            final String imageScript = script;
+            runOnUiThread(() -> {
+                if (request != imageRequestSequence || isFinishing() || isDestroyed()
+                        || webView == null) return;
+                imageTask = null;
+                if (imageScript == null) {
+                    Toast.makeText(this, "读取图片失败", Toast.LENGTH_SHORT).show();
+                    return;
+                }
+                webView.evaluateJavascript(imageScript, null);
+            });
+        });
     }
 
-    private void deliverImage(String dataUrl) {
-        if (webView == null) return;
-        String js = "window.__itOnImage && window.__itOnImage(" + jsString(dataUrl) + ")";
-        webView.evaluateJavascript(js, null);
+    private void cancelImageTask() {
+        imageRequestSequence++;
+        if (imageTask != null) {
+            imageTask.cancel(true);
+            imageTask = null;
+        }
     }
 
     /** 压缩到最长边 1600px 的 JPEG，再转 dataURL（与桌面端 shrinkImage 同参） */
     private String uriToDataUrl(Uri uri) {
+        Bitmap bitmap = null;
         try {
             BitmapFactory.Options bounds = new BitmapFactory.Options();
             bounds.inJustDecodeBounds = true;
-            InputStream probe = getContentResolver().openInputStream(uri);
-            if (probe == null) return null;
-            BitmapFactory.decodeStream(probe, null, bounds);
-            probe.close();
+            try (InputStream probe = getContentResolver().openInputStream(uri)) {
+                if (probe == null) return null;
+                BitmapFactory.decodeStream(probe, null, bounds);
+            }
+            if (Thread.currentThread().isInterrupted()) return null;
 
             int sample = 1;
             int longest = Math.max(bounds.outWidth, bounds.outHeight);
@@ -831,11 +876,12 @@ public class MainActivity extends Activity {
 
             BitmapFactory.Options options = new BitmapFactory.Options();
             options.inSampleSize = sample;
-            InputStream in = getContentResolver().openInputStream(uri);
-            if (in == null) return null;
-            Bitmap bitmap = BitmapFactory.decodeStream(in, null, options);
-            in.close();
+            try (InputStream in = getContentResolver().openInputStream(uri)) {
+                if (in == null) return null;
+                bitmap = BitmapFactory.decodeStream(in, null, options);
+            }
             if (bitmap == null) return null;
+            if (Thread.currentThread().isInterrupted()) return null;
 
             bitmap = rotateByExif(uri, bitmap);
 
@@ -849,17 +895,20 @@ public class MainActivity extends Activity {
             return null;
         } catch (OutOfMemoryError e) {
             return null;
+        } finally {
+            if (bitmap != null && !bitmap.isRecycled()) bitmap.recycle();
         }
     }
 
     private Bitmap rotateByExif(Uri uri, Bitmap bitmap) {
         try {
-            InputStream in = getContentResolver().openInputStream(uri);
-            if (in == null) return bitmap;
-            ExifInterface exif = new ExifInterface(in);
-            in.close();
-            int orientation = exif.getAttributeInt(
-                    ExifInterface.TAG_ORIENTATION, ExifInterface.ORIENTATION_NORMAL);
+            int orientation;
+            try (InputStream in = getContentResolver().openInputStream(uri)) {
+                if (in == null) return bitmap;
+                ExifInterface exif = new ExifInterface(in);
+                orientation = exif.getAttributeInt(
+                        ExifInterface.TAG_ORIENTATION, ExifInterface.ORIENTATION_NORMAL);
+            }
             int degrees = 0;
             if (orientation == ExifInterface.ORIENTATION_ROTATE_90) degrees = 90;
             else if (orientation == ExifInterface.ORIENTATION_ROTATE_180) degrees = 180;

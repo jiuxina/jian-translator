@@ -30,6 +30,7 @@ Android 包使用 versionCode `5` / versionName `2.2.0`。本轮校验值见 `ou
 ## 本地验证
 
 需要 Node.js 22 或以上以及 Chrome。无需安装前端依赖。
+性能优化的实现、前后测量与复现方式见 [性能优化记录](performance.md)。
 
 ```powershell
 node tests/serve-preview.mjs web 8899
@@ -41,6 +42,8 @@ node tests/serve-preview.mjs web 8899
 ```powershell
 node tests/verify-motion.mjs
 node tests/verify-liquid-glass.mjs
+node tests/verify-stream-writer.mjs
+node tests/verify-image-import.mjs
 node tests/verify-updates.mjs
 node app/macos/build.mjs --prepare-only
 node tests/verify-macos.mjs

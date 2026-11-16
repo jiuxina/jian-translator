@@ -50,6 +50,7 @@ import com.google.common.util.concurrent.ListenableFuture;
 import java.io.File;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 
 /**
@@ -80,6 +81,8 @@ public class CameraActivity extends ComponentActivity {
     private boolean capturing = false;
     private File shotFile;
     private final ExecutorService io = Executors.newSingleThreadExecutor();
+    private Future<?> confirmTask;
+    private int captureSequence;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -407,45 +410,74 @@ public class CameraActivity extends ComponentActivity {
             toast("无法创建临时文件");
             return;
         }
-        shotFile = new File(dir, "shot_" + System.currentTimeMillis() + ".jpg");
+        final File capturedFile = new File(dir, "shot_" + System.currentTimeMillis() + ".jpg");
+        shotFile = capturedFile;
+        final int request = ++captureSequence;
 
         ImageCapture.OutputFileOptions options =
-                new ImageCapture.OutputFileOptions.Builder(shotFile).build();
+                new ImageCapture.OutputFileOptions.Builder(capturedFile).build();
         imageCapture.takePicture(options, ContextCompat.getMainExecutor(this),
                 new ImageCapture.OnImageSavedCallback() {
                     @Override
                     public void onImageSaved(ImageCapture.OutputFileResults outputFileResults) {
-                        capturing = false;
-                        showConfirm(shotFile);
+                        if (!isCurrentCapture(capturedFile, request)) return;
+                        showConfirm(capturedFile, request);
                     }
 
                     @Override
                     public void onError(ImageCaptureException exception) {
+                        if (!isCurrentCapture(capturedFile, request)) return;
                         capturing = false;
                         toast("拍照失败，请重试");
                     }
                 });
     }
 
-    private void showConfirm(File file) {
-        Bitmap bitmap = decodeSampled(file, 1600);
-        if (bitmap == null) {
-            finishWithError("照片读取失败");
-            return;
+    private boolean isCurrentCapture(File file, int request) {
+        return request == captureSequence && file.equals(shotFile)
+                && !isFinishing() && !isDestroyed();
+    }
+
+    private void showConfirm(File file, int request) {
+        // Keep capture busy until decoding finishes, so a second shutter cannot replace this shot.
+        confirmTask = io.submit(() -> {
+            Bitmap bitmap = decodeSampled(file, 1600);
+            runOnUiThread(() -> {
+                if (!isCurrentCapture(file, request)) {
+                    if (bitmap != null) bitmap.recycle();
+                    return;
+                }
+                confirmTask = null;
+                capturing = false;
+                if (bitmap == null) {
+                    finishWithError("照片读取失败");
+                    return;
+                }
+                confirmImage.setImageBitmap(bitmap);
+                confirmLayer.animate().cancel();
+                confirmLayer.setTranslationY(dp(8));
+                confirmLayer.setAlpha(0f);
+                confirmLayer.setVisibility(View.VISIBLE);
+                confirmLayer.animate().alpha(1f).translationY(0)
+                        .setDuration(UiMotion.duration(this, UiMotion.PANEL_MS))
+                        .setInterpolator(UiMotion.enter()).start();
+                hideCameraControls(topBar);
+                hideCameraControls(bottomBar);
+            });
+        });
+    }
+
+    private void cancelConfirmTask() {
+        captureSequence++;
+        if (confirmTask != null) {
+            confirmTask.cancel(true);
+            confirmTask = null;
         }
-        confirmImage.setImageBitmap(bitmap);
-        confirmLayer.animate().cancel();
-        confirmLayer.setTranslationY(dp(8));
-        confirmLayer.setAlpha(0f);
-        confirmLayer.setVisibility(View.VISIBLE);
-        confirmLayer.animate().alpha(1f).translationY(0)
-                .setDuration(UiMotion.duration(this, UiMotion.PANEL_MS))
-                .setInterpolator(UiMotion.enter()).start();
-        hideCameraControls(topBar);
-        hideCameraControls(bottomBar);
     }
 
     private void retake() {
+        cancelConfirmTask();
+        capturing = false;
         confirmLayer.animate().cancel();
         confirmLayer.animate().alpha(0f).translationY(dp(8))
                 .setDuration(UiMotion.duration(this, UiMotion.FAST_MS))
@@ -647,6 +679,7 @@ public class CameraActivity extends ComponentActivity {
 
     @Override
     protected void onDestroy() {
+        cancelConfirmTask();
         io.shutdownNow();
         if (cameraProvider != null) {
             cameraProvider.unbindAll();

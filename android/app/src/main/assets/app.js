@@ -208,6 +208,8 @@
   };
 
   /* ---------------- 2. 平台桥 ---------------- */
+  var nativeImagePickSequence = 0;
+  var nativeImagePickPrefix = Date.now().toString(36) + ':' + Math.random().toString(36).slice(2);
   var Bridge = {
     isDesktop: PLATFORM === 'desktop',
     isMac: !!(window.__JIAN_DESKTOP__ && window.__JIAN_DESKTOP__.platform === 'darwin'),
@@ -230,8 +232,18 @@
     /* 选图：桌面用原生 file input，安卓走原生相册/相机 */
     pickImage: function (onPicked) {
       if (Bridge.isAndroid && window.NativeBridge && window.NativeBridge.pickImage) {
-        window.__itOnImage = onPicked;
-        try { window.NativeBridge.pickImage(); } catch (e) { toast('无法打开相册', true); }
+        var token = nativeImagePickPrefix + ':' + (++nativeImagePickSequence);
+        var usesTokens = typeof window.NativeBridge.pickImageWithToken === 'function';
+        var delivered = false;
+        window.__itOnImage = function (dataUrl, returnedToken) {
+          if (delivered || (usesTokens && returnedToken !== token)) return;
+          delivered = true;
+          onPicked(dataUrl);
+        };
+        try {
+          if (usesTokens) window.NativeBridge.pickImageWithToken(token);
+          else window.NativeBridge.pickImage();
+        } catch (e) { toast('无法打开相册', true); }
         return;
       }
       var input = document.createElement('input');
@@ -414,14 +426,38 @@
     measure.style.cssText =
       'position:fixed;left:-9999px;top:-9999px;visibility:hidden;white-space:nowrap';
     document.body.appendChild(measure);
-    var btnFont = getComputedStyle(button);
-    if (btnFont.font) measure.style.font = btnFont.font;
-    measure.style.fontSize = btnFont.fontSize || '13px';
-    measure.style.fontFamily = btnFont.fontFamily || 'inherit';
-
-    function widthOf(text) {
-      measure.textContent = text;
-      return measure.getBoundingClientRect().width;
+    function widestLabelWidth(labels) {
+      /* 保留浏览器的真实字形排版；先一次写入所有候选，再统一量宽，
+         避免长轮盘每插入一行就迫使整页重新布局。字体每次从按钮读取，
+         不缓存字宽，系统字体或字距变化后仍按当前显示结果计算。 */
+      var btnFont = getComputedStyle(button);
+      measure.style.font = btnFont.font || '';
+      measure.style.fontSize = btnFont.fontSize || '13px';
+      measure.style.fontFamily = btnFont.fontFamily || 'inherit';
+      measure.style.fontWeight = btnFont.fontWeight;
+      measure.style.fontStyle = btnFont.fontStyle;
+      measure.style.fontStretch = btnFont.fontStretch;
+      measure.style.fontKerning = btnFont.fontKerning;
+      measure.style.fontFeatureSettings = btnFont.fontFeatureSettings;
+      measure.style.fontVariationSettings = btnFont.fontVariationSettings;
+      measure.style.letterSpacing = btnFont.letterSpacing;
+      measure.style.wordSpacing = btnFont.wordSpacing;
+      measure.style.textTransform = btnFont.textTransform;
+      var fragment = document.createDocumentFragment();
+      var samples = labels.map(function (text) {
+        var sample = document.createElement('span');
+        sample.style.display = 'inline-block';
+        sample.textContent = text;
+        fragment.appendChild(sample);
+        return sample;
+      });
+      measure.textContent = '';
+      measure.appendChild(fragment);
+      var widest = 0;
+      samples.forEach(function (sample) {
+        widest = Math.max(widest, sample.getBoundingClientRect().width);
+      });
+      return widest;
     }
     function clampWidth(w) { return Math.max(16, Math.min(settingsRow ? 156 : 124, Math.ceil(w))); }
 
@@ -459,7 +495,7 @@
       reelEl.appendChild(row);
       reelEl.style.transition = 'none';
       reelEl.style.transform = 'translateY(0)';
-      valueEl.style.width = clampWidth(widthOf(text)) + 'px';
+      valueEl.style.width = clampWidth(widestLabelWidth([text])) + 'px';
       void reelEl.offsetWidth;          // 强制回流，避免下一次 spin 从旧位置起跳
       reelEl.style.transition = '';
     }
@@ -501,15 +537,15 @@
       var duration = Math.min(REEL_MAX, Math.max(REEL_BASE, REEL_BASE + dist * REEL_PER));
 
       reelEl.innerHTML = '';
-      var widest = 0;
+      var reelRows = document.createDocumentFragment();
       labels.forEach(function (label) {
         var row = document.createElement('span');
         row.className = 'sel-reel-row';
         row.textContent = label;
-        reelEl.appendChild(row);
-        widest = Math.max(widest, widthOf(label));
+        reelRows.appendChild(row);
       });
-      valueEl.style.width = clampWidth(widest) + 'px';
+      reelEl.appendChild(reelRows);
+      valueEl.style.width = clampWidth(widestLabelWidth(labels)) + 'px';
       reelEl.style.transition = 'none';
       reelEl.style.transform = 'translateY(-' + start + 'px)';
       void reelEl.offsetWidth;
@@ -1644,6 +1680,8 @@
     var queue = '';
     var raf = 0;
     var done = false;
+    var streamDuration = null;
+    var segmentCleanups = new Set();
     var cursor = document.createElement('span');
     cursor.className = 'cursor';
 
@@ -1651,7 +1689,19 @@
     el.classList.remove('empty');
     el.appendChild(cursor);
 
+    function clearSegments() {
+      segmentCleanups.forEach(function (cleanup) { cleanup(); });
+    }
+
+    function appendPlain(text) {
+      if (!text) return;
+      var previous = cursor.previousSibling;
+      if (previous && previous.nodeType === 3) previous.appendData(text);
+      else el.insertBefore(document.createTextNode(text), cursor);
+    }
+
     function paintPlain(text, keepCursor) {
+      clearSegments();
       el.innerHTML = '';
       el.classList.toggle('empty', !text && !keepCursor);
       if (!text && !keepCursor) { el.textContent = '译文将在这里呈现'; return; }
@@ -1663,6 +1713,12 @@
     function frame() {
       raf = 0;
       if (done || !queue.length) return;
+      if (motionReduced()) {
+        appendPlain(queue);
+        queue = '';
+        el.scrollTop = el.scrollHeight;
+        return;
+      }
       /* 按剩余量自适应：长文每帧最多 90 字，短句也不会在尾段变成 3 字/帧的点滴 */
       var n = Math.max(6, Math.min(queue.length, Math.min(90, Math.ceil(queue.length / 14))));
       var seg = queue.slice(0, n);
@@ -1672,16 +1728,40 @@
       span.className = 'st-seg';
       span.textContent = seg;
       var settled = false;
+      var settleTimer = 0;
+      function cleanup() {
+        span.removeEventListener('animationend', settle);
+        clearTimeout(settleTimer);
+        segmentCleanups.delete(cleanup);
+      }
       function settle() {
         if (settled) return;
         settled = true;
-        if (span.parentNode === el) el.replaceChild(document.createTextNode(seg), span);
+        cleanup();
+        if (span.parentNode !== el) return;
+        /* 只合并已经落定的相邻文本；动画中的 span 保留原位置与时钟，
+           即使 animationend 乱序到达，也不会重排译文或重启动画。 */
+        var previous = span.previousSibling;
+        var next = span.nextSibling;
+        if (previous && previous.nodeType === 3) {
+          previous.appendData(seg);
+          el.removeChild(span);
+        } else {
+          previous = document.createTextNode(seg);
+          el.replaceChild(previous, span);
+        }
+        if (next && next.nodeType === 3) {
+          previous.appendData(next.data);
+          el.removeChild(next);
+        }
       }
       span.addEventListener('animationend', settle);
-      setTimeout(settle, cssDuration('--lg-duration-stream', 200) + 60);
+      segmentCleanups.add(cleanup);
+      if (streamDuration == null) streamDuration = cssDuration('--lg-duration-stream', 200);
+      settleTimer = setTimeout(settle, streamDuration + 60);
       el.insertBefore(span, cursor);
       el.scrollTop = el.scrollHeight;
-      raf = requestAnimationFrame(frame);
+      if (queue.length) raf = requestAnimationFrame(frame);
     }
 
     var writer = {
@@ -1690,7 +1770,9 @@
         if (writer.closed || !text) return;
         text = String(text);
         if (motionReduced()) {
-          el.insertBefore(document.createTextNode(text), cursor);
+          if (raf) { cancelAnimationFrame(raf); raf = 0; }
+          appendPlain(queue + text);
+          queue = '';
           el.scrollTop = el.scrollHeight;
           return;
         }
@@ -1712,6 +1794,7 @@
         done = true;
         queue = '';
         if (raf) { cancelAnimationFrame(raf); raf = 0; }
+        clearSegments();
         if (activeWriter === writer) activeWriter = null;
       }
     };
@@ -1786,7 +1869,11 @@
     on($('src'), 'input', refreshCount);
 
     on($('btn-pick-img'), 'click', function () {
-      Bridge.pickImage(function (dataUrl) { setImage(dataUrl); });
+      var requestedImageSeq = imageSeq;
+      Bridge.pickImage(function (dataUrl) {
+        // A background native import must not undo a later clear, delete or paste.
+        if (imageSeq === requestedImageSeq) setImage(dataUrl);
+      });
     });
 
     on($('img-del'), 'click', function () { setImage(null); });
@@ -2353,7 +2440,6 @@
     if (scope.querySelectorAll) scope.querySelectorAll(LIQUID_GLASS_SURFACES).forEach(function (surface) {
       attachSurface(surface);
     });
-    window.ItLiquidGlass.refresh(scope);
   }
 
   function initGlass() {
@@ -2378,6 +2464,7 @@
         ? 'unsupported' : 'generation' });
     }
     var observer = new MutationObserver(function (mutations) {
+      var refreshScopes = new Set();
       mutations.forEach(function (mutation) {
         if (mutation.type === 'childList') {
           mutation.addedNodes.forEach(function (node) {
@@ -2387,11 +2474,12 @@
           if (mutation.attributeName === 'data-it-liquid-state' &&
               mutation.target.dataset.itLiquidState === 'error') {
             showLiquidGlassError({ code: 'generation' });
-          } else {
-            window.ItLiquidGlass.refresh(mutation.target);
+          } else if (mutation.attributeName !== 'data-it-liquid-state') {
+            refreshScopes.add(mutation.target);
           }
         }
       });
+      refreshScopes.forEach(function (scope) { window.ItLiquidGlass.refresh(scope); });
     });
     observer.observe(document.body, {
       childList: true, subtree: true, attributes: true,

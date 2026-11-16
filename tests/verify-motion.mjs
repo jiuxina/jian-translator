@@ -453,17 +453,19 @@ async function menus(connection) {
 let page;
 let controller;
 let desktop;
+
+function connectOwnTarget(targetId) {
+  const url = new URL(controller.socket.url);
+  url.pathname = '/devtools/page/' + targetId;
+  return Cdp.connect(url.href);
+}
+
 try {
-  const targets = await (await fetch(`${DEBUG_ORIGIN}/json`)).json();
-  const controlTarget = targets.find((item) => item.type === 'page' && item.url.startsWith(ORIGIN));
-  if (!controlTarget) throw new Error('Open the isolated preview page on port 8899 before running this check.');
-  controller = await Cdp.connect(controlTarget.webSocketDebuggerUrl);
+  const version = await (await fetch(`${DEBUG_ORIGIN}/json/version`)).json();
+  controller = await Cdp.connect(version.webSocketDebuggerUrl);
   const created = await controller.send('Target.createTarget', { url: 'about:blank' });
   mainTargetId = created.targetId;
-  const ownTargets = await (await fetch(`${DEBUG_ORIGIN}/json`)).json();
-  const target = ownTargets.find((item) => item.id === mainTargetId);
-  if (!target) throw new Error('CDP did not expose the isolated main test tab.');
-  page = await Cdp.connect(target.webSocketDebuggerUrl);
+  page = await connectOwnTarget(mainTargetId);
   await prepare(page, false, true);
 
   await scenario('旧版已保存的玻璃偏好会升级并保留其他设置', async () => {
@@ -907,52 +909,54 @@ try {
   });
 
   await scenario('语言轮盘保留列表顺序', async () => {
+    async function sampleWheel(index) {
+      return page.evaluate(`(async () => {
+        document.querySelector('.sel-pop[aria-hidden="false"]')
+          .querySelectorAll('.sel-item')[${index}].click();
+        const reel = document.querySelector('#langbar .sel-reel');
+        const labels = [...reel.children].map((row) => row.textContent);
+        const animation = reel.getAnimations().find((candidate) =>
+          candidate.transitionProperty === 'transform');
+        if (!animation) throw new Error('Selecting a different language must start a reel transition.');
+        const duration = Number(animation.effect.getTiming().duration);
+        if (!Number.isFinite(duration) || duration <= 0) {
+          throw new Error('The reel transition needs a finite positive duration.');
+        }
+        animation.pause();
+        animation.currentTime = duration * .2;
+        const first = new DOMMatrixReadOnly(getComputedStyle(reel).transform).m42;
+        animation.currentTime = duration * .6;
+        const second = new DOMMatrixReadOnly(getComputedStyle(reel).transform).m42;
+        animation.play();
+        await animation.finished;
+        return { labels, first, second, value: document.getElementById('src-lang').value };
+      })()`);
+    }
+
     await page.click('#langbar .sel-btn');
     const rows = await page.evaluate(`[...document.querySelector('.sel-pop[aria-hidden="false"]')
       .querySelectorAll('.sel-item')].slice(0, 7).map((row) => ({
         value: row.dataset.value, label: row.textContent
       }))`);
     if (rows.length < 7) throw new Error('Source language list needs at least seven options.');
-    await page.evaluate(`document.querySelector('.sel-pop[aria-hidden="false"] .sel-item').click()`);
-    await pause(700);
-    await page.click('#langbar .sel-btn');
-    await page.evaluate(`document.querySelector('.sel-pop[aria-hidden="false"]')
-      .querySelectorAll('.sel-item')[6].click()`);
-    const labels = await page.evaluate(`(() => [...document.querySelector('#langbar .sel-reel').children]
-      .map((row) => row.textContent))()`);
-    await page.until(`(() => {
-      const animation = document.querySelector('#langbar .sel-reel')?.getAnimations()[0];
-      return animation && Number(animation.currentTime) > 80;
+    await page.evaluate(`(async () => {
+      document.querySelector('.sel-pop[aria-hidden="false"] .sel-item').click();
+      const animation = document.querySelector('#langbar .sel-reel').getAnimations()
+        .find((candidate) => candidate.transitionProperty === 'transform');
+      if (animation) await animation.finished;
     })()`);
-    const firstWheelPosition = await page.evaluate(`new DOMMatrixReadOnly(
-      getComputedStyle(document.querySelector('#langbar .sel-reel')).transform).m42`);
-    await pause(70);
-    const secondWheelPosition = await page.evaluate(`new DOMMatrixReadOnly(
-      getComputedStyle(document.querySelector('#langbar .sel-reel')).transform).m42`);
-    const wheel = { labels, first: firstWheelPosition, second: secondWheelPosition };
+    await page.click('#langbar .sel-btn');
+    const wheel = await sampleWheel(6);
     check('轮盘逐项经过语言列表且朝正确方向滚动',
       JSON.stringify(wheel.labels) === JSON.stringify(rows.map((row) => row.label)) &&
       wheel.second < wheel.first - 1, JSON.stringify(wheel));
-    await pause(700);
-    check('轮盘最终语言与所选项一致',
-      await page.evaluate(`document.getElementById('src-lang').value === ${JSON.stringify(rows[6].value)}`));
+    check('轮盘最终语言与所选项一致', wheel.value === rows[6].value);
     await page.click('#langbar .sel-btn');
-    await page.evaluate(`document.querySelector('.sel-pop[aria-hidden="false"] .sel-item').click()`);
-    await page.until(`(() => {
-      const animation = document.querySelector('#langbar .sel-reel')?.getAnimations()[0];
-      return animation && Number(animation.currentTime) > 150;
-    })()`);
-    const reverseFirst = await page.evaluate(`new DOMMatrixReadOnly(
-      getComputedStyle(document.querySelector('#langbar .sel-reel')).transform).m42`);
-    await page.until(`(() => {
-      const animation = document.querySelector('#langbar .sel-reel')?.getAnimations()[0];
-      return animation && Number(animation.currentTime) > 250;
-    })()`);
-    const reverseSecond = await page.evaluate(`new DOMMatrixReadOnly(
-      getComputedStyle(document.querySelector('#langbar .sel-reel')).transform).m42`);
-    check('反向选择沿同一列表回滚', reverseSecond > reverseFirst + 1,
-      JSON.stringify({ first: reverseFirst, second: reverseSecond }));
-    await pause(700);
+    const reverse = await sampleWheel(0);
+    check('反向选择沿同一列表回滚',
+      reverse.second > reverse.first + 1 && reverse.value === rows[0].value &&
+      JSON.stringify(reverse.labels) === JSON.stringify(rows.map((row) => row.label)),
+      JSON.stringify(reverse));
   });
 
   await scenario('弹层支持键盘与系统返回', async () => {
@@ -1398,12 +1402,9 @@ try {
       saved.popup.backgroundData = '';
       localStorage.setItem('it-preferences', JSON.stringify(saved));
     })()`);
-    const created = await page.send('Target.createTarget', { url: 'about:blank' });
+    const created = await controller.send('Target.createTarget', { url: 'about:blank' });
     desktopTargetId = created.targetId;
-    const desktopTargets = await (await fetch(`${DEBUG_ORIGIN}/json`)).json();
-    const target = desktopTargets.find((item) => item.id === desktopTargetId);
-    if (!target) throw new Error('CDP did not expose the isolated desktop test tab.');
-    desktop = await Cdp.connect(target.webSocketDebuggerUrl);
+    desktop = await connectOwnTarget(desktopTargetId);
     await prepare(desktop, true);
     await desktop.send('Emulation.setDeviceMetricsOverride', {
       width: 700, height: 800, deviceScaleFactor: 1, mobile: false,
@@ -1842,10 +1843,7 @@ try {
 
   await scenario('macOS 桌面桥接与标题栏约定', async () => {
     ({ targetId: macTargetId } = await controller.send('Target.createTarget', { url: 'about:blank' }));
-    const macTargets = await (await fetch(`${DEBUG_ORIGIN}/json`)).json();
-    const target = macTargets.find((item) => item.id === macTargetId);
-    if (!target) throw new Error('Missing isolated macOS bridge test target');
-    const mac = await Cdp.connect(target.webSocketDebuggerUrl);
+    const mac = await connectOwnTarget(macTargetId);
     await prepare(mac, 'mac');
     await mac.until(`!document.documentElement.classList.contains('it-settings-boot')`);
     check('macOS 使用桌面桥并为原生交通灯预留标题栏空间', await mac.evaluate(`(() => {
@@ -1899,10 +1897,7 @@ try {
     if (start < 0 || end < 0) throw new Error('Missing popup bootstrap');
     const bootstrap = popupSource.slice(start + marker.length, end);
     ({ targetId: popupTargetId } = await controller.send('Target.createTarget', { url: 'about:blank' }));
-    const popupTargets = await (await fetch(`${DEBUG_ORIGIN}/json`)).json();
-    const target = popupTargets.find((item) => item.id === popupTargetId);
-    if (!target) throw new Error('Missing isolated popup target');
-    const popup = await Cdp.connect(target.webSocketDebuggerUrl);
+    const popup = await connectOwnTarget(popupTargetId);
     await popup.send('Page.enable');
     await popup.send('Runtime.enable');
     await popup.send('Fetch.enable', { patterns: [{ urlPattern: '*', requestStage: 'Request' }] });

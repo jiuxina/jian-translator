@@ -41,6 +41,7 @@
   var PROFILES = ['convex-circle', 'convex-squircle', 'concave', 'lip'];
   var attached = new Map();
   var geometryCache = new Map();
+  var appliedStyles = new WeakMap();
   var currentConfig = normalizePresets(DEFAULTS);
   var sequence = 0;
   var resizeObserver = null;
@@ -331,8 +332,33 @@
   }
 
   function setImageSource(image, source) {
-    image.setAttribute('href', source);
-    image.setAttributeNS(XLINK_NS, 'xlink:href', source);
+    if (image.getAttribute('href') !== source) image.setAttribute('href', source);
+    if (image.getAttributeNS(XLINK_NS, 'href') !== source) {
+      image.setAttributeNS(XLINK_NS, 'xlink:href', source);
+    }
+  }
+
+  function setAttributeIfChanged(element, name, value) {
+    value = String(value);
+    if (element.getAttribute(name) !== value) element.setAttribute(name, value);
+  }
+
+  function setStyleIfChanged(element, name, value) {
+    value = String(value);
+    var current = element.style.getPropertyValue(name);
+    if (current === value) return;
+    var styles = appliedStyles.get(element);
+    var previous = styles && styles[name];
+    // CSSOM rounds values such as blur(.7071067811865476px). Compare both
+    // the requested value and its last serialization without reducing the
+    // precision sent to the renderer, and still repair external style edits.
+    if (previous && previous.requested === value && previous.serialized === current) return;
+    element.style.setProperty(name, value);
+    if (!styles) {
+      styles = Object.create(null);
+      appliedStyles.set(element, styles);
+    }
+    styles[name] = { requested: value, serialized: element.style.getPropertyValue(name) };
   }
 
   function canvasPng(rgba, width, height) {
@@ -360,7 +386,16 @@
     }
     var maps = generateMaps(width, height, radius, config);
     var result = {
-      maps: maps,
+      // The filter only needs these scalars after the two PNGs are encoded.
+      // Retaining the RGBA arrays here also pins them in every attached state.
+      maps: {
+        width: maps.width,
+        height: maps.height,
+        mapWidth: maps.mapWidth,
+        mapHeight: maps.mapHeight,
+        radius: maps.radius,
+        maxDisplacement: maps.maxDisplacement
+      },
       displacementUrl: canvasPng(maps.displacement, maps.mapWidth, maps.mapHeight),
       specularUrl: canvasPng(maps.specular, maps.mapWidth, maps.mapHeight)
     };
@@ -526,29 +561,29 @@
 
   function updateFilterParameters(state, maps) {
     var config = currentConfig[state.presetName];
-    var interaction = interactionParameters(state.presetName, config, state.interactionActive);
-    state.filter.setAttribute('width', String(maps.width));
-    state.filter.setAttribute('height', String(maps.height));
-    state.displacementImage.setAttribute('width', String(maps.width));
-    state.displacementImage.setAttribute('height', String(maps.height));
-    state.specularImage.setAttribute('width', String(maps.width));
-    state.specularImage.setAttribute('height', String(maps.height));
+    var ratio = state.presetName === 'pill' ? (state.interactionActive ? .9 : .4) : 1;
+    var opacity = presetOpacity(state.presetName, config, state.interactionActive);
+    setAttributeIfChanged(state.filter, 'width', maps.width);
+    setAttributeIfChanged(state.filter, 'height', maps.height);
+    setAttributeIfChanged(state.displacementImage, 'width', maps.width);
+    setAttributeIfChanged(state.displacementImage, 'height', maps.height);
+    setAttributeIfChanged(state.specularImage, 'width', maps.width);
+    setAttributeIfChanged(state.specularImage, 'height', maps.height);
     // Keep the reference demo's scale convention: normalized map maximum ×
     // slider ratio. SVG interprets each channel around .5; doubling this here
     // would produce a stronger lens than the reference's 100% preset.
-    state.refract.setAttribute('scale', String(maps.maxDisplacement * interaction.refractionRatio));
-    state.baseBlur.setAttribute('stdDeviation', String(config.blurLevel || 0));
+    setAttributeIfChanged(state.refract, 'scale', maps.maxDisplacement * (ratio * config.refractionLevel / 100));
+    setAttributeIfChanged(state.baseBlur, 'stdDeviation', config.blurLevel || 0);
     var levels = progressiveLevels(config.progressiveBlurStrength || 0);
     state.progressiveLayers.forEach(function (layer, index) {
       var blur = 'blur(' + levels[index] + 'px)';
-      layer.style.backdropFilter = blur;
-      layer.style.webkitBackdropFilter = blur;
-      state.element.style.setProperty('--it-liquid-progressive-' + (index + 1), levels[index] + 'px');
+      setStyleIfChanged(layer, 'backdrop-filter', blur);
+      setStyleIfChanged(layer, '-webkit-backdrop-filter', blur);
+      setStyleIfChanged(state.element, '--it-liquid-progressive-' + (index + 1), levels[index] + 'px');
     });
-    state.specularColor.setAttribute('values', String(config.specularSaturation));
-    state.alphaFunction.setAttribute('slope', String(config.specularOpacity / 100));
-    state.element.style.setProperty('--it-liquid-background-opacity',
-      String(interaction.backgroundOpacity));
+    setAttributeIfChanged(state.specularColor, 'values', config.specularSaturation);
+    setAttributeIfChanged(state.alphaFunction, 'slope', config.specularOpacity / 100);
+    setStyleIfChanged(state.element, '--it-liquid-background-opacity', opacity);
   }
 
   function queueResize(state) {
@@ -561,7 +596,10 @@
       resizeFrame = 0;
       var pending = Array.from(resizeQueue);
       resizeQueue.clear();
-      pending.forEach(updateGeometry);
+      // Read every local border box before any SVG/style writes. Inserting
+      // filters between measurements forces one layout per surface.
+      var measurements = pending.map(measureGeometry);
+      pending.forEach(function (state, index) { updateGeometry(state, measurements[index]); });
     });
   }
 
@@ -574,19 +612,35 @@
     }
   }
 
-  function updateGeometry(state) {
+  function measureGeometry(state) {
     var element = state.element;
-    if (!element || !element.isConnected || !state.filter) return;
+    if (!element || !element.isConnected || !state.filter) return null;
+    // SVG user-space follows the local border box. Bounding rect dimensions
+    // include dialog/selection scale animations and would permanently bake a
+    // transient transform into the map without triggering ResizeObserver.
+    var width = element.offsetWidth;
+    var height = element.offsetHeight;
+    if (typeof width !== 'number' || typeof height !== 'number') {
+      var rect = element.getBoundingClientRect();
+      width = rect.width;
+      height = rect.height;
+    }
+    return {
+      width: width,
+      height: height,
+      radius: width >= 4 && height >= 4 ? radiusFor(element, width, height) : 0
+    };
+  }
+
+  function updateGeometry(state, measurement) {
+    var element = state.element;
+    if (!measurement || !element || !element.isConnected || !state.filter) return;
     if (!state.filter.isConnected) {
       var defs = ensureDefs();
       if (defs) defs.appendChild(state.filter);
     }
-    var rect = element.getBoundingClientRect();
-    // SVG user-space follows the local border box. Bounding rect dimensions
-    // include dialog/selection scale animations and would permanently bake a
-    // transient transform into the map without triggering ResizeObserver.
-    var width = typeof element.offsetWidth === 'number' ? element.offsetWidth : rect.width;
-    var height = typeof element.offsetHeight === 'number' ? element.offsetHeight : rect.height;
+    var width = measurement.width;
+    var height = measurement.height;
     if (width < 4 || height < 4) {
       // Attribute observers refresh newly shown surfaces. Rewriting the same
       // pending value for a hidden surface would schedule another refresh on
@@ -594,7 +648,7 @@
       if (element.dataset.itLiquidState !== 'pending') element.dataset.itLiquidState = 'pending';
       return;
     }
-    var radius = radiusFor(element, width, height);
+    var radius = measurement.radius;
     var optics = opticalPreset(state.presetName, radius);
     var key = geometryKey(width, height, radius, optics);
     if (state.geometry === key) {
@@ -604,10 +658,6 @@
     }
     try {
       var cached = cachedMaps(width, height, radius, optics);
-      state.filter.setAttribute('x', '0');
-      state.filter.setAttribute('y', '0');
-      state.filter.setAttribute('width', String(width));
-      state.filter.setAttribute('height', String(height));
       setImageSource(state.displacementImage, cached.displacementUrl);
       setImageSource(state.specularImage, cached.specularUrl);
       state.maps = cached.maps;
@@ -650,10 +700,20 @@
       });
     }
     if (typeof MutationObserver === 'function' && !mutationObserver && typeof document !== 'undefined' && document.documentElement) {
-      mutationObserver = new MutationObserver(function () {
-        attached.forEach(function (state, element) {
+      mutationObserver = new MutationObserver(function (mutations) {
+        var removedSurface = false;
+        mutations.forEach(function (mutation) {
+          var state = attached.get(mutation.target);
+          if (state) ensureSurfaceLayers(state);
+          mutation.removedNodes.forEach(function (node) {
+            if (node.nodeType === 1 && (attached.has(node) ||
+                node.querySelector('[data-it-liquid-preset]'))) removedSurface = true;
+          });
+        });
+        // Streaming text replaces short-lived spans on every frame. Only
+        // removing an actual surface (or its ancestor) needs a registry scan.
+        if (removedSurface) attached.forEach(function (state, element) {
           if (!element.isConnected) discardState(state, element);
-          else ensureSurfaceLayers(state);
         });
       });
       mutationObserver.observe(document.documentElement, { childList: true, subtree: true });
@@ -672,9 +732,9 @@
     }
     if (state) {
       ensureSurfaceLayers(state);
-      element.dataset.itLiquidPreset = targetPreset;
+      setAttributeIfChanged(element, 'data-it-liquid-preset', targetPreset);
       if (!state.filter.isConnected) defs.appendChild(state.filter);
-      element.style.setProperty('--it-liquid-filter', 'url(#' + state.filter.id + ')');
+      setStyleIfChanged(element, '--it-liquid-filter', 'url(#' + state.filter.id + ')');
       queueResize(state);
       return element;
     }
@@ -687,7 +747,7 @@
     if (!state) return null;
     ensureObservers();
     if (resizeObserver) resizeObserver.observe(element);
-    updateGeometry(state);
+    queueResize(state);
     return element;
   }
 
@@ -704,8 +764,8 @@
     currentConfig = normalizePresets(input);
     ensureDefs();
     if (typeof document !== 'undefined' && document.documentElement) {
-      document.documentElement.style.setProperty('--it-liquid-background-opacity',
-        String(currentConfig.card.backgroundOpacity / 100));
+      setStyleIfChanged(document.documentElement, '--it-liquid-background-opacity',
+        currentConfig.card.backgroundOpacity / 100);
     }
     attached.forEach(function (state, element) {
       if (!element.isConnected) {
@@ -714,7 +774,7 @@
       }
       if (!state.filter.isConnected) ensureDefs().appendChild(state.filter);
       ensureSurfaceLayers(state);
-      element.style.setProperty('--it-liquid-filter', 'url(#' + state.filter.id + ')');
+      setStyleIfChanged(element, '--it-liquid-filter', 'url(#' + state.filter.id + ')');
       updateFilterParameters(state, state.maps || { width: 1, height: 1, maxDisplacement: 0 });
       queueResize(state);
     });
@@ -728,7 +788,7 @@
       if (state.presetName !== 'pill' ||
           !(scope === element || (scope.contains && scope.contains(element)))) return;
       state.interactionActive = !!active;
-      element.dataset.itLiquidActive = state.interactionActive ? 'true' : 'false';
+      setAttributeIfChanged(element, 'data-it-liquid-active', state.interactionActive ? 'true' : 'false');
       if (state.maps) updateFilterParameters(state, state.maps);
       updated++;
     });
