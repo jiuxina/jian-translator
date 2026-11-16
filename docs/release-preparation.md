@@ -51,7 +51,7 @@ EXE FileVersion、ProductVersion 和固定版本号均为 `2.2.0`，MSI ProductV
 在 Windows EXE/MSI 元数据核验及 Android 资源检查之后执行：
 
 ```powershell
-node scripts/prepare-release.mjs --windows-dir .build/release-first-v2.2.0-20261116 --android output/笺-2.2.0-玻璃与更新.apk --out-dir output/first-release-v2.2.0
+node scripts/prepare-release.mjs --windows-dir .build/release-first-v2.2.0-20261116 --android output/笺-2.2.0-玻璃与更新.apk --out-dir output/first-release-v2.2.0-ready --revision cb53c70c40d8ede239d87def85782efe9a614abe
 ```
 
 准备器只处理显式指定的构建资产、发布文案及当前提交号，生成：
@@ -63,3 +63,35 @@ node scripts/prepare-release.mjs --windows-dir .build/release-first-v2.2.0-20261
 
 准备完毕后应将实际版本属性、文件哈希、验证结果和最终提交状态补入本记录。
 如远程源码、许可证核对或设备验收仍未完成，应继续保持草稿状态。
+
+准备器的清单记录“构建资产对应的来源提交”，不宣称该提交已完成发布门槛。
+当前候选将引用本次版本修复检查点，最终首发标签应在并行文档/许可证提交完成后重新固定。
+本地附件可审阅并复核；在完成上列事项前，不创建标签和公开 Release。
+
+## 已准备的本地候选
+
+最终审阅目录为 `output/first-release-v2.2.0-ready/`，包含三项规范附件、独立校验清单、
+补入本次结果的发布说明和清单 JSON；先前 `output/first-release-v2.2.0/` 预览目录保留。
+资产来源提交为 `cb53c70c40d8ede239d87def85782efe9a614abe`，并不包含尚未完成的并行许可证修改。
+
+| 附件 | 字节数 | SHA-256 |
+| --- | ---: | --- |
+| `Jian-2.2.0-windows-x64.exe` | 9,447,424 | `2A2B4EB03FA4BFA1935B2C225818078CCB3730C1470E891AC69EC7FA5A06C23F` |
+| `Jian-2.2.0-windows-x64.msi` | 4,313,088 | `1B402288008E68AD2AEAE61A2AC6774700930C717B7DA0D37A2B2DC1187B2C51` |
+| `Jian-2.2.0-android.apk` | 3,560,624 | `47949887413D75C3FD1F94E706DF09AA85BF67DDA9C2D347EC596702B6D84AE8` |
+
+准备工具的针对性检查覆盖文件内容/哈希、拒绝覆盖、重复参数、缺失输入、
+硬链接别名和严格版本/提交格式；Python 版本补丁八项检查通过。
+实际 PE/MSI 版本和三份附件哈希已核验；准备过程没有读取签名密钥、账号凭据或个人配置。
+
+本任务完整验证仅在工具和文档完成后执行一次，日志为 `output/verify-first-release-final.log`。
+它与上一任务的 97/107 结果分开记录；不能把两个任务的局部结果合并成一次全通过声明。
+
+实际结果：浏览器 **140/142**，Rust **93/93**；光学数值、更新模块、Mac 资源与 IPC、
+八项 Windows 版本补丁、附件准备与真实附件哈希均通过。
+浏览器两项失败为测试本身的层级读取和跨场景状态遗留：
+悬浮窗背景检查仍读取透明宿主而非光学背景层；更新保存继承了前一场景的延迟保存替身。
+已修正这两处测试，后续只做两项定向验证，不重跑完整套件。
+`output/verify-release-fixes-targeted.json` 记录两项定向结果均通过：
+选图预览的实际光学背景层为非透明，更新开关保存后原生快照与本地偏好均为 `false`，
+对话框关闭；没有 JavaScript 异常或外部请求。140/142 仍是本任务完整套件的实际统计。

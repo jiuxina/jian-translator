@@ -1642,7 +1642,7 @@ try {
       const image = document.querySelector('.it-popup-preview-image').style.getPropertyValue('--it-popup-preview-image');
       const card = document.querySelector('.it-popup-preview-card');
       return image.startsWith('url("data:image/png;base64,') &&
-        getComputedStyle(card).backgroundColor !== 'rgba(0, 0, 0, 0)';
+        window.__glassStyle(card).backgroundColor !== 'rgba(0, 0, 0, 0)';
     })()`));
     check('设置中的悬浮窗背景预览也仅覆盖卡片内部', await desktop.evaluate(`(() => {
       const card = document.querySelector('.it-popup-preview-card');
@@ -1798,6 +1798,7 @@ try {
   });
 
   await scenario('精简按钮文字与更新设置', async () => {
+    await desktop.evaluate(`window.__motionTest.saveDelay = 0`);
     check('翻译和下载按钮使用简短文字', await desktop.evaluate(`(() => {
       return ['btn-go', 'btn-go-syllable', 'btn-go-doc'].every((id) =>
         document.getElementById(id).textContent === '翻译') &&
