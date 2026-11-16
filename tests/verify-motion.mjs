@@ -434,6 +434,28 @@ try {
   page = await Cdp.connect(target.webSocketDebuggerUrl);
   await prepare(page, false, true);
 
+  await scenario('旧版已保存的玻璃偏好会升级并保留其他设置', async () => {
+    await page.evaluate(`localStorage.setItem('it-preferences', JSON.stringify({
+      version: 1,
+      appearance: { mode: 'dark', palette: 'sage', material: 'solid', glassStrength: 0,
+        cardReveal: 100, font: 'serif', fontWeight: 500 },
+      background: { opacity: 28 }, popup: { cardReveal: 100, backgroundData: '' }
+    }))`);
+    await page.send('Page.reload');
+    await page.until(`document.readyState === 'complete' && !!window.__itDebug`);
+    const migrated = await page.evaluate(`JSON.parse(localStorage.getItem('it-preferences') || 'null')`);
+    check('旧玻璃键改用新默认参数且主题、字体和壁纸偏好保留', migrated?.version === 2 &&
+      migrated?.appearance?.mode === 'dark' && migrated?.appearance?.palette === 'sage' &&
+      migrated?.appearance?.font === 'serif' && migrated?.appearance?.fontWeight === 500 &&
+      migrated?.background?.opacity === 28 && migrated?.liquidGlass?.backgroundOpacity === 60 &&
+      migrated?.liquidGlass?.refractionLevel === 100 && migrated?.appearance?.material === undefined &&
+      migrated?.appearance?.glassStrength === undefined && migrated?.appearance?.cardReveal === undefined &&
+      migrated?.popup?.cardReveal === undefined);
+    await page.evaluate(`localStorage.removeItem('it-preferences')`);
+    await page.send('Page.reload');
+    await page.until(`document.readyState === 'complete' && !!window.__itDebug`);
+  });
+
   await scenario('双向页面承接', async () => {
     await directionAndShells(page, 'text', 'syllable', 1);
     await directionAndShells(page, 'syllable', 'text', -1);
@@ -575,44 +597,122 @@ try {
       popupSource.includes('window.label() != APP_WINDOW_LABEL'));
   });
 
-  await scenario('玻璃边缘使用主题化折射滤镜', async () => {
+  await scenario('液态玻璃参数驱动真实折射', async () => {
     const result = await page.evaluate(`(() => {
       const card = document.querySelector('#pane-text .card');
-      const rim = getComputedStyle(card, '::after');
-      const filterUrl = rim.backdropFilter || rim.webkitBackdropFilter;
+      const filterUrl = getComputedStyle(card).backdropFilter || getComputedStyle(card).webkitBackdropFilter;
       const filterId = (filterUrl.match(/url\\(["']?#([^"')]+)["']?\\)/) || [])[1];
       const filter = filterId && document.getElementById(filterId);
+      const map = filter?.querySelector('feImage[href^="data:image/png"]');
+      const config = window.ItLiquidGlass.normalize({});
+      const controls = [...document.querySelectorAll('[data-pref^="liquidGlass."]')]
+        .map((control) => control.dataset.pref);
       return {
+        engine: typeof window.ItLiquidGlass,
+        state: card.dataset.itLiquidState,
         filterId,
-        rimMask: rim.mask || rim.webkitMask,
-        isPrismatic: rim.backgroundImage.includes('conic-gradient'),
+        primitiveUnits: filter?.getAttribute('primitiveUnits'),
         displacement: !!filter?.querySelector('feDisplacementMap'),
-        refractionMap: !!filter?.querySelector('feImage[href^="data:image/png"]'),
-        specular: !!filter?.querySelector('feBlend')
+        refractionMap: !!map && Number(map.getAttribute('width')) > 100 && Number(map.getAttribute('height')) > 100,
+        specular: !!filter?.querySelector('feBlend'),
+        blur: !!filter?.querySelector('feGaussianBlur'),
+        progressiveBlur: !!filter?.querySelector('feImage[result="progressive-mask"]'),
+        controls,
+        config
       };
     })()`);
-    check('玻璃边缘使用SVG位移折射、边缘遮罩和镜面高光',
-      !!result.filterId && result.rimMask !== 'none' && result.isPrismatic &&
-        result.displacement && result.refractionMap && result.specular,
+    check('每个玻璃表面直接使用SVG折射滤镜与按尺寸生成的位移图',
+      result.engine === 'object' && result.state === 'ready' && !!result.filterId &&
+        result.primitiveUnits === 'userSpaceOnUse' && result.displacement && result.refractionMap,
       JSON.stringify(result));
-    check('卡片透出100%仍保留液态边缘光环', await page.evaluate(`(() => {
-      const api = window.__itDebug.preferences;
-      api.apply(api.normalize({ appearance: { cardReveal: 100, material: 'glass' } }));
-      const rim = getComputedStyle(document.querySelector('#pane-text .card'), '::after');
-      return Number(rim.opacity) > .65 && rim.backdropFilter.includes('url(') &&
-        getComputedStyle(document.querySelector('#pane-text .card')).backgroundColor === 'rgba(0, 0, 0, 0)';
-    })()`));
-    check('纯色材质明确关闭折射边缘而保持普通描边', await page.evaluate(`(() => {
-      const api = window.__itDebug.preferences;
-      api.apply(api.normalize({ appearance: { material: 'solid' } }));
+    check('完整玻璃参数与设置控件一致', result.controls.length === 10 &&
+      ['convex-squircle', 12, 14, 1.5, 100, 45, 6, 60, 50, 60].every((value, index) =>
+        Object.values(result.config)[index] === value), JSON.stringify(result.controls));
+    check('SVG滤镜包含镜面高光和渐进模糊图层', result.specular && result.blur && result.progressiveBlur,
+      JSON.stringify({ specular: result.specular, blur: result.blur, progressiveBlur: result.progressiveBlur }));
+    check('卡片直接折射且不再使用旧伪彩色描边', await page.evaluate(`(() => {
       const card = document.querySelector('#pane-text .card');
-      const valid = getComputedStyle(card, '::after').display === 'none' &&
-        getComputedStyle(card).borderTopColor !== 'rgba(0, 0, 0, 0)';
-      api.apply(api.defaults);
-      return valid;
+      const rim = getComputedStyle(card, '::after');
+      return !rim.backgroundImage.includes('conic-gradient') &&
+        getComputedStyle(card).backdropFilter.includes('url(') &&
+        !document.documentElement.hasAttribute('data-it-material') &&
+        !document.documentElement.classList.contains('no-lg-blur');
     })()`));
-    const screenshot = await page.send('Page.captureScreenshot', { format: 'png' });
-    await writeFile('output/preview-liquid-glass-rim-light.png', Buffer.from(screenshot.data, 'base64'));
+    check('四种表面轮廓均能生成有界的Snell折射映射', await page.evaluate(`(() => {
+      const engine = window.ItLiquidGlass;
+      if (!engine || typeof engine.generateMaps !== 'function') return false;
+      return ['convex-circle', 'convex-squircle', 'concave', 'lip'].every((surfaceProfile) => {
+        const maps = engine.generateMaps(160, 100, 24, { ...engine.defaults, surfaceProfile });
+        return maps && maps.displacement instanceof Uint8ClampedArray &&
+          maps.displacement.length === maps.mapWidth * maps.mapHeight * 4 && maps.maxDisplacement > 0;
+      });
+    })()`));
+    check('旧玻璃设置迁移为新默认值且保留无关偏好', await page.evaluate(`(() => {
+      const api = window.__itDebug.preferences;
+      const old = api.normalize({ version: 1,
+        appearance: { material: 'solid', glassStrength: 0, cardReveal: 100, fontWeight: 600 },
+        popup: { cardReveal: 100, backgroundData: 'data:image/png;base64,AA==' },
+        background: { opacity: 28 } });
+      return old.version === 2 && old.appearance.material === undefined &&
+        old.appearance.glassStrength === undefined && old.appearance.cardReveal === undefined &&
+        old.popup.cardReveal === undefined && old.appearance.fontWeight === 600 &&
+        old.background.opacity === 28 && old.liquidGlass.refractionLevel === 100 &&
+        old.popup.backgroundData === 'data:image/png;base64,AA==';
+    })()`));
+
+    await page.evaluate(`(() => {
+      const contrast = document.createElement('style');
+      contrast.id = 'liquid-glass-contrast-test';
+      contrast.textContent = 'body::before{background:repeating-linear-gradient(90deg,#ff1744 0 18px,#1e40ff 18px 36px,#ffe600 36px 54px,#00bd72 54px 72px)!important;animation:none!important}body::after{display:none!important}';
+      document.head.appendChild(contrast);
+      window.__itDebug.preferences.apply(window.__itDebug.preferences.normalize({
+        liquidGlass: { surfaceProfile: 'convex-squircle', bezelWidth: 12, glassThickness: 14,
+          refractiveIndex: 1.5, refractionLevel: 0, specularOpacity: 0,
+          specularSaturation: 1, blurLevel: 0, progressiveBlurStrength: 0, backgroundOpacity: 0 }
+      }));
+    })()`);
+    await page.until(`document.querySelector('#pane-text .card')?.dataset.itLiquidState === 'ready'`);
+    await pause(100);
+    const unbentScreenshot = await page.send('Page.captureScreenshot', { format: 'png' });
+    await writeFile('output/preview-liquid-glass-no-refraction.png', Buffer.from(unbentScreenshot.data, 'base64'));
+    await page.evaluate(`window.__itDebug.preferences.apply(window.__itDebug.preferences.normalize({
+      liquidGlass: { surfaceProfile: 'convex-squircle', bezelWidth: 12, glassThickness: 14,
+        refractiveIndex: 1.5, refractionLevel: 100, specularOpacity: 0,
+        specularSaturation: 1, blurLevel: 0, progressiveBlurStrength: 0, backgroundOpacity: 0 }
+    }))`);
+    await pause(100);
+    const refractedScreenshot = await page.send('Page.captureScreenshot', { format: 'png' });
+    await writeFile('output/preview-liquid-glass-refraction.png', Buffer.from(refractedScreenshot.data, 'base64'));
+    const delta = await page.evaluate(`(async (offData, onData) => {
+      const load = (data) => new Promise((resolve, reject) => {
+        const image = new Image(); image.onload = () => resolve(image); image.onerror = reject;
+        image.src = 'data:image/png;base64,' + data;
+      });
+      const [off, on] = await Promise.all([load(${JSON.stringify(unbentScreenshot.data)}), load(${JSON.stringify(refractedScreenshot.data)})]);
+      const canvas = document.createElement('canvas'); canvas.width = on.width; canvas.height = on.height;
+      const context = canvas.getContext('2d', { willReadFrequently: true });
+      const read = (image) => { context.drawImage(image, 0, 0); return context.getImageData(0, 0, canvas.width, canvas.height).data; };
+      const a = read(off), b = read(on), cards = [...document.querySelectorAll('.card')].map((node) => {
+        const rect = node.getBoundingClientRect(); return { left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom };
+      });
+      let changed = 0, maxDelta = 0;
+      for (const card of cards) for (let y = Math.max(0, Math.floor(card.top)); y < Math.min(canvas.height, Math.ceil(card.bottom)); y++) {
+        for (let x = Math.max(0, Math.floor(card.left)); x < Math.min(canvas.width, Math.ceil(card.right)); x++) {
+          if (x - card.left > 32 && card.right - x > 32 && y - card.top > 32 && card.bottom - y > 32) continue;
+          const i = (y * canvas.width + x) * 4;
+          const d = Math.max(Math.abs(a[i] - b[i]), Math.abs(a[i + 1] - b[i + 1]), Math.abs(a[i + 2] - b[i + 2]));
+          if (d > 8) changed++;
+          maxDelta = Math.max(maxDelta, d);
+        }
+      }
+      return { changed, maxDelta };
+    })(${JSON.stringify(unbentScreenshot.data)}, ${JSON.stringify(refractedScreenshot.data)})`);
+    check('开启折射参数会在卡片边缘改变背景像素', delta.changed > 100 && delta.maxDelta > 12,
+      JSON.stringify(delta));
+    await page.evaluate(`(() => {
+      document.getElementById('liquid-glass-contrast-test')?.remove();
+      window.__itDebug.preferences.apply(window.__itDebug.preferences.defaults);
+    })()`);
   });
 
   await scenario('入场时仍可切换模型', async () => {
@@ -759,16 +859,20 @@ try {
     await page.evaluate(`document.querySelector('.sel-pop[aria-hidden="false"] .sel-item').click()`);
     await pause(700);
     await page.click('#langbar .sel-btn');
-    const wheel = await page.evaluate(`(async () => {
-      document.querySelector('.sel-pop[aria-hidden="false"]').querySelectorAll('.sel-item')[6].click();
-      const reel = document.querySelector('#langbar .sel-reel');
-      const labels = [...reel.children].map((row) => row.textContent);
-      await new Promise((resolve) => setTimeout(resolve, 60));
-      const first = new DOMMatrixReadOnly(getComputedStyle(reel).transform).m42;
-      await new Promise((resolve) => setTimeout(resolve, 90));
-      const second = new DOMMatrixReadOnly(getComputedStyle(reel).transform).m42;
-      return { labels, first, second };
+    await page.evaluate(`document.querySelector('.sel-pop[aria-hidden="false"]')
+      .querySelectorAll('.sel-item')[6].click()`);
+    const labels = await page.evaluate(`(() => [...document.querySelector('#langbar .sel-reel').children]
+      .map((row) => row.textContent))()`);
+    await page.until(`(() => {
+      const animation = document.querySelector('#langbar .sel-reel')?.getAnimations()[0];
+      return animation && Number(animation.currentTime) > 80;
     })()`);
+    const firstWheelPosition = await page.evaluate(`new DOMMatrixReadOnly(
+      getComputedStyle(document.querySelector('#langbar .sel-reel')).transform).m42`);
+    await pause(70);
+    const secondWheelPosition = await page.evaluate(`new DOMMatrixReadOnly(
+      getComputedStyle(document.querySelector('#langbar .sel-reel')).transform).m42`);
+    const wheel = { labels, first: firstWheelPosition, second: secondWheelPosition };
     check('轮盘逐项经过语言列表且朝正确方向滚动',
       JSON.stringify(wheel.labels) === JSON.stringify(rows.map((row) => row.label)) &&
       wheel.second < wheel.first - 1, JSON.stringify(wheel));
@@ -776,15 +880,21 @@ try {
     check('轮盘最终语言与所选项一致',
       await page.evaluate(`document.getElementById('src-lang').value === ${JSON.stringify(rows[6].value)}`));
     await page.click('#langbar .sel-btn');
-    const reverse = await page.evaluate(`(async () => {
-      document.querySelector('.sel-pop[aria-hidden="false"] .sel-item').click();
-      const reel = document.querySelector('#langbar .sel-reel');
-      await new Promise((resolve) => setTimeout(resolve, 60));
-      const first = new DOMMatrixReadOnly(getComputedStyle(reel).transform).m42;
-      await new Promise((resolve) => setTimeout(resolve, 90));
-      return { first, second: new DOMMatrixReadOnly(getComputedStyle(reel).transform).m42 };
+    await page.evaluate(`document.querySelector('.sel-pop[aria-hidden="false"] .sel-item').click()`);
+    await page.until(`(() => {
+      const animation = document.querySelector('#langbar .sel-reel')?.getAnimations()[0];
+      return animation && Number(animation.currentTime) > 150;
     })()`);
-    check('反向选择沿同一列表回滚', reverse.second > reverse.first + 1);
+    const reverseFirst = await page.evaluate(`new DOMMatrixReadOnly(
+      getComputedStyle(document.querySelector('#langbar .sel-reel')).transform).m42`);
+    await page.until(`(() => {
+      const animation = document.querySelector('#langbar .sel-reel')?.getAnimations()[0];
+      return animation && Number(animation.currentTime) > 250;
+    })()`);
+    const reverseSecond = await page.evaluate(`new DOMMatrixReadOnly(
+      getComputedStyle(document.querySelector('#langbar .sel-reel')).transform).m42`);
+    check('反向选择沿同一列表回滚', reverseSecond > reverseFirst + 1,
+      JSON.stringify({ first: reverseFirst, second: reverseSecond }));
     await pause(700);
   });
 
@@ -1008,16 +1118,20 @@ try {
     check('偏好配置公开可测试的归一化入口', await page.evaluate(`
       !!window.__itDebug.preferences &&
       typeof window.__itDebug.preferences.normalize === 'function'`));
-    check('偏好默认值保留薄樱浅色玻璃', await page.evaluate(`(() => {
+    check('偏好默认值使用新液态玻璃参数组', await page.evaluate(`(() => {
       const defaults = window.__itDebug.preferences?.normalize({});
       return defaults?.appearance?.mode === 'light' &&
         defaults?.appearance?.palette === 'sakura' &&
-        defaults?.appearance?.material === 'glass' &&
-        defaults?.appearance?.glassStrength === 100 &&
+        defaults?.version === 2 &&
         defaults?.appearance?.fontWeight === 400 &&
         defaults?.appearance?.fontColorMode === 'theme' &&
-        defaults?.appearance?.cardReveal === 0 &&
-        defaults?.popup?.cardReveal === 0 && defaults?.popup?.backgroundData === '' &&
+        defaults?.liquidGlass?.surfaceProfile === 'convex-squircle' &&
+        defaults?.liquidGlass?.bezelWidth === 12 && defaults?.liquidGlass?.glassThickness === 14 &&
+        defaults?.liquidGlass?.refractiveIndex === 1.5 && defaults?.liquidGlass?.refractionLevel === 100 &&
+        defaults?.liquidGlass?.specularOpacity === 45 && defaults?.liquidGlass?.specularSaturation === 6 &&
+        defaults?.liquidGlass?.blurLevel === 60 && defaults?.liquidGlass?.progressiveBlurStrength === 50 &&
+        defaults?.liquidGlass?.backgroundOpacity === 60 &&
+        defaults?.popup?.cardReveal === undefined && defaults?.popup?.backgroundData === '' &&
         defaults?.translation?.defaultTab === 'text';
     })()`));
     await page.evaluate(`window.__itDebug.preferences.apply(
@@ -1046,13 +1160,14 @@ try {
       const preferences = api.normalize({ appearance: { mode: 'system', palette: 'sage' } });
       const snapshot = JSON.parse(api.nativeSnapshot(preferences));
       const allModesValid = ['system', 'light', 'dark'].every((mode) => {
-        const candidate = api.normalize({ appearance: { mode: mode, material: 'solid' } });
+        const candidate = api.normalize({ appearance: { mode: mode } });
         const stored = JSON.parse(api.nativeSnapshot(candidate));
         return stored.mode === mode && stored.light.dark === false && stored.dark.dark === true &&
-          stored.dark.surface === '#FF302C38';
+          stored.dark.surface === '#99302C38';
       });
       return { valid: allModesValid && snapshot.mode === 'system' && snapshot.light.dark === false && snapshot.dark.dark === true &&
         snapshot.light.accent === '#FF66876F' && snapshot.dark.accent === '#FF83A58B' &&
+        snapshot.light.surface === '#99FFFFFF' && snapshot.dark.surface === '#99302C38' &&
         snapshot.light.background.every((color) => /^#[0-9A-F]{8}$/.test(color)), snapshot };
     })()`);
     check('安卓启动缓存包含浅深两套原生色板', nativeSnapshotCheck.valid,
@@ -1071,42 +1186,29 @@ try {
       api.apply(api.defaults);
       return stable;
     })()`));
-    check('纯色材质使用不透明卡片并关闭玻璃模糊', await page.evaluate(`(() => {
+    check('液态玻璃全部设置值归一化并限制边界', await page.evaluate(`(() => {
       const api = window.__itDebug.preferences;
-      api.apply(api.normalize({ appearance: { material: 'solid' } }));
-      const card = getComputedStyle(document.querySelector('.card'));
-      const opaque = card.backgroundColor === 'rgb(255, 255, 255)' &&
-        card.backdropFilter === 'none';
-      api.apply(api.defaults);
-      return opaque;
+      const normalized = api.normalize({ liquidGlass: {
+        surfaceProfile: 'bad-profile', bezelWidth: 99, glassThickness: -2,
+        refractiveIndex: 9, refractionLevel: 999, specularOpacity: -5,
+        specularSaturation: 20, blurLevel: 101, progressiveBlurStrength: -1, backgroundOpacity: 200
+      } });
+      const glass = normalized.liquidGlass;
+      return glass.surfaceProfile === 'convex-squircle' && glass.bezelWidth === 32 &&
+        glass.glassThickness === 1 && glass.refractiveIndex === 2.5 && glass.refractionLevel === 200 &&
+        glass.specularOpacity === 0 && glass.specularSaturation === 10 && glass.blurLevel === 100 &&
+        glass.progressiveBlurStrength === 0 && glass.backgroundOpacity === 100;
     })()`));
-    check('透出度100%跨主题材质与模糊降级时卡片材质透明且文字清晰', await page.evaluate(`(() => {
+    check('旧配置归一化会丢弃全部旧玻璃键且背景字体仍保留', await page.evaluate(`(() => {
       const api = window.__itDebug.preferences;
-      const noBlur = document.documentElement.classList.contains('no-lg-blur');
-      document.documentElement.classList.add('no-lg-blur');
-      const pass = ['light', 'dark'].every((mode) =>
-        ['glass', 'frosted', 'solid'].every((material) => {
-          api.apply(api.normalize({ appearance: { mode: mode, material: material, cardReveal: 100 } }));
-          const card = getComputedStyle(document.querySelector('.card'));
-          const output = getComputedStyle(document.querySelector('.card.out'));
-          return card.backgroundColor === 'rgba(0, 0, 0, 0)' &&
-            output.backgroundColor === 'rgba(0, 0, 0, 0)' &&
-            card.backdropFilter === 'none' && output.backdropFilter === 'none' &&
-            getComputedStyle(document.querySelector('#src')).color !== 'rgba(0, 0, 0, 0)';
-        }));
-      if (!noBlur) document.documentElement.classList.remove('no-lg-blur');
-      api.apply(api.defaults);
-      return pass;
-    })()`));
-    check('旧设置的新增字段按兼容默认值归一化且边界受限', await page.evaluate(`(() => {
-      const api = window.__itDebug.preferences;
-      const old = api.normalize({ appearance: { font: 'serif' } });
-      const edge = api.normalize({ appearance: { fontWeight: 950, cardReveal: -20 },
-        popup: { cardReveal: 120, backgroundData: 'not-an-image' } });
-      return old.appearance.fontWeight === 400 && old.appearance.cardReveal === 0 &&
-        old.appearance.fontColorMode === 'theme' && edge.appearance.fontWeight === 700 &&
-        edge.appearance.cardReveal === 0 && edge.popup.cardReveal === 100 &&
-        edge.popup.backgroundData === '';
+      const normalized = api.normalize({ appearance: { font: 'serif', fontWeight: 950,
+        material: 'solid', glassStrength: 0, cardReveal: 100 },
+        popup: { cardReveal: 100, backgroundData: 'bad-image' }, background: { opacity: 30 } });
+      return normalized.appearance.font === 'serif' && normalized.appearance.fontWeight === 700 &&
+        normalized.liquidGlass.refractionLevel === 100 &&
+        ['material', 'glassStrength', 'cardReveal'].every((key) => normalized.appearance[key] === undefined) &&
+        normalized.popup.cardReveal === undefined && normalized.popup.backgroundData === '' &&
+        normalized.background.opacity === 30;
     })()`));
 
     await openMenu(page);
@@ -1117,7 +1219,12 @@ try {
         !!document.querySelector('[data-pref-section="appearance"]') &&
         !!document.querySelector('[data-pref="appearance.fontWeight"]') &&
         !!document.querySelector('[data-pref="appearance.fontColorMode"]') &&
-        !!document.querySelector('[data-pref="appearance.cardReveal"]') &&
+        !!document.querySelector('[data-pref-tab="glass"]') &&
+        !!document.querySelector('[data-pref-section="glass"]') &&
+        document.querySelectorAll('[data-pref^="liquidGlass."]').length === 10 &&
+        !document.querySelector('[data-pref="appearance.material"]') &&
+        !document.querySelector('[data-pref="appearance.glassStrength"]') &&
+        !document.querySelector('[data-pref="appearance.cardReveal"]') &&
         document.querySelector('[data-pref="appearance.systemFontFamily"]')?.closest('#it-pref-font-family-row')?.hidden === true &&
         document.getElementById('it-popup-settings')?.hidden === true`));
 
@@ -1157,7 +1264,8 @@ try {
       setPreference('appearance.fontWeight', 600);
       setPreference('appearance.fontColorMode', 'custom');
       setPreference('appearance.fontColor', '#ff0000');
-      setPreference('appearance.cardReveal', 100);
+      setPreference('liquidGlass.refractionLevel', 145);
+      setPreference('liquidGlass.backgroundOpacity', 40);
       setPreference('translation.rememberLanguages', false);
       setPreference('translation.rememberModels', false);
     })()`);
@@ -1169,7 +1277,7 @@ try {
         saved?.appearance?.mode === 'dark' && saved?.appearance?.palette === 'sage' &&
         saved?.translation?.defaultTab === 'doc' &&
         saved?.appearance?.fontWeight === 600 && saved?.appearance?.fontColor === '#FF0000' &&
-        saved?.appearance?.cardReveal === 100 &&
+        saved?.liquidGlass?.refractionLevel === 145 && saved?.liquidGlass?.backgroundOpacity === 40 &&
         saved?.translation?.defaultModels?.text === 'index-mt-9b';
     })()`));
     await page.evaluate(`localStorage.setItem('it-state', JSON.stringify({
@@ -1215,10 +1323,10 @@ try {
     await page.evaluate(`(() => {
       const saved = JSON.parse(localStorage.getItem('it-preferences') || 'null');
       if (!saved) return;
-      saved.appearance.cardReveal = 0;
       saved.appearance.fontWeight = 400;
       saved.appearance.fontColorMode = 'theme';
-      saved.popup = { cardReveal: 0, backgroundData: '' };
+      delete saved.popup.cardReveal;
+      saved.popup.backgroundData = '';
       localStorage.setItem('it-preferences', JSON.stringify(saved));
     })()`);
     const created = await page.send('Target.createTarget', { url: 'about:blank' });
@@ -1259,7 +1367,7 @@ try {
       const select = document.querySelector('[data-pref="appearance.systemFontFamily"]');
       return !!select && [...select.options].some((option) => option.value === 'Arial') &&
         [...select.options].some((option) => option.value === 'Microsoft YaHei UI') &&
-        !!document.querySelector('[data-pref="popup.cardReveal"]') &&
+        !!document.querySelector('[data-pref="liquidGlass.refractionLevel"]') &&
         !!document.getElementById('it-popup-pick-background') &&
         !!document.getElementById('it-popup-follow-background');
     })()`));
@@ -1278,6 +1386,12 @@ try {
         .filter((section) => !section.hidden && !section.inert);
       return visible.length === 1 && visible[0].dataset.prefSection === 'background';
     })()`);
+    await desktop.until(`(() => {
+      const tab = document.querySelector('[data-pref-tab="background"]')?.getBoundingClientRect();
+      const thumb = document.querySelector('.it-set-nav-thumb')?.getBoundingClientRect();
+      return tab && thumb && Math.abs(tab.x - thumb.x) < 1 && Math.abs(tab.y - thumb.y) < 1 &&
+        Math.abs(tab.width - thumb.width) < 1 && Math.abs(tab.height - thumb.height) < 1;
+    })()`);
     const sectionThumbAligned = await desktop.evaluate(`(() => {
       const tab = document.querySelector('[data-pref-tab="background"]');
       const thumb = document.querySelector('.it-set-nav-thumb');
@@ -1287,34 +1401,52 @@ try {
         Math.abs(tabRect.width - thumbRect.width) < 1 && Math.abs(tabRect.height - thumbRect.height) < 1;
     })()`);
     check('设置导航滑块落在当前菜单项下方', sectionThumbAligned);
-    await desktop.evaluate(`document.querySelector('[data-pref-tab="appearance"]').click()`);
-    await desktop.until(`(() => document.querySelector('[data-pref-section="appearance"]')?.classList.contains('is-entering'))()`);
+    await desktop.evaluate(`document.querySelector('[data-pref-tab="glass"]').click()`);
+    await desktop.until(`(() => document.querySelector('[data-pref-section="glass"]')?.classList.contains('is-entering'))()`);
     await desktop.until(`(() => {
       const visible = [...document.querySelectorAll('[data-pref-section]')]
         .filter((section) => !section.hidden && !section.inert);
-      return visible.length === 1 && visible[0].dataset.prefSection === 'appearance';
+      return visible.length === 1 && visible[0].dataset.prefSection === 'glass';
     })()`);
-    const themeSelectPopup = await desktop.evaluate(`(() => {
-      const select = document.querySelector('[data-pref="appearance.mode"]');
+    const profilePopup = await desktop.evaluate(`(() => {
+      const select = document.querySelector('[data-pref="liquidGlass.surfaceProfile"]');
       const button = select?.parentElement?.querySelector('.sel-btn');
       const expectedRadius = getComputedStyle(document.documentElement).getPropertyValue('--lg-r-sm').trim();
-      return !!button && button.getAttribute('aria-label') === '明暗主题' &&
+      return !!button && button.getAttribute('aria-label') === '表面轮廓' &&
         getComputedStyle(button).borderRadius === expectedRadius &&
-        getComputedStyle(button).backdropFilter !== 'none';
+        getComputedStyle(button).backdropFilter.includes('url(');
     })()`);
-    check('设置下拉复用玻璃控件并保持表单标签', themeSelectPopup);
-    await desktop.evaluate(`document.querySelector('[data-pref="appearance.mode"]')?.parentElement?.querySelector('.sel-btn')?.click()`);
+    check('液态玻璃轮廓下拉与滤镜控件风格统一', profilePopup);
+    await desktop.evaluate(`document.querySelector('[data-pref="liquidGlass.surfaceProfile"]')?.parentElement?.querySelector('.sel-btn')?.click()`);
     await desktop.until(`!!document.querySelector('.sel-pop[aria-hidden="false"]')`);
     const themeOptionsStyled = await desktop.evaluate(`(() => {
       const popup = document.querySelector('.sel-pop[aria-hidden="false"]');
       return !!popup && !!popup.querySelector('.sel-list .sel-item') &&
         getComputedStyle(popup).backdropFilter !== 'none';
     })()`);
-    check('设置下拉选项使用统一玻璃弹层', themeOptionsStyled);
+    check('玻璃轮廓选项使用统一滤镜弹层', themeOptionsStyled);
     await desktop.key('Escape');
     await desktop.until(`!document.querySelector('.sel-pop[aria-hidden="false"]')`);
     check('设置下拉关闭后焦点返回触发控件', await desktop.evaluate(`(() =>
-      document.activeElement === document.querySelector('[data-pref="appearance.mode"]')?.parentElement?.querySelector('.sel-btn'))()`));
+      document.activeElement === document.querySelector('[data-pref="liquidGlass.surfaceProfile"]')?.parentElement?.querySelector('.sel-btn'))()`));
+    await desktop.evaluate(`(() => {
+      const select = document.querySelector('[data-pref="liquidGlass.surfaceProfile"]');
+      select.value = 'convex-circle';
+      select.dispatchEvent(new Event('change', { bubbles: true }));
+      select.parentElement.querySelector('.sel-btn').click();
+    })()`);
+    await desktop.key('ArrowDown');
+    await desktop.key(' ');
+    check('玻璃轮廓下拉可用键盘选择', await desktop.evaluate(`(() => {
+      const select = document.querySelector('[data-pref="liquidGlass.surfaceProfile"]');
+      return select.value === 'convex-squircle' && !document.querySelector('.sel-pop[aria-hidden="false"]');
+    })()`));
+    await desktop.evaluate(`(() => {
+      const select = document.querySelector('[data-pref="liquidGlass.surfaceProfile"]');
+      select.value = 'convex-squircle';
+      select.dispatchEvent(new Event('change', { bubbles: true }));
+    })()`);
+    await selectSettingsSection(desktop, 'appearance');
     await desktop.evaluate(`(() => {
       const select = document.querySelector('[data-pref="appearance.mode"]');
       select.value = 'light';
@@ -1394,19 +1526,28 @@ try {
       features: [{ name: 'prefers-reduced-motion', value: 'no-preference' }],
     });
     await selectSettingsSection(desktop, 'appearance');
+    await selectSettingsSection(desktop, 'glass');
     await desktop.evaluate(`(() => {
-      const select = document.querySelector('[data-pref="appearance.material"]');
-      const strength = document.querySelector('[data-pref="appearance.glassStrength"]');
-      window.__motionTest.glassStrengthBefore = strength.value;
-      select.value = 'solid';
-      select.dispatchEvent(new Event('change', { bubbles: true }));
+      const setValue = (path, value) => {
+        const control = document.querySelector('[data-pref="' + path + '"]');
+        control.value = value;
+        control.dispatchEvent(new Event('change', { bubbles: true }));
+      };
+      setValue('liquidGlass.refractionLevel', 130);
+      setValue('liquidGlass.specularOpacity', 65);
+      setValue('liquidGlass.blurLevel', 35);
     })()`);
-    check('纯色材质禁用无效玻璃强度且保留设置值', await desktop.evaluate(`(() => {
-      const strength = document.querySelector('[data-pref="appearance.glassStrength"]');
-      return strength.disabled && strength.value === window.__motionTest.glassStrengthBefore;
+    check('液态玻璃控件实时驱动折射、高光和模糊', await desktop.evaluate(`(() => {
+      const card = document.querySelector('.card');
+      const getFilter = () => {
+        const url = getComputedStyle(card).backdropFilter;
+        const id = (url.match(/url\\(["']?#([^"')]+)["']?\\)/) || [])[1];
+        return id && document.getElementById(id);
+      };
+      const filter = getFilter();
+      return !!filter && filter.querySelector('feDisplacementMap')?.getAttribute('scale') !== '0' &&
+        filter.querySelector('[result="specular-map"]') && filter.querySelector('feGaussianBlur');
     })()`));
-    await desktop.evaluate(`document.querySelector('[data-pref="appearance.material"]').value = 'glass';
-      document.querySelector('[data-pref="appearance.material"]').dispatchEvent(new Event('change', { bubbles: true }));`);
     await selectSettingsSection(desktop, 'desktop');
     await desktop.click('#it-popup-pick-background');
     check('模拟文件选择器已打开', await desktop.evaluate('window.__motionTest.filePickerOpens === 1'));
@@ -1425,11 +1566,6 @@ try {
         ['x', 'y', 'width', 'height'].every((key) => Math.abs(a[key] - b[key]) < .1) &&
         getComputedStyle(image).overflow === 'hidden';
     })()`));
-    await desktop.evaluate(`(() => {
-      const reveal = document.querySelector('[data-pref="popup.cardReveal"]');
-      reveal.value = '75';
-      reveal.dispatchEvent(new Event('change', { bubbles: true }));
-    })()`);
     await desktop.click('#it-popup-follow-background');
     const popupFollowState = await desktop.evaluate(`(() => ({
       status: document.getElementById('it-popup-background-status').textContent,
@@ -1437,16 +1573,13 @@ try {
     }))()`);
     check('悬浮窗可恢复跟随主窗口背景', popupFollowState.status === '悬浮窗跟随主窗口背景。' &&
       popupFollowState.image === 'none', JSON.stringify(popupFollowState));
-    await desktop.evaluate(`(() => {
-      const reveal = document.querySelector('[data-pref="popup.cardReveal"]');
-      reveal.value = '75';
-      reveal.dispatchEvent(new Event('change', { bubbles: true }));
-    })()`);
+    const glassBeforeDesktopReset = await desktop.evaluate(`document.querySelector('[data-pref="liquidGlass.refractionLevel"]').value`);
     await desktop.click('[data-reset-section]');
     check('恢复电脑功能默认值不会重置通用外观', await desktop.evaluate(`
       document.documentElement.dataset.itTheme === 'dark' &&
       document.documentElement.dataset.itPalette === 'sage' &&
-      document.querySelector('[data-pref="popup.cardReveal"]').value === '0'`));
+      String(document.querySelector('[data-pref="liquidGlass.refractionLevel"]').value) === String(${glassBeforeDesktopReset}) &&
+      !document.querySelector('[data-pref="popup.cardReveal"]')`));
     await desktop.key('Escape');
     await desktop.until(`document.querySelector('.it-set-mask').getAttribute('aria-hidden') === 'true'`);
     check('桌面设置 Escape 关闭并归还可用焦点',
@@ -1481,30 +1614,40 @@ try {
       };
       setPreference('appearance.mode', 'dark');
       setPreference('appearance.palette', 'amber');
-      setPreference('appearance.material', 'frosted');
-      setPreference('appearance.glassStrength', 45);
       setPreference('appearance.radius', 'small');
       setPreference('appearance.fontScale', 130);
       setPreference('appearance.fontWeight', 600);
       setPreference('appearance.fontColorMode', 'custom');
       setPreference('appearance.fontColor', '#ff0000');
-      setPreference('appearance.cardReveal', 55);
       setPreference('appearance.systemFontFamily', 'Arial');
-      setPreference('popup.cardReveal', 100);
       setPreference('appearance.layout', 'compact');
       setPreference('appearance.motion', 'reduced');
       setPreference('appearance.ambientLight', false);
     })()`);
-    await selectSettingsSection(desktop, 'appearance');
+    await selectSettingsSection(desktop, 'glass');
+    await desktop.evaluate(`(() => {
+      const setPreference = (path, value) => {
+        const control = document.querySelector('[data-pref="' + path + '"]');
+        control.value = value;
+        control.dispatchEvent(new Event('change', { bubbles: true }));
+      };
+      setPreference('liquidGlass.surfaceProfile', 'lip');
+      setPreference('liquidGlass.bezelWidth', 22);
+      setPreference('liquidGlass.refractionLevel', 155);
+      setPreference('liquidGlass.backgroundOpacity', 33);
+    })()`);
     await desktop.click('[data-reset-section]');
-    check('恢复外观默认值保留阅读布局与动效分组草稿', await desktop.evaluate(`(() => {
+    check('液态玻璃分组重置参数且不改外观阅读草稿', await desktop.evaluate(`(() => {
       const value = (path) => document.querySelector('[data-pref="' + path + '"]').value;
-      return value('appearance.mode') === 'light' && value('appearance.palette') === 'sakura' &&
-        value('appearance.material') === 'glass' && value('appearance.glassStrength') === '100' &&
-        value('appearance.radius') === 'round' && value('appearance.fontScale') === '130' &&
+      const defaults = window.__itDebug.preferences.defaults.liquidGlass;
+      return value('appearance.mode') === 'dark' && value('appearance.palette') === 'amber' &&
+        value('liquidGlass.surfaceProfile') === defaults.surfaceProfile &&
+        Number(value('liquidGlass.bezelWidth')) === defaults.bezelWidth &&
+        Number(value('liquidGlass.refractionLevel')) === defaults.refractionLevel &&
+        Number(value('liquidGlass.backgroundOpacity')) === defaults.backgroundOpacity &&
+        value('appearance.radius') === 'small' && value('appearance.fontScale') === '130' &&
         value('appearance.fontWeight') === '600' && value('appearance.fontColorMode') === 'custom' &&
-        value('appearance.cardReveal') === '0' &&
-        value('appearance.systemFontFamily') === 'Arial' && value('popup.cardReveal') === '100' &&
+        value('appearance.systemFontFamily') === 'Arial' &&
         document.getElementById('it-popup-background-status').textContent === '悬浮窗跟随主窗口背景。' &&
         value('appearance.layout') === 'compact' && value('appearance.motion') === 'reduced' &&
         !document.querySelector('[data-pref="appearance.ambientLight"]').checked;
@@ -1537,7 +1680,10 @@ try {
         JSON.stringify(saved.preferences) === JSON.stringify(local) &&
         local.appearance.mode === 'dark' && local.appearance.fontScale === 130 &&
         local.appearance.fontWeight === 600 && local.appearance.fontColor === '#FF0000' &&
-        local.appearance.cardReveal === 0 && local.popup.cardReveal === 100 &&
+        local.liquidGlass.surfaceProfile === 'convex-squircle' &&
+        local.liquidGlass.refractionLevel === 100 && local.liquidGlass.backgroundOpacity === 60 &&
+        local.appearance.material === undefined && local.appearance.glassStrength === undefined &&
+        local.appearance.cardReveal === undefined && local.popup.cardReveal === undefined &&
         local.appearance.layout === 'compact' && local.appearance.motion === 'reduced' &&
         local.appearance.ambientLight === false && document.documentElement.dataset.itTheme === 'dark';
     })()`));
@@ -1565,6 +1711,8 @@ try {
     await popup.send('Emulation.setEmulatedMedia', {
       features: [{ name: 'prefers-reduced-motion', value: 'reduce' }],
     });
+    const liquidGlassEngine = await readFile('web/liquid-glass.js', 'utf8');
+    await popup.evaluate(liquidGlassEngine);
     await popup.evaluate(bootstrap);
     const image = await popup.evaluate(`(() => {
       const canvas = document.createElement('canvas');
@@ -1575,9 +1723,12 @@ try {
       return canvas.toDataURL('image/png');
     })()`);
     await popup.evaluate(`window.__popupApplyPreferences({
-      appearance: { mode: 'light', material: 'glass', motion: 'off' },
+      appearance: { mode: 'light', motion: 'off' },
+      liquidGlass: { surfaceProfile: 'convex-squircle', bezelWidth: 12, glassThickness: 14,
+        refractiveIndex: 1.5, refractionLevel: 100, specularOpacity: 45,
+        specularSaturation: 6, blurLevel: 60, progressiveBlurStrength: 50, backgroundOpacity: 60 },
       background: { data: ${JSON.stringify(image)}, opacity: 0, blur: 0, fit: 'contain' },
-      popup: { cardReveal: 100, backgroundData: '' }
+      popup: { backgroundData: '' }
     });
     document.getElementById('out').textContent = '正文超出时，滚动条保持透明轨道与圆角。\\n'.repeat(80);`);
     check('悬浮窗背景与卡片同矩形且圆角裁剪', await popup.evaluate(`(() => {
@@ -1595,7 +1746,7 @@ try {
       const photo = getComputedStyle(layer, '::before'), card = getComputedStyle(document.getElementById('card'));
       return photo.backgroundSize === 'contain' &&
         ['top', 'right', 'bottom', 'left'].every((side) => photo[side] === '0px') &&
-        card.backgroundColor === 'rgba(255, 255, 255, 0)' && card.backdropFilter === 'none' &&
+        card.backdropFilter.includes('url(') &&
         getComputedStyle(document.getElementById('card-frame')).boxShadow !== 'none';
     })()`));
     check('悬浮窗正文使用无箭头的透明轨道滚动条', await popup.evaluate(`(() => {
@@ -1608,9 +1759,12 @@ try {
     const light = await popup.send('Page.captureScreenshot', { format: 'png' });
     await writeFile('output/preview-popup-clipped-contain.png', Buffer.from(light.data, 'base64'));
     await popup.evaluate(`window.__popupApplyPreferences({
-      appearance: { mode: 'dark', material: 'glass', motion: 'off' },
+      appearance: { mode: 'dark', motion: 'off' },
+      liquidGlass: { surfaceProfile: 'lip', bezelWidth: 14, glassThickness: 18,
+        refractiveIndex: 1.6, refractionLevel: 110, specularOpacity: 50,
+        specularSaturation: 7, blurLevel: 70, progressiveBlurStrength: 60, backgroundOpacity: 55 },
       background: { data: '', opacity: 34, blur: 20, fit: 'cover' },
-      popup: { cardReveal: 0, backgroundData: ${JSON.stringify(image)} }
+      popup: { backgroundData: ${JSON.stringify(image)} }
     });`);
     check('悬浮窗独立图片与模糊淡化仍生效', await popup.evaluate(`(() => {
       const layer = document.getElementById('popup-background');

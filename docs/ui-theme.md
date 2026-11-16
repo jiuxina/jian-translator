@@ -1,5 +1,69 @@
 # 界面美学与动效：v11 触控与背景范围
 
+## v12：全量替换为 SVG 液态玻璃（2026-11-16）
+
+本节描述当前实现。主界面、玻璃控件、设置内预览和 Windows 划词悬浮窗统一使用
+`web/liquid-glass.js` 生成按元素尺寸更新的 SVG 位移图、镜面图和渐进模糊图，并直接将滤镜
+应用到各自表面的 `backdrop-filter`。方案参考 [Kube 的 Liquid Glass CSS/SVG 说明](https://kube.io/blog/liquid-glass-css-svg)，
+折射表面与滤镜代码为本项目实现。浏览器文档指出将 SVG filter 用作 `backdrop-filter` 具有浏览器限制；
+打包后 WebView2 与 Android WebView 的实际支持仍待实机验收。运行时不支持时会标记错误并明确报告，
+不会回退到先前的普通磨砂、彩色边线或纯色效果。
+
+设置页的“液态玻璃”分类配置全局共享的 `liquidGlass` 对象：
+
+| 参数 | 默认值 | 效果 |
+| --- | ---: | --- |
+| `surfaceProfile` | `convex-squircle` | 表面轮廓：凸面圆、凸面圆角矩形、凹面、唇形边缘。 |
+| `bezelWidth` | 12 px | 折射边缘宽度，4–32 px。 |
+| `glassThickness` | 14 | 玻璃表面厚度，影响光线路径。 |
+| `refractiveIndex` | 1.5 | 折射率，1.0–2.5；1.0 不产生背景偏移。 |
+| `refractionLevel` | 100% | 位移图缩放，0–200%。 |
+| `specularOpacity` | 45% | 镜面高光不透明度。 |
+| `specularSaturation` | 6 | 镜面色彩饱和度，1–10。 |
+| `blurLevel` | 60% | 基础高斯模糊量。 |
+| `progressiveBlurStrength` | 50% | 玻璃平面内部渐进模糊。 |
+| `backgroundOpacity` | 60% | 玻璃着色层透明度。 |
+
+旧 `appearance.material`、`appearance.glassStrength`、`appearance.cardReveal` 和
+`popup.cardReveal` 已退出新配置和渲染流程；旧值不会折算到新参数。旧版保存数据升级时只替换玻璃参数为
+新默认值，主题、字体、壁纸和翻译偏好等其它配置继续保留。原来的壁纸图片 `background.opacity`、
+`background.blur`、`background.fit` 仍保留，用于壁纸图层，与玻璃着色、玻璃模糊互相独立。
+玻璃配置全局共享，不提供悬浮窗独立玻璃设置；PC 仍可单独选择浮窗背景图片。
+
+### v12 验证状态
+
+- 单元测试验证四种轮廓产生不同位移图、折射率为 1 时位移为零、玻璃厚度影响光线偏移，
+  并验证各配置范围归一化。
+- 本轮唯一一次 `node tests/verify-motion.mjs` 全量执行：**127/128 通过**。覆盖旧偏好升级、玻璃参数控件与分组重置、
+  折射/高光/模糊更新、悬浮窗共享参数及浅深模式；高对比条纹背景下开关折射时，卡片边缘
+  有 **18,726** 个像素发生变化，证明滤镜在 Chromium 实际改变了背景采样。
+- 唯一失败项是语言轮盘反向动画断言在 60/90ms 固定采样窗口读到相同帧；随后将测试改为等待动画时钟推进，
+  针对性 Chromium 探针确认正向与反向位置变化均符合预期。按全量测试只执行一次的要求，本轮未重跑完整套件。
+- 已生成并查看默认主题截图 `output/preview-liquid-glass-final.png`，以及 A/B 验证图
+  `output/preview-liquid-glass-no-refraction.png` 和 `output/preview-liquid-glass-refraction.png`。
+  平滑默认壁纸上的折射较克制；高对比背景更容易观察边缘偏移。
+- Rust `rustfmt --check`、补丁器 Python 语法、JavaScript 语法和 `git diff --check` 通过。
+- 尚未用打包后的 Windows WebView2 和 Android System WebView 确认实际 `backdrop-filter: url(#...)` 绘制；
+  代码能生成滤镜或 CSS 声明被接受，都不能替代这项检查。
+
+### v12 构建产物
+
+Windows Pake Release/安装包与 Android Release 均构建成功，旧文件保留，新增：
+
+| 平台 | 文件 | SHA-256 |
+| --- | --- | --- |
+| Windows | `output/笺-2.2.0-液态玻璃.exe` | `6FCD13E80DFFA2CAA5A946C5B154B18099C0BF8D55FA1149A8B3DB29DD85D909` |
+| Windows | `output/笺-2.2.0-液态玻璃.msi` | `12964DB599930294F84C91B7566A3F818A77F87B9BEA1D41F5138D4EC84FF06E` |
+| Android | `output/笺-2.2.0-液态玻璃.apk` | `740B849EC1DF959EEF355E49ECDABE9C25222E519D5C51C56CA9C1084BFFDF16` |
+
+Windows 源码在 `.build/release-stage-liquid-glass-20261116/` 构建后复制交付。
+APK 的 assets 包含新的 `liquid-glass.js`，网页四项资源与 `web/` 同步。完整清单见
+`output/SHA256SUMS.txt`。目标 Windows/Android WebView 的实机玻璃渲染仍未验收。
+
+---
+
+历史版本记录从 v11 开始；下方条目仅说明当时实现，不代表当前材质设置。
+
 ## v11：手机底栏入口、拖动选择与卡片背景裁剪（2026-11-15）
 
 - 手机顶部品牌入口与空标题栏收起，底栏改为三个模式共用玻璃胶囊，旁边独立放置“设置”

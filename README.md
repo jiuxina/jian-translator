@@ -7,12 +7,18 @@ Windows 通过 Pake/Tauri 加载本地页面，Android 使用 WebView 加载同�
 `output/笺-2.1.0.apk` 保留不覆盖。新发布包使用版本化文件名，校验值见 `output/SHA256SUMS.txt`。
 电脑点击左上角“笺”、手机点击底栏右侧齿轮打开菜单，再进入“设置”即可调整外观与翻译偏好。
 模式和模型滑块支持按住横向拖动，越过相邻项阈值时立即切换；文本滚动条随主题显示为透明轨道与细圆角滑块。
-设置分类使用连续滑块与内容淡入淡出，下拉控件统一为玻璃样式；关于页提供开源仓库链接。
+设置分类使用连续滑块与内容淡入淡出；主界面、设置控件和 Windows 悬浮窗共用 SVG 位移折射液态玻璃模型。
+液态玻璃设置集中在“液态玻璃”分类；旧的材质、玻璃强度和卡片透出选项已移除。
+参考实现说明与当前运行时验收状态见 [界面主题记录](docs/ui-theme.md) 和
+[Windows 窗口集成说明](docs/desktop-integration.md)。关于页提供开源仓库链接。
 完整的父子依赖、覆盖顺序和平台差异见 [设置项关系简报](docs/settings-audit.md)。
 上一轮安装包为 `output/笺-2.2.0-界面优化.exe`、`output/笺-2.2.0-界面优化.msi`、
 `output/笺-2.2.0-界面优化.apk`；应用版本保持 `2.2.0`，原有发布包继续保留。
 本轮交付为 `output/笺-2.2.0-交互优化.exe`、`output/笺-2.2.0-交互优化.msi`、
 `output/笺-2.2.0-交互优化.apk`，包含手机底栏、安全区、拖动选择、滚动条和浮窗背景范围修正。
+全量替换液态玻璃后的包为 `output/笺-2.2.0-液态玻璃.exe`、
+`output/笺-2.2.0-液态玻璃.msi`、`output/笺-2.2.0-液态玻璃.apk`；
+Android 包使用 versionCode `5` / versionName `2.2.0`。本轮校验值见 `output/SHA256SUMS.txt`。
 
 ## 本地验证
 
@@ -27,12 +33,17 @@ node tests/serve-preview.mjs web 8899
 
 ```powershell
 node tests/verify-motion.mjs
+node tests/verify-liquid-glass.mjs
 ```
 
 回归使用本地桥接替身并拦截外部请求，不调用翻译接口。界面设计、验证记录和历史成品说明见
 [docs/ui-theme.md](docs/ui-theme.md)。
 `IT_CDP_ORIGIN` 可指定其他 Chrome 调试地址，`IT_PREVIEW_ORIGIN` 可指定其他本地预览地址。
-完整离线回归覆盖连续动画、设置事务、窗口桥接契约与移动端触控；当前共 120 项检查。
+完整离线浏览器回归本轮唯一执行结果为 `127/128`；覆盖连续动画、设置事务、窗口桥接契约、
+移动端触控、旧偏好迁移和高对比背景下真实折射像素变化。唯一失败是语言轮盘反向动画的固定帧采样，
+针对性动画时钟探针已确认正向与反向位移正常；液态玻璃计算测试由
+`node tests/verify-liquid-glass.mjs` 单独验证。离线 Chromium 结果不代表已完成打包后 Windows
+WebView2 或 Android System WebView 的实机视觉验收。
 
 ## Windows 构建
 

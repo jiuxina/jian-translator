@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """把桌面增强补丁应用到本机 pake-cli 模板（幂等）。
 
-- src/app/setup.rs：整文件替换（托盘 / 悬浮窗 / 设置 / 窗口动作 / 开机自启）
+- src/app/setup.rs + liquid-glass.js：替换桌面集成并注入共享液态玻璃滤镜
 - src/lib.rs：注册自定义命令 + 启动到托盘读取用户设置
 - build.rs：把命令写进应用 ACL 白名单
 - capabilities/default.json：允许新命令（远程页面也复制这份权限）
@@ -56,6 +56,11 @@ def main():
             os.path.join(tauri, "src", "app", "setup.rs"),
         )
         print("已更新 setup.rs")
+        shutil.copyfile(
+            os.path.join(os.path.dirname(desktop), "web", "liquid-glass.js"),
+            os.path.join(tauri, "src", "app", "liquid-glass.js"),
+        )
+        print("已更新 liquid-glass.js")
 
         # 2. lib.rs：导入 + 注册命令
         lib_path = os.path.join(tauri, "src", "lib.rs")

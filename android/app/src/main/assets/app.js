@@ -723,15 +723,15 @@
     doc: ['index-nailong-2b', 'index-nailong-9b']
   };
   var DEFAULT_PREFERENCES = {
-    version: 1,
+    version: 2,
     appearance: {
-      mode: 'light', palette: 'sakura', material: 'glass', glassStrength: 100,
-      cardReveal: 0, radius: 'round', font: 'sans', systemFontFamily: '',
+      mode: 'light', palette: 'sakura', radius: 'round', font: 'sans', systemFontFamily: '',
       fontScale: 100, fontWeight: 400, fontColorMode: 'theme', fontColor: '#2E2A38', layout: 'standard',
       motion: 'system', ambientLight: true
     },
+    liquidGlass: window.ItLiquidGlass.defaults,
     background: { data: '', opacity: 34, blur: 0, fit: 'cover' },
-    popup: { cardReveal: 0, backgroundData: '' },
+    popup: { backgroundData: '' },
     translation: {
       defaultTab: 'text', sourceLanguage: 'auto', targetLanguage: 'zh',
       defaultModels: {
@@ -766,10 +766,6 @@
     result.appearance.mode = enumValue(appearance.mode, ['light', 'dark', 'system'], 'light');
     result.appearance.palette = enumValue(appearance.palette,
       ['sakura', 'mist', 'sage', 'amber'], 'sakura');
-    result.appearance.material = enumValue(appearance.material,
-      ['glass', 'frosted', 'solid'], 'glass');
-    result.appearance.glassStrength = boundedNumber(appearance.glassStrength, 0, 100, 100);
-    result.appearance.cardReveal = boundedNumber(appearance.cardReveal, 0, 100, 0);
     result.appearance.radius = enumValue(appearance.radius,
       ['round', 'standard', 'small'], 'round');
     result.appearance.font = enumValue(appearance.font,
@@ -790,12 +786,13 @@
       ['system', 'reduced', 'off'], 'system');
     result.appearance.ambientLight = appearance.ambientLight !== false;
 
+    result.liquidGlass = window.ItLiquidGlass.normalize(source.liquidGlass);
+
     var image = normalizeImageData(background.data);
     result.background.data = image;
     result.background.opacity = boundedNumber(background.opacity, 0, 80, 34);
     result.background.blur = boundedNumber(background.blur, 0, 20, 0);
     result.background.fit = enumValue(background.fit, ['cover', 'contain'], 'cover');
-    result.popup.cardReveal = boundedNumber(popup.cardReveal, 0, 100, 0);
     result.popup.backgroundData = normalizeImageData(popup.backgroundData);
 
     result.translation.defaultTab = enumValue(translation.defaultTab,
@@ -828,7 +825,18 @@
         if (oldBackground) parsed = { background: { data: oldBackground } };
       } catch (e) {}
     }
-    return normalizePreferences(parsed);
+    var normalized = normalizePreferences(parsed);
+    var oldAppearance = parsed && parsed.appearance;
+    var legacyGlass = !!(oldAppearance && (
+      Object.prototype.hasOwnProperty.call(oldAppearance, 'material') ||
+      Object.prototype.hasOwnProperty.call(oldAppearance, 'glassStrength') ||
+      Object.prototype.hasOwnProperty.call(oldAppearance, 'cardReveal')) ||
+      parsed && parsed.popup && Object.prototype.hasOwnProperty.call(parsed.popup, 'cardReveal'));
+    if (legacyGlass) {
+      try { localStorage.setItem(PREFERENCES_KEY, JSON.stringify(normalized)); }
+      catch (e) {}
+    }
+    return normalized;
   }
 
   var activePreferences = readSavedPreferences();
@@ -880,8 +888,7 @@
     var background = dark ?
       [opaqueRgb(45, 41, 52), opaqueRgb(33, 31, 40), opaqueRgb(26, 25, 32)] :
       [opaqueRgb(252, 248, 251), opaqueRgb(243, 239, 246), opaqueRgb(235, 229, 244)];
-    var surface = preferences.appearance.material === 'solid' ?
-      (dark ? '#FF302C38' : '#FFF9F6FA') : (dark ? '#C92D2934' : '#D9FFFFFF');
+    var surface = colorArgb(dark ? '#302C38' : '#FFFFFF', preferences.liquidGlass.backgroundOpacity / 100);
     return {
       dark: dark,
       background: background,
@@ -922,20 +929,7 @@
     var ink = dark ? '#F2EDF3' : '#2E2A38';
     var inkSub = dark ? '#BFB8C5' : '#6E687E';
     var inkFaint = dark ? '#908997' : '#A29CAC';
-    var strength = appearance.glassStrength / 100;
-    var reveal = appearance.cardReveal / 100;
-    var cardFactor = 1 - reveal;
-    function surfaceOpacity(base) {
-      if (appearance.material === 'solid') return 1;
-      var frosting = appearance.material === 'frosted' ? .2 : 0;
-      return Math.min(.98, base + (1 - strength) * (.96 - base) + frosting);
-    }
-    var blur = appearance.material === 'solid' ? 0 :
-      appearance.material === 'frosted' ? (20 + 24 * strength) : 22 * strength;
-    var cardBlur = blur * cardFactor;
-    var cardSaturate = 1 + (strength * .7 * cardFactor);
-    var cardFilter = cardFactor === 0 || appearance.material === 'solid' ? 'none' :
-      'blur(' + cardBlur + 'px) saturate(' + cardSaturate.toFixed(2) + ')';
+    var liquidGlass = activePreferences.liquidGlass;
     var radius = appearance.radius === 'small' ? [12, 9, 7] :
       appearance.radius === 'standard' ? [19, 15, 11] : [26, 20, 14];
 
@@ -944,7 +938,6 @@
     if (colorScheme) colorScheme.setAttribute('content', dark ? 'dark light' : 'light dark');
     root.dataset.itThemeMode = appearance.mode;
     root.dataset.itPalette = appearance.palette;
-    root.dataset.itMaterial = appearance.material;
     root.dataset.itRadius = appearance.radius;
     root.dataset.itLayout = appearance.layout;
     root.dataset.itMotion = appearance.motion;
@@ -964,7 +957,7 @@
     root.style.setProperty('--lg-glow-c', dark ? 'rgba(255,255,255,.08)' : 'rgba(255,255,255,.48)');
     root.style.setProperty('--lg-accent-wash', colorRgba(palette.deep, dark ? .22 : .14));
     root.style.setProperty('--lg-accent-wash-2', colorRgba(palette.deep, dark ? .32 : .24));
-    root.style.setProperty('--lg-edge', dark ? 'rgba(255,255,255,.18)' : 'rgba(255,255,255,.74)');
+    root.style.setProperty('--lg-edge', dark ? 'rgba(255,255,255,.13)' : 'rgba(70,52,96,.12)');
     root.style.setProperty('--lg-edge-dark', dark ? 'rgba(255,255,255,.12)' : 'rgba(70,52,96,.09)');
     root.style.setProperty('--lg-shadow', dark ?
       '0 12px 34px rgba(0,0,0,.32),0 3px 10px rgba(0,0,0,.18)' :
@@ -974,23 +967,12 @@
       '0 24px 60px rgba(70,52,96,.20),0 5px 14px rgba(70,52,96,.08)');
     root.style.setProperty('--lg-shadow-soft', dark ?
       '0 5px 16px rgba(0,0,0,.24)' : '0 5px 16px rgba(70,52,96,.09)');
-    root.style.setProperty('--lg-blur', blur + 'px');
-    root.style.setProperty('--lg-blur-strong', Math.round(blur * 1.55) + 'px');
-    root.style.setProperty('--lg-saturate', (1 + strength * .7).toFixed(2));
-    root.style.setProperty('--lg-tint-0', colorRgba(dark ? '#302C38' : '#FFFFFF', surfaceOpacity(.24)));
-    root.style.setProperty('--lg-tint-1', colorRgba(dark ? '#35313F' : '#FFFFFF', surfaceOpacity(.44)));
-    root.style.setProperty('--lg-tint-2', colorRgba(dark ? '#393543' : '#FFFFFF', surfaceOpacity(.72)));
-    root.style.setProperty('--lg-tint-popup', colorRgba(dark ? '#302C38' : '#FFFFFF', surfaceOpacity(.82)));
-    root.style.setProperty('--lg-tint-field', colorRgba(dark ? '#302C38' : '#FFFFFF', surfaceOpacity(.62)));
-    root.style.setProperty('--lg-tint-inset', colorRgba(dark ? '#25232C' : '#FFFFFF', surfaceOpacity(.36)));
-    root.style.setProperty('--it-card-src-bg', cardFactor === 0 ? 'transparent' :
-      colorRgba(dark ? '#302C38' : '#FFFFFF', surfaceOpacity(.24) * cardFactor));
-    root.style.setProperty('--it-card-out-bg', cardFactor === 0 ? 'transparent' :
-      colorRgba(dark ? '#35313F' : '#FFFFFF', surfaceOpacity(.44) * cardFactor));
-    root.style.setProperty('--it-card-filter', cardFilter);
-    root.style.setProperty('--it-card-src-shine', cardFactor === 0 ? 'none' : 'var(--lg-shine-soft)');
-    root.style.setProperty('--it-card-out-shine', cardFactor === 0 ? 'none' : 'var(--lg-shine)');
-    root.style.setProperty('--it-card-preview-glow', String(cardFactor));
+    var liquidOpacity = liquidGlass.backgroundOpacity / 100;
+    var liquidTint = dark ? '#302C38' : '#FFFFFF';
+    root.style.setProperty('--it-liquid-fill', colorRgba(liquidTint, liquidOpacity));
+    root.style.setProperty('--it-liquid-fill-low', colorRgba(liquidTint, liquidOpacity * .35));
+    root.style.setProperty('--it-liquid-fill-mid', colorRgba(liquidTint, liquidOpacity * .65));
+    root.style.setProperty('--it-liquid-fill-high', colorRgba(liquidTint, Math.min(1, liquidOpacity * 1.15)));
     root.style.setProperty('--lg-r-lg', radius[0] + 'px');
     root.style.setProperty('--lg-r-md', radius[1] + 'px');
     root.style.setProperty('--lg-r-sm', radius[2] + 'px');
@@ -1016,6 +998,8 @@
     }
     syncMotionConstants();
     applyBackground(activePreferences.background.data, activePreferences.background);
+    window.ItLiquidGlass.configure(liquidGlass);
+    setupLiquidGlassSurfaces(document);
     syncAndroidAppearance(activePreferences);
   }
 
@@ -2144,9 +2128,7 @@
       'var(--it-bg-image)!important;background-size:var(--it-bg-fit)!important;' +
       'background-position:center!important;background-repeat:no-repeat!important;' +
       'background-attachment:fixed!important;inset:var(--it-bg-inset)!important;' +
-      'filter:blur(var(--it-bg-blur));}' +
-      '.card{background:var(--it-card-src-bg)!important;}' +
-      '.card.out{background:var(--it-card-out-bg)!important;}';
+      'filter:blur(var(--it-bg-blur));}';
   }
 
   function restoreBackground() {
@@ -2327,22 +2309,57 @@
     });
   }
 
-  /* ---------------- 13. 玻璃折射 ---------------- */
-  function initGlass() {
-    var supportsBlur = false;
-    try {
-      supportsBlur = !!(window.CSS && CSS.supports &&
-        (CSS.supports('backdrop-filter', 'blur(1px)') || CSS.supports('-webkit-backdrop-filter', 'blur(1px)')));
-    } catch (e) {}
-    if (!supportsBlur) {
-      document.documentElement.classList.add('no-lg-blur');
-      return;
-    }
-    try {
-      if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
-    } catch (e) {}
+  /* ---------------- 13. Liquid Glass surfaces ---------------- */
+  var LIQUID_GLASS_SURFACES = '.bar, .card, .it-set, .it-pref-preview-card, .it-popup-preview-card, ' +
+    '.tabs, .models, .mobile-settings, .sel-btn, .sel-pop, ' +
+    '.btn-secondary, .btn-ghost, .menu, .it-about, .instruct, ' +
+    '.img-preview .del, .toast';
+
+  function setupLiquidGlassSurfaces(scope) {
+    if (!scope) return;
+    if (scope.matches && scope.matches(LIQUID_GLASS_SURFACES)) window.ItLiquidGlass.attach(scope);
+    if (scope.querySelectorAll) scope.querySelectorAll(LIQUID_GLASS_SURFACES).forEach(function (surface) {
+      window.ItLiquidGlass.attach(surface);
+    });
+    window.ItLiquidGlass.refresh(scope);
   }
 
+  function initGlass() {
+    var liquidGlassErrorShown = false;
+    function showLiquidGlassError(detail) {
+      if (liquidGlassErrorShown) return;
+      liquidGlassErrorShown = true;
+      toast(detail && detail.code === 'unsupported' ?
+        '当前内置浏览器不支持 SVG 液态玻璃滤镜。' : '液态玻璃滤镜初始化失败，请重启窗口。', true);
+    }
+    on(document, 'it-liquid-glass-error', function (event) { showLiquidGlassError(event.detail); });
+    setupLiquidGlassSurfaces(document);
+    if (document.documentElement.dataset.itLiquidGlass === 'unsupported' ||
+        document.querySelector('[data-it-liquid-state="error"]')) {
+      showLiquidGlassError({ code: document.documentElement.dataset.itLiquidGlass === 'unsupported'
+        ? 'unsupported' : 'generation' });
+    }
+    var observer = new MutationObserver(function (mutations) {
+      mutations.forEach(function (mutation) {
+        if (mutation.type === 'childList') {
+          mutation.addedNodes.forEach(function (node) {
+            if (node.nodeType === 1) setupLiquidGlassSurfaces(node);
+          });
+        } else if (mutation.target.matches && mutation.target.matches(LIQUID_GLASS_SURFACES)) {
+          if (mutation.attributeName === 'data-it-liquid-state' &&
+              mutation.target.dataset.itLiquidState === 'error') {
+            showLiquidGlassError({ code: 'generation' });
+          } else {
+            window.ItLiquidGlass.refresh(mutation.target);
+          }
+        }
+      });
+    });
+    observer.observe(document.body, {
+      childList: true, subtree: true, attributes: true,
+      attributeFilter: ['hidden', 'class', 'data-it-liquid-state']
+    });
+  }
   /* ---------------- 14. 桌面端标题栏 ---------------- */
   /* 顶栏本身就是标题栏：右侧窗口按钮 + 空白处拖动，菜单挂在「笺」上 */
   function initTitlebar() {
@@ -2504,6 +2521,7 @@
           <nav class="it-set-nav" aria-label="设置类别">
             <span class="it-set-nav-thumb" aria-hidden="true"></span>
             <button type="button" class="on" data-pref-tab="appearance">外观</button>
+            <button type="button" data-pref-tab="glass">液态玻璃</button>
             <button type="button" data-pref-tab="background">背景</button>
             <button type="button" data-pref-tab="reading">阅读与布局</button>
             <button type="button" data-pref-tab="motion">动效</button>
@@ -2523,17 +2541,35 @@
                 <option value="sakura">薄樱</option><option value="mist">雾蓝</option>
                 <option value="sage">鼠尾草</option><option value="amber">暖杏</option>
               </select></label>
-              <label class="it-set-row"><span>材质</span><select data-pref="appearance.material">
-                <option value="glass">玻璃</option><option value="frosted">磨砂</option><option value="solid">纯色</option>
-              </select></label>
-              <label class="it-set-range"><span>玻璃强度 <output data-pref-output="appearance.glassStrength"></output></span>
-                <input type="range" min="0" max="100" step="5" id="it-pref-glass-strength" data-pref="appearance.glassStrength" data-pref-type="number"></label>
-              <div class="it-set-note" id="it-pref-glass-strength-note" hidden>纯色材质不使用玻璃强度；当前值会保留。</div>
-              <label class="it-set-range"><span>卡片透出 <output data-pref-output="appearance.cardReveal"></output></span>
-                <input type="range" min="0" max="100" step="5" data-pref="appearance.cardReveal" data-pref-type="number"></label>
               <label class="it-set-row"><span>卡片圆角</span><select data-pref="appearance.radius">
                 <option value="small">小</option><option value="standard">标准</option><option value="round">圆润</option>
               </select></label>
+            </section>
+            <section class="it-set-page" data-pref-section="glass" hidden>
+              <h2>液态玻璃</h2>
+              <div class="it-set-note">折射、边缘高光和模糊使用同一玻璃模型，设置同时作用于卡片、控件与电脑悬浮窗。</div>
+              <label class="it-set-row"><span>表面轮廓</span><select data-pref="liquidGlass.surfaceProfile">
+                <option value="convex-circle">凸面圆形</option><option value="convex-squircle">凸面圆角矩形</option>
+                <option value="concave">凹面</option><option value="lip">唇形边缘</option>
+              </select></label>
+              <label class="it-set-range"><span>边缘宽度 <output data-pref-output="liquidGlass.bezelWidth"></output></span>
+                <input type="range" min="4" max="32" step="1" data-pref="liquidGlass.bezelWidth" data-pref-type="number"></label>
+              <label class="it-set-range"><span>玻璃厚度 <output data-pref-output="liquidGlass.glassThickness"></output></span>
+                <input type="range" min="1" max="40" step="1" data-pref="liquidGlass.glassThickness" data-pref-type="number"></label>
+              <label class="it-set-range"><span>折射率 <output data-pref-output="liquidGlass.refractiveIndex"></output></span>
+                <input type="range" min="1" max="2.5" step="0.1" data-pref="liquidGlass.refractiveIndex" data-pref-type="number"></label>
+              <label class="it-set-range"><span>折射强度 <output data-pref-output="liquidGlass.refractionLevel"></output></span>
+                <input type="range" min="0" max="200" step="5" data-pref="liquidGlass.refractionLevel" data-pref-type="number"></label>
+              <label class="it-set-range"><span>镜面高光 <output data-pref-output="liquidGlass.specularOpacity"></output></span>
+                <input type="range" min="0" max="100" step="5" data-pref="liquidGlass.specularOpacity" data-pref-type="number"></label>
+              <label class="it-set-range"><span>高光饱和度 <output data-pref-output="liquidGlass.specularSaturation"></output></span>
+                <input type="range" min="1" max="10" step="1" data-pref="liquidGlass.specularSaturation" data-pref-type="number"></label>
+              <label class="it-set-range"><span>基础模糊 <output data-pref-output="liquidGlass.blurLevel"></output></span>
+                <input type="range" min="0" max="100" step="5" data-pref="liquidGlass.blurLevel" data-pref-type="number"></label>
+              <label class="it-set-range"><span>渐进模糊 <output data-pref-output="liquidGlass.progressiveBlurStrength"></output></span>
+                <input type="range" min="0" max="100" step="5" data-pref="liquidGlass.progressiveBlurStrength" data-pref-type="number"></label>
+              <label class="it-set-range"><span>玻璃底色不透明度 <output data-pref-output="liquidGlass.backgroundOpacity"></output></span>
+                <input type="range" min="0" max="100" step="5" data-pref="liquidGlass.backgroundOpacity" data-pref-type="number"></label>
             </section>
             <section class="it-set-page" data-pref-section="reading" hidden>
               <h2>阅读与布局</h2>
@@ -2623,8 +2659,6 @@
                     </div>
                   </div>
                 </div>
-                <label class="it-set-range"><span>卡片透出 <output data-pref-output="popup.cardReveal"></output></span>
-                  <input type="range" min="0" max="100" step="5" data-pref="popup.cardReveal" data-pref-type="number"></label>
                 <div class="it-set-actions"><button type="button" class="ghost" id="it-popup-pick-background">选择悬浮窗背景</button>
                   <button type="button" class="ghost" id="it-popup-follow-background">跟随主窗口背景</button></div>
                 <div class="it-set-note" id="it-popup-background-status">悬浮窗跟随主窗口背景。</div>
@@ -2637,6 +2671,7 @@
           <button type="button" class="primary" id="it-set-save">保存</button></div>
       </div>`;
     document.body.appendChild(modal);
+    setupLiquidGlassSurfaces(modal);
 
     var recording = null;
     var dialog = modal.querySelector('.it-set');
@@ -2696,7 +2731,6 @@
     function updatePopupPreview() {
       if (!popupPreviewScene || !settingsState) return;
       var preferences = settingsState.preferences;
-      var appearance = preferences.appearance;
       var dark = resolvedAppearance(preferences) === 'dark';
       var image = preferences.popup.backgroundData || preferences.background.data;
       if (image !== popupPreviewData) {
@@ -2704,12 +2738,6 @@
         popupPreviewData = image;
       }
       var overlayAlpha = Math.max(0, Math.min(80, preferences.background.opacity)) / 100;
-      var popupBlur = appearance.material === 'frosted' ? 34 + 12 * appearance.glassStrength / 100 :
-        appearance.material === 'solid' ? 0 : 4 + 30 * appearance.glassStrength / 100;
-      var cardFactor = 1 - preferences.popup.cardReveal / 100;
-      var glassStrength = appearance.glassStrength / 100;
-      var tint = appearance.material === 'solid' ? .98 :
-        dark ? .78 + .16 * (1 - glassStrength) : .96 - .24 * glassStrength;
       var popupCard = popupPreviewScene.querySelector('.it-popup-preview-card');
       popupPreviewScene.style.setProperty('--it-popup-preview-overlay',
         dark ? 'rgba(18,16,24,' + overlayAlpha + ')' : 'rgba(255,255,255,' + overlayAlpha + ')');
@@ -2717,13 +2745,10 @@
       popupPreviewScene.style.setProperty('--it-popup-preview-blur', preferences.background.blur + 'px');
       popupPreviewScene.style.setProperty('--it-popup-preview-inset',
         (preferences.background.fit === 'contain' ? 0 : -2 * preferences.background.blur) + 'px');
-      popupCard.style.setProperty('--it-popup-card-bg', cardFactor === 0 ? 'transparent' :
-        colorRgba(dark ? '#221F2A' : '#FFFFFF', tint * cardFactor));
-      popupCard.style.setProperty('--it-popup-card-filter',
-        cardFactor === 0 || popupBlur === 0 ? 'none' :
-          'blur(' + popupBlur * cardFactor + 'px) saturate(' +
-          (1 + .7 * glassStrength * cardFactor).toFixed(2) + ')');
-      popupCard.style.setProperty('--it-popup-card-shine', cardFactor === 0 ? 'none' : 'var(--lg-shine)');
+      popupCard.style.setProperty('--it-liquid-fill',
+        colorRgba(dark ? '#302C38' : '#FFFFFF', preferences.liquidGlass.backgroundOpacity / 100));
+      window.ItLiquidGlass.configure(preferences.liquidGlass);
+      window.ItLiquidGlass.refresh(popupCard);
     }
 
     function updateSettingsNavigation(animate) {
@@ -2847,11 +2872,12 @@
         else control.value = value == null ? '' : String(value);
       });
       modal.querySelectorAll('[data-pref-output]').forEach(function (output) {
-        var value = valueAtPath(settingsState.preferences, output.getAttribute('data-pref-output'));
-        var suffix = output.getAttribute('data-pref-output') === 'background.blur' ? ' px' :
-          output.getAttribute('data-pref-output').indexOf('Scale') >= 0 ||
-          output.getAttribute('data-pref-output') === 'background.opacity' ? '%' : '%';
-        output.textContent = value + suffix;
+        var path = output.getAttribute('data-pref-output');
+        var value = valueAtPath(settingsState.preferences, path);
+        var suffix = path === 'background.blur' ||
+          path === 'liquidGlass.bezelWidth' || path === 'liquidGlass.glassThickness' ? ' px' :
+          path === 'liquidGlass.refractiveIndex' ? '' : '%';
+        output.textContent = path === 'liquidGlass.refractiveIndex' ? Number(value).toFixed(1) : value + suffix;
       });
       $('it-set-selection').value = settingsState.selection_shortcut || '';
       $('it-set-activation').value = settingsState.activation_shortcut || '未设置';
@@ -2885,11 +2911,6 @@
       var colorControl = modal.querySelector('[data-pref="appearance.fontColor"]');
       if (colorControl) colorControl.disabled = settingsSaving || !controlsReady || colorMode !== 'custom';
       if (fontFamilySelect) fontFamilySelect.disabled = settingsSaving || !controlsReady || !systemFontsReady;
-      var glassStrength = modal.querySelector('#it-pref-glass-strength');
-      var glassStrengthNote = modal.querySelector('#it-pref-glass-strength-note');
-      var solidMaterial = settingsState.preferences.appearance.material === 'solid';
-      if (glassStrength) glassStrength.disabled = settingsSaving || !controlsReady || solidMaterial;
-      if (glassStrengthNote) glassStrengthNote.hidden = !solidMaterial;
       var popupStatus = $('it-popup-background-status');
       if (popupStatus) popupStatus.textContent = settingsState.preferences.popup.backgroundData ?
         '已选择独立图片，保存后悬浮窗将使用该图片。' : '悬浮窗跟随主窗口背景。';
@@ -2961,9 +2982,6 @@
       if (colorControl) colorControl.disabled = !controlsEnabled ||
         settingsState.preferences.appearance.fontColorMode !== 'custom';
       if (fontFamilySelect) fontFamilySelect.disabled = !controlsEnabled || !systemFontsReady;
-      var glassStrength = modal.querySelector('#it-pref-glass-strength');
-      if (glassStrength) glassStrength.disabled = !controlsEnabled ||
-        settingsState.preferences.appearance.material === 'solid';
       refreshSelectButtons(false);
     }
 
@@ -3073,8 +3091,10 @@
         } else if (activeSection === 'motion') {
           settingsState.preferences.appearance.motion = defaults.appearance.motion;
           settingsState.preferences.appearance.ambientLight = defaults.appearance.ambientLight;
+        } else if (activeSection === 'glass') {
+          settingsState.preferences.liquidGlass = copyObject(defaults.liquidGlass);
         } else if (activeSection === 'appearance') {
-          ['mode', 'palette', 'material', 'glassStrength', 'cardReveal', 'radius'].forEach(function (key) {
+          ['mode', 'palette', 'radius'].forEach(function (key) {
             settingsState.preferences.appearance[key] = defaults.appearance[key];
           });
         } else {

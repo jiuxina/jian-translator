@@ -405,10 +405,15 @@ fn popup_appearance(settings: &DesktopSettings) -> serde_json::Value {
         .and_then(|preferences| preferences.get("popup"))
         .cloned()
         .unwrap_or(serde_json::Value::Null);
+    let liquid_glass = preferences
+        .and_then(|preferences| preferences.get("liquidGlass"))
+        .cloned()
+        .unwrap_or(serde_json::Value::Null);
     serde_json::json!({
         "appearance": appearance,
         "background": background,
-        "popup": popup
+        "popup": popup,
+        "liquidGlass": liquid_glass
     })
 }
 
@@ -669,6 +674,7 @@ fn popup_payload_script(payload: &str) -> String {
 /// 模板 + 数据一起投递：WebView 还没建好时 eval 会丢，Rust 侧会重复调本函数，
 /// JS 用 payload.id 去重，不会重复发翻译请求。
 fn deliver_popup(window: &WebviewWindow, payload: &str, appearance: &serde_json::Value) {
+    let _ = window.eval(LIQUID_GLASS_ENGINE);
     let _ = window.eval(POPUP_BOOTSTRAP);
     let _ = window.eval(&popup_appearance_script(appearance));
     let _ = window.eval(&popup_payload_script(payload));
@@ -733,6 +739,7 @@ fn ensure_popup(app: &AppHandle) -> Option<WebviewWindow> {
         .visible(false)
         .on_page_load(|window, payload| {
             if payload.event() == PageLoadEvent::Finished {
+                let _ = window.eval(LIQUID_GLASS_ENGINE);
                 let _ = window.eval(POPUP_BOOTSTRAP);
             }
         });
@@ -740,6 +747,7 @@ fn ensure_popup(app: &AppHandle) -> Option<WebviewWindow> {
     builder.build().ok().map(|window| {
         // about:blank 不一定触发 PageLoadEvent，创建后立即注入模板；
         // show_popup 还会带数据重复投递几次，模板内部有幂等判断。
+        let _ = window.eval(LIQUID_GLASS_ENGINE);
         let _ = window.eval(POPUP_BOOTSTRAP);
         window
     })
@@ -843,6 +851,8 @@ fn watch_popup(app: AppHandle, window: WebviewWindow, generation: u64) {
 
 /// 悬浮窗页面：纯 HTML/CSS/JS，直接调官网同源接口，流式渲染。
 /// Rust 会重复投递「模板 + 数据」；模板幂等，数据按 id 去重。
+const LIQUID_GLASS_ENGINE: &str = include_str!("liquid-glass.js");
+
 const POPUP_BOOTSTRAP: &str = r#"
 (function () {
 if (window.__popupBooted && window.__popupApply && document.getElementById('out')) {
@@ -854,27 +864,22 @@ if (window.__popupBooted && window.__popupApply && document.getElementById('out'
 }
 document.documentElement.innerHTML = `
 <head><meta charset="utf-8"><style>
-  /* 令牌与 app/theme-liquid-glass.css 的 --lg-* 一致。悬浮窗是独立 HTML，
-     不走网页注入，只能内联一份；改主题时两处必须同步。 */
-  :root{--lg-tint-2:rgba(255,255,255,.72);--lg-tint-popup:rgba(255,255,255,.82);
-    --lg-edge:rgba(255,255,255,.74);--lg-edge-dark:rgba(70,52,96,.09);
+  /* 主题排版由悬浮窗内联；液态玻璃滤镜与主界面共用 ItLiquidGlass。 */
+  :root{--lg-edge:rgba(255,255,255,.38);--lg-edge-dark:rgba(70,52,96,.09);
     --lg-scrollbar-thumb:rgba(70,52,96,.22);
     --lg-ink:#2E2A38;--lg-ink-sub:#6E687E;
     --lg-ink-faint:#A29CAC;--lg-accent:#E28BA6;--lg-accent-deep:#C96F90;
     --lg-accent-wash:rgba(226,139,166,.18);--user-font-scale:1;
-    --lg-r-lg:26px;--lg-blur-strong:34px;--lg-saturate:1.7;
+    --lg-r-lg:26px;
     --lg-duration-fast:140ms;--lg-duration-control:220ms;--lg-duration-panel:280ms;
     --lg-ease-enter:cubic-bezier(.18,.8,.22,1);
-    --lg-shine:inset 1.5px 1.5px 1px rgba(255,255,255,.78),inset -1px -1px 1px rgba(255,255,255,.5);
     --it-popup-bg-overlay:rgba(255,255,255,0);--it-popup-bg-blur:0px;--it-popup-bg-fit:cover;
     --it-popup-bg-inset:0px;
-    --it-popup-card-fill:rgba(255,255,255,.72);--it-popup-card-filter:blur(34px) saturate(1.7);
-    --it-popup-card-shine:var(--lg-shine);--it-popup-card-surface:1;
+    --it-popup-card-fill:rgba(255,255,255,.6);
     --it-popup-content-color:var(--lg-ink);--it-popup-content-weight:400;
     --it-popup-content-font:"PingFang SC","Microsoft YaHei UI","Noto Sans SC",system-ui,sans-serif;
     /* 悬浮窗是 436x282 的透明窗口，卡片四周只有 22px 留白。
-       阴影必须收敛在这个范围内，否则超出窗口的部分会被硬切，
-       看起来像「右边拖出一块渐变」。模糊 20px + 偏移 6px = 下方最多 16px，安全。 */
+       阴影和折射滤镜需收敛在这个范围内，避免窗口裁切产生硬边。 */
     --lg-shadow-strong:0 6px 20px rgba(70,52,96,.14),0 2px 6px rgba(70,52,96,.05);}
   html,body{margin:0;padding:0;height:100%;background:transparent;overflow:hidden;
     font-family:"PingFang SC","Microsoft YaHei UI","Noto Sans SC",system-ui,sans-serif;
@@ -891,13 +896,9 @@ document.documentElement.innerHTML = `
     background:var(--it-popup-bg-overlay);}
   #card{box-sizing:border-box;height:100%;display:flex;flex-direction:column;
     position:relative;z-index:1;isolation:isolate;overflow:hidden;
-    background:var(--it-popup-card-fill);border:1px solid var(--lg-edge);border-radius:var(--lg-r-lg);
-    box-shadow:var(--it-popup-card-shine);
-    -webkit-backdrop-filter:var(--it-popup-card-filter);
-    backdrop-filter:var(--it-popup-card-filter);}
-  #card::before{content:"";position:absolute;inset:0;pointer-events:none;z-index:0;
-    opacity:var(--it-popup-card-surface);
-    background:linear-gradient(150deg,rgba(255,255,255,.34),var(--lg-accent-wash) 48%,transparent 72%);}
+    background:var(--it-popup-card-fill);border:0;border-radius:var(--lg-r-lg);
+    -webkit-backdrop-filter:var(--it-liquid-filter,none);
+    backdrop-filter:var(--it-liquid-filter,none);}
   #card>*{position:relative;z-index:1;}
   .head{display:flex;align-items:center;justify-content:space-between;gap:8px;
     padding:10px 14px 8px;font-size:11.5px;color:var(--lg-ink-sub);}
@@ -919,7 +920,6 @@ document.documentElement.innerHTML = `
     padding:8px 12px 9px;border-top:1px solid var(--lg-edge-dark);font-size:11px;color:var(--lg-ink-faint);}
   .foot button{border:1px solid var(--lg-edge);background:var(--lg-accent-wash);
     color:var(--lg-accent-deep);border-radius:999px;
-    box-shadow:inset 1px 1px 1px rgba(255,255,255,.68);
     padding:5px 12px;font-size:11.5px;cursor:pointer;
     transition:background var(--lg-duration-control),color var(--lg-duration-control);}
   .foot button:hover{background:linear-gradient(135deg,var(--lg-accent),var(--lg-accent-deep));color:#fff;}
@@ -928,14 +928,10 @@ document.documentElement.innerHTML = `
   @keyframes stream-arrive{from{opacity:0}to{opacity:1}}
   html[data-theme-scheme="dark"]{color-scheme:dark;}
   html[data-theme-scheme="light"]{color-scheme:light;}
-  html[data-material="solid"] #card-frame{box-shadow:none;}
-  html[data-material="solid"] #card{backdrop-filter:none;-webkit-backdrop-filter:none;box-shadow:none;}
-  html[data-material="solid"] #card::before{display:none;}
   html[data-radius="standard"]{--lg-r-lg:18px;}
   html[data-radius="small"]{--lg-r-lg:10px;}
   html[data-radius="standard"] .foot button{border-radius:10px;}
   html[data-radius="small"] .foot button{border-radius:7px;}
-  html[data-ambient-light="false"] #card::before{display:none;}
   html[data-motion="reduced"] #card-frame{animation:none;}
   html[data-motion="off"] *,html[data-motion="off"] *::before,html[data-motion="off"] *::after{animation:none!important;transition:none!important;}
   html[data-motion="reduced"] .foot button{transition:color 140ms ease,background 140ms ease;}
@@ -948,6 +944,8 @@ document.documentElement.innerHTML = `
   <div class="body" id="out"><span class="ph">正在翻译…</span></div>
   <div class="foot"><span>Esc 或点击别处关闭</span><button id="copy" type="button">复制</button></div>
 </div></div></body>`;
+
+window.ItLiquidGlass.attach(document.getElementById('card'));
 
 (function () {
   var output = document.getElementById('out');
@@ -1121,7 +1119,6 @@ document.documentElement.innerHTML = `
 
   var activePopupPreferences = null;
   var activePopupBackgroundData = null;
-
   function popupSystemDark() {
     return !!(window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches);
   }
@@ -1149,17 +1146,10 @@ document.documentElement.innerHTML = `
       amber: ['#E3A253', '#C88733', '#F2BC72', '#E3A253']
     };
     var colors = palettes[appearance.palette] || palettes.sakura;
-    var strengthValue = Number(appearance.glassStrength);
-    var strength = Number.isFinite(strengthValue) ? Math.max(0, Math.min(100, strengthValue)) / 100 : 1;
+    var liquidGlass = window.ItLiquidGlass.normalize(preferences.liquidGlass);
     var scaleValue = Number(appearance.fontScale);
     var fontScale = Number.isFinite(scaleValue) ? Math.max(90, Math.min(140, scaleValue)) / 100 : 1;
     var radius = appearance.radius || 'round';
-    var material = appearance.material || 'glass';
-    var blur = material === 'frosted' ? 34 + 12 * strength : 4 + 30 * strength;
-    var tint = material === 'solid' ? .98 : (dark ? .78 + .16 * (1 - strength) : .96 - .24 * strength);
-    var revealValue = Number(popup.cardReveal);
-    var reveal = Number.isFinite(revealValue) ? Math.max(0, Math.min(100, revealValue)) / 100 : 0;
-    var surface = 1 - reveal;
     var fontWeightValue = Number(appearance.fontWeight);
     var fontWeight = Number.isFinite(fontWeightValue)
       ? Math.max(300, Math.min(700, fontWeightValue)) : 400;
@@ -1186,7 +1176,6 @@ document.documentElement.innerHTML = `
     root.dataset.themeMode = mode;
     root.dataset.themeScheme = dark ? 'dark' : 'light';
     root.dataset.palette = appearance.palette || 'sakura';
-    root.dataset.material = material;
     root.dataset.radius = radius;
     root.dataset.font = appearance.font || 'sans';
     root.dataset.motion = appearance.motion || 'system';
@@ -1199,27 +1188,19 @@ document.documentElement.innerHTML = `
     root.style.setProperty('--lg-ink', dark ? '#F1EEF5' : '#2E2A38');
     root.style.setProperty('--lg-ink-sub', dark ? '#C4BFCC' : '#6E687E');
     root.style.setProperty('--lg-ink-faint', dark ? '#96909F' : '#A29CAC');
-    root.style.setProperty('--lg-edge', dark ? 'rgba(255,255,255,.18)' : 'rgba(255,255,255,.74)');
+    root.style.setProperty('--lg-edge', dark ? 'rgba(255,255,255,.18)' : 'rgba(70,52,96,.12)');
     root.style.setProperty('--lg-edge-dark', dark ? 'rgba(255,255,255,.12)' : 'rgba(70,52,96,.09)');
     root.style.setProperty('--lg-scrollbar-thumb', dark ? 'rgba(255,255,255,.28)' : 'rgba(70,52,96,.22)');
-    root.style.setProperty('--lg-tint-2', dark
-      ? 'rgba(34,31,42,' + tint + ')' : 'rgba(255,255,255,' + tint + ')');
-    root.style.setProperty('--lg-tint-popup', dark ? 'rgba(34,31,42,.92)' : 'rgba(255,255,255,.82)');
-    root.style.setProperty('--lg-blur-strong', blur + 'px');
     root.style.setProperty('--lg-r-lg', (radius === 'small' ? 10 : radius === 'standard' ? 18 : 26) + 'px');
+    window.ItLiquidGlass.configure(liquidGlass);
+    window.ItLiquidGlass.refresh(document.getElementById('card'));
     root.style.setProperty('--lg-control-radius', radius === 'small' ? '7px' : radius === 'standard' ? '10px' : '999px');
     root.style.setProperty('--user-font-scale', String(fontScale));
     root.style.setProperty('--it-popup-content-weight', String(fontWeight));
     root.style.setProperty('--it-popup-content-color', fontColor);
     root.style.setProperty('--it-popup-content-font', fontFamily);
-    root.style.setProperty('--it-popup-card-fill', 'rgba(' + (dark ? '34,31,42' : '255,255,255') + ',' + (tint * surface) + ')');
-    root.style.setProperty('--it-popup-card-filter', reveal >= 1 ? 'none' :
-      'blur(' + (blur * surface) + 'px) saturate(' + (1 + .7 * surface) + ')');
-    root.style.setProperty('--it-popup-card-shine', reveal >= 1 ? 'none' :
-      (dark
-        ? 'inset 1.5px 1.5px 1px rgba(255,255,255,' + (.12 * surface) + '),inset -1px -1px 1px rgba(255,255,255,' + (.06 * surface) + ')'
-        : 'inset 1.5px 1.5px 1px rgba(255,255,255,' + (.78 * surface) + '),inset -1px -1px 1px rgba(255,255,255,' + (.5 * surface) + ')'));
-    root.style.setProperty('--it-popup-card-surface', String(surface));
+    var liquidOpacity = liquidGlass.backgroundOpacity / 100;
+    root.style.setProperty('--it-popup-card-fill', 'rgba(' + (dark ? '48,44,56' : '255,255,255') + ',' + liquidOpacity + ')');
     root.style.setProperty('--it-popup-bg-overlay', dark
       ? 'rgba(18,16,24,' + backgroundOpacity + ')'
       : 'rgba(255,255,255,' + backgroundOpacity + ')');
@@ -1232,9 +1213,6 @@ document.documentElement.innerHTML = `
         backgroundData ? 'url("' + backgroundData + '")' : 'none');
       activePopupBackgroundData = backgroundData;
     }
-    root.style.setProperty('--lg-shine', dark
-      ? 'inset 1.5px 1.5px 1px rgba(255,255,255,.12),inset -1px -1px 1px rgba(255,255,255,.06)'
-      : 'inset 1.5px 1.5px 1px rgba(255,255,255,.78),inset -1px -1px 1px rgba(255,255,255,.5)');
   }
 
   window.__popupApplyPreferences = applyPopupPreferences;
