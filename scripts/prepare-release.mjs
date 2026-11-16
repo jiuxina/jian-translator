@@ -83,9 +83,9 @@ export async function prepareRelease(options) {
       name: `Jian-${version}-windows-x64.exe`, platform: 'windows', architecture: 'x64' },
     { source: path.join(path.resolve(options.windowsDir), '笺.msi'),
       name: `Jian-${version}-windows-x64.msi`, platform: 'windows', architecture: 'x64' },
-    { source: path.join(path.resolve(options.macosDir), `Jian-${version}-macOS-universal.dmg`),
+    { source: path.join(path.resolve(options.macosDir), `笺-${version}-macOS-universal.dmg`),
       name: `Jian-${version}-macOS-universal.dmg`, platform: 'macos', architecture: 'universal' },
-    { source: path.join(path.resolve(options.macosDir), `Jian-${version}-macOS-universal.zip`),
+    { source: path.join(path.resolve(options.macosDir), `笺-${version}-macOS-universal.zip`),
       name: `Jian-${version}-macOS-universal.zip`, platform: 'macos', architecture: 'universal' },
     { source: path.resolve(options.androidPath),
       name: `Jian-${version}-android.apk`, platform: 'android', architecture: 'multi-abi' }

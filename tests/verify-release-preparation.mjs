@@ -25,8 +25,8 @@ const inputZip = Buffer.from('synthetic ZIP input');
 const inputApk = Buffer.from('synthetic APK input');
 await writeFile(path.join(windowsDir, '笺.exe'), inputExe);
 await writeFile(path.join(windowsDir, '笺.msi'), inputMsi);
-await writeFile(path.join(macosDir, 'Jian-2.2.0-macOS-universal.dmg'), inputDmg);
-await writeFile(path.join(macosDir, 'Jian-2.2.0-macOS-universal.zip'), inputZip);
+await writeFile(path.join(macosDir, '笺-2.2.0-macOS-universal.dmg'), inputDmg);
+await writeFile(path.join(macosDir, '笺-2.2.0-macOS-universal.zip'), inputZip);
 const androidPath = path.join(fixture, 'android.apk');
 await writeFile(androidPath, inputApk);
 const options = {
