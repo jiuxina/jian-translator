@@ -1,5 +1,13 @@
 # 桌面窗口与设置集成
 
+## 首次发布候选的版本元数据（2026-11-16）
+
+首发准备修复了下文历史包中的 PE 版本不一致：补丁器从 `app/macos/package.json`
+读取应用版本，只改生成的 Cargo `[package].version`，不改 Pake CLI 或依赖版本。
+首次发布候选的 Windows EXE FileVersion/ProductVersion 实读均为 `2.2.0`，
+MSI ProductVersion 也为 `2.2.0`。首发使用独立规范文件名与校验清单，
+不覆盖下文历史交付。流程、已知限制及未完成的发布条件见 [首发准备记录](release-preparation.md)。
+
 ## 本轮交付与验证（2026-11-16）
 
 Windows EXE/MSI 与 Android Release 构建成功，原有安装包保留，新增：

@@ -6,9 +6,11 @@
 - src/lib.rs：注册自定义命令 + 启动到托盘读取用户设置
 - build.rs：把命令写进应用 ACL 白名单
 - capabilities/default.json：允许新命令（远程页面也复制这份权限）
-- Cargo.toml：windows-sys 键盘 feature + tauri-runtime（拖拽缩放方向枚举）
+- Cargo.toml：应用版本元数据 + windows-sys feature + tauri-runtime
 """
+import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -34,8 +36,78 @@ def replace_once(text, old, new, label, required=True):
     return text.replace(old, new, 1), True
 
 
+_RELEASE_VERSION = re.compile(
+    r"^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$"
+)
+_PACKAGE_HEADER = re.compile(r"^\s*\[package\]\s*(?:#.*)?(?:\r?\n)?$")
+_SECTION_HEADER = re.compile(r"^\s*\[[^\]]+\]\s*(?:#.*)?(?:\r?\n)?$")
+_PACKAGE_VERSION = re.compile(
+    r"^(\s*version\s*=\s*)([\"'])([^\"']+)(\2)(\s*(?:#.*)?)((?:\r?\n)?)$"
+)
+
+
+def validate_release_version(value):
+    if not isinstance(value, str) or not _RELEASE_VERSION.fullmatch(value):
+        raise RuntimeError("应用版本必须是三段正式语义版本（例如 2.2.0）")
+    major, minor, patch = (int(part) for part in value.split("."))
+    # Windows Installer ProductVersion uses 8-bit major/minor and 16-bit patch.
+    if major > 255 or minor > 255 or patch > 65535:
+        raise RuntimeError("应用版本超出 Windows 安装包版本范围")
+    return value
+
+
+def read_app_version(package_path):
+    try:
+        manifest = json.loads(read(package_path))
+    except (OSError, ValueError) as error:
+        raise RuntimeError("无法读取 macOS 应用版本清单：%s" % error) from error
+    if not isinstance(manifest, dict):
+        raise RuntimeError("macOS 应用版本清单必须是 JSON 对象")
+    return validate_release_version(manifest.get("version"))
+
+
+def set_package_version(cargo, version):
+    version = validate_release_version(version)
+    lines = cargo.splitlines(keepends=True)
+    package_headers = [index for index, line in enumerate(lines)
+                       if _PACKAGE_HEADER.fullmatch(line)]
+    if len(package_headers) != 1:
+        raise RuntimeError("Cargo.toml 必须包含且只能包含一个 [package] 区段")
+    package_start = package_headers[0]
+    package_end = next(
+        (index for index in range(package_start + 1, len(lines))
+         if _SECTION_HEADER.fullmatch(lines[index])),
+        len(lines),
+    )
+    version_lines = [
+        index for index in range(package_start + 1, package_end)
+        if re.match(r"^\s*version(?:\s*=|\.)", lines[index])
+    ]
+    assignments = []
+    for index in version_lines:
+        match = _PACKAGE_VERSION.fullmatch(lines[index])
+        if match:
+            assignments.append((index, match))
+        elif re.match(r"^\s*version\s*=", lines[index]):
+            raise RuntimeError("[package] 的 version 必须是带引号的三段版本")
+    if len(version_lines) != 1 or len(assignments) != 1:
+        raise RuntimeError("[package] 必须包含且只能包含一个 version 字段")
+    index, match = assignments[0]
+    lines[index] = "%s%s%s%s%s%s" % (
+        match.group(1), match.group(2), version, match.group(4),
+        match.group(5), match.group(6),
+    )
+    return "".join(lines)
+
+
 def main():
     desktop = os.path.dirname(os.path.abspath(__file__))
+    package_path = os.path.join(os.path.dirname(desktop), "app", "macos", "package.json")
+    try:
+        app_version = read_app_version(package_path)
+    except RuntimeError as error:
+        print(str(error), file=sys.stderr)
+        return 1
     try:
         pake_root = subprocess.check_output(
             ["npm", "root", "-g"], text=True, shell=True
@@ -299,6 +371,9 @@ def main():
         cargo_path = os.path.join(tauri, "Cargo.toml")
         cargo = read(cargo_path)
         original = cargo
+        # tauri-winres inherits string version metadata from this Cargo package.
+        # Keep npm's Pake CLI version intact; only the app package is versioned.
+        cargo = set_package_version(cargo, app_version)
         if '"Win32_UI_Input_KeyboardAndMouse"' not in cargo:
             cargo, _ = replace_once(
                 cargo,
