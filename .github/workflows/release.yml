@@ -103,6 +103,7 @@ jobs:
             echo "ANDROID_KEYSTORE_BASE64 or ANDROID_SIGNING_PROPERTIES_BASE64 is not set; continue with debug signing."
             exit 0
           fi
+          mkdir -p android/keystore
           echo "$ANDROID_KEYSTORE_BASE64" | base64 --decode > android/keystore/release.keystore
           echo "$ANDROID_SIGNING_PROPERTIES_BASE64" | base64 --decode > android/signing.properties
       - name: Build release APK
