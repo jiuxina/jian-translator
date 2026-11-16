@@ -101,9 +101,11 @@ Git Bash 安装位置因机器而异，使用本机实际路径。默认构建�
 和来源清单。标签构建会把附件与发布说明上传到对应的 GitHub Release；
 普通分支构建只保存 `prepared-release` 附件，用于发布前审阅。
 
-Android Release 默认使用 debug 密钥签名；如需对外分发正式签名包，
-先在仓库 Secrets 中配置 Android 签名材料并更新该步骤。macOS 包未做 Developer ID
-公证，首次打开仍需按系统提示确认。发布说明模板在 `docs/releases/v<版本>.md`，
+Android Release 优先读取 `ANDROID_KEYSTORE_BASE64` 和
+`ANDROID_SIGNING_PROPERTIES_BASE64` 两个仓库 Secrets，并在构建前还原到
+Gradle 已配置的 `android/keystore/release.keystore` 与 `android/signing.properties`。
+Secrets 缺失时自动退回 debug 签名。macOS 包未做 Developer ID 公证，
+首次打开仍需按系统提示确认。发布说明模板在 `docs/releases/v<版本>.md`，
 新增版本前应先补充对应文案。
 
 ## 版本管理
