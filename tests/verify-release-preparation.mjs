@@ -9,7 +9,9 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 await mkdir(path.join(root, '.build'), { recursive: true });
 const fixture = await mkdtemp(path.join(root, '.build', 'release-test-'));
 const windowsDir = path.join(fixture, 'windows');
+const macosDir = path.join(fixture, 'macos');
 await mkdir(windowsDir);
+await mkdir(macosDir);
 await mkdir(path.join(fixture, 'app', 'macos'), { recursive: true });
 await mkdir(path.join(fixture, 'docs', 'releases'), { recursive: true });
 await writeFile(path.join(fixture, 'app', 'macos', 'package.json'),
@@ -18,18 +20,23 @@ const notes = '# 笺 2.2.0\n\n仅供本地准备测试。\n';
 await writeFile(path.join(fixture, 'docs', 'releases', 'v2.2.0.md'), notes, 'utf8');
 const inputExe = Buffer.from('synthetic EXE input');
 const inputMsi = Buffer.from('synthetic MSI input');
+const inputDmg = Buffer.from('synthetic DMG input');
+const inputZip = Buffer.from('synthetic ZIP input');
 const inputApk = Buffer.from('synthetic APK input');
 await writeFile(path.join(windowsDir, '笺.exe'), inputExe);
 await writeFile(path.join(windowsDir, '笺.msi'), inputMsi);
+await writeFile(path.join(macosDir, 'Jian-2.2.0-macOS-universal.dmg'), inputDmg);
+await writeFile(path.join(macosDir, 'Jian-2.2.0-macOS-universal.zip'), inputZip);
 const androidPath = path.join(fixture, 'android.apk');
 await writeFile(androidPath, inputApk);
 const options = {
-  projectRoot: fixture, windowsDir, androidPath, outDir: path.join(fixture, 'prepared'),
+  projectRoot: fixture, windowsDir, macosDir, androidPath, outDir: path.join(fixture, 'prepared'),
   revision: 'a'.repeat(40)
 };
 
-assert.deepEqual(parseArguments(['--windows-dir', 'win', '--android', 'app.apk', '--out-dir', 'out']),
-  { windowsDir: 'win', androidPath: 'app.apk', outDir: 'out' });
+assert.deepEqual(parseArguments(
+  ['--windows-dir', 'win', '--macos-dir', 'mac', '--android', 'app.apk', '--out-dir', 'out']),
+  { windowsDir: 'win', macosDir: 'mac', androidPath: 'app.apk', outDir: 'out' });
 for (const args of [['--unknown', 'x'], ['--android'], ['--android', 'a', '--android', 'b']]) {
   assert.throws(() => parseArguments(args));
 }
@@ -41,15 +48,18 @@ assert.equal(result.manifest.draft, true);
 assert.equal(result.manifest.prerelease, true);
 assert.equal(result.manifest.makeLatest, false);
 assert.deepEqual((await readdir(options.outDir)).sort(), [
-  'Jian-2.2.0-android.apk', 'Jian-2.2.0-windows-x64.exe', 'Jian-2.2.0-windows-x64.msi',
+  'Jian-2.2.0-android.apk', 'Jian-2.2.0-macOS-universal.dmg', 'Jian-2.2.0-macOS-universal.zip',
+  'Jian-2.2.0-windows-x64.exe', 'Jian-2.2.0-windows-x64.msi',
   'RELEASE_NOTES.md', 'SHA256SUMS.txt', 'release-manifest.json'
 ].sort());
 assert.deepEqual(await readFile(path.join(options.outDir, 'Jian-2.2.0-windows-x64.exe')), inputExe);
 assert.deepEqual(await readFile(path.join(options.outDir, 'Jian-2.2.0-windows-x64.msi')), inputMsi);
+assert.deepEqual(await readFile(path.join(options.outDir, 'Jian-2.2.0-macOS-universal.dmg')), inputDmg);
+assert.deepEqual(await readFile(path.join(options.outDir, 'Jian-2.2.0-macOS-universal.zip')), inputZip);
 assert.deepEqual(await readFile(path.join(options.outDir, 'Jian-2.2.0-android.apk')), inputApk);
 assert.equal(await readFile(path.join(options.outDir, 'RELEASE_NOTES.md'), 'utf8'), notes);
 const sums = (await readFile(path.join(options.outDir, 'SHA256SUMS.txt'), 'utf8')).trim().split('\n');
-assert.equal(sums.length, 3);
+assert.equal(sums.length, 5);
 for (const asset of result.manifest.assets) {
   const bytes = await readFile(path.join(options.outDir, asset.name));
   const hash = createHash('sha256').update(bytes).digest('hex').toUpperCase();

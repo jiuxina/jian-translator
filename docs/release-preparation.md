@@ -12,9 +12,9 @@ Release 文案见 [v2.2.0](releases/v2.2.0.md)；本地成套附件由
 
 ## 资产与版本
 
-候选附件只包含 Windows x64 EXE/MSI、Android APK、专用 SHA-256 清单；
-另附本地审阅用的 Release 文案和来源清单。macOS 源码适配已完成，
-但没有实际 Mac 构建与验收结果，因此本次不列 DMG/ZIP。
+候选附件包含 Windows x64 EXE/MSI、macOS universal DMG/ZIP、Android APK、
+专用 SHA-256 清单，另附本地审阅用的 Release 文案和来源清单。
+macOS 包现在由 GitHub Actions 的 macOS 运行器构建，但仍未完成 Mac 实机验收。
 
 Windows 的 Pake CLI 仍固定为 `3.18.0`；补丁器从应用清单读取 `2.2.0`，
 只修改 Cargo `[package].version`，使 PE 字符串版本与应用、MSI 版本一致。
@@ -51,12 +51,12 @@ EXE FileVersion、ProductVersion 和固定版本号均为 `2.2.0`，MSI ProductV
 在 Windows EXE/MSI 元数据核验及 Android 资源检查之后执行：
 
 ```powershell
-node scripts/prepare-release.mjs --windows-dir .build/release-first-v2.2.0-20261116 --android output/笺-2.2.0-玻璃与更新.apk --out-dir output/first-release-v2.2.0-ready --revision cb53c70c40d8ede239d87def85782efe9a614abe
+node scripts/prepare-release.mjs --windows-dir .build/release-stage/windows --macos-dir .build/release-stage/macos --android output/笺-2.2.0-玻璃与更新.apk --out-dir output/first-release-v2.2.0-ready --revision cb53c70c40d8ede239d87def85782efe9a614abe
 ```
 
 准备器只处理显式指定的构建资产、发布文案及当前提交号，生成：
 
-- 三个规范命名的二进制附件；
+- 五个规范命名的二进制附件；
 - 只含三个附件的 `SHA256SUMS.txt`；
 - `RELEASE_NOTES.md`；
 - `release-manifest.json`，记录版本、草稿/预发布属性、文件大小、哈希和来源提交。

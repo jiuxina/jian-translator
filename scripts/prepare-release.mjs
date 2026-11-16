@@ -40,7 +40,8 @@ function inputLabel(filename, projectRoot) {
 
 export function parseArguments(args) {
   const names = {
-    '--version': 'version', '--windows-dir': 'windowsDir', '--android': 'androidPath',
+    '--version': 'version', '--windows-dir': 'windowsDir', '--macos-dir': 'macosDir',
+    '--android': 'androidPath',
     '--out-dir': 'outDir', '--revision': 'revision'
   };
   const options = {};
@@ -57,8 +58,8 @@ export function parseArguments(args) {
 
 export async function prepareRelease(options) {
   const projectRoot = path.resolve(options.projectRoot || PROJECT_ROOT);
-  if (!options.windowsDir || !options.androidPath || !options.outDir) {
-    throw new Error('必须提供 --windows-dir、--android 和 --out-dir');
+  if (!options.windowsDir || !options.macosDir || !options.androidPath || !options.outDir) {
+    throw new Error('必须提供 --windows-dir、--macos-dir、--android 和 --out-dir');
   }
   const manifestPath = path.join(projectRoot, 'app', 'macos', 'package.json');
   const packageJson = JSON.parse(decodeUtf8(await readFile(manifestPath), manifestPath));
@@ -82,6 +83,10 @@ export async function prepareRelease(options) {
       name: `Jian-${version}-windows-x64.exe`, platform: 'windows', architecture: 'x64' },
     { source: path.join(path.resolve(options.windowsDir), '笺.msi'),
       name: `Jian-${version}-windows-x64.msi`, platform: 'windows', architecture: 'x64' },
+    { source: path.join(path.resolve(options.macosDir), `Jian-${version}-macOS-universal.dmg`),
+      name: `Jian-${version}-macOS-universal.dmg`, platform: 'macos', architecture: 'universal' },
+    { source: path.join(path.resolve(options.macosDir), `Jian-${version}-macOS-universal.zip`),
+      name: `Jian-${version}-macOS-universal.zip`, platform: 'macos', architecture: 'universal' },
     { source: path.resolve(options.androidPath),
       name: `Jian-${version}-android.apk`, platform: 'android', architecture: 'multi-abi' }
   ];
@@ -105,7 +110,8 @@ export async function prepareRelease(options) {
     });
   }
   const notesPath = path.join(projectRoot, 'docs', 'releases', `v${version}.md`);
-  const notes = decodeUtf8(await readFile((await regularInput(notesPath)).resolved), notesPath);
+  const notesFile = await regularInput(notesPath);
+  const notes = decodeUtf8(await readFile(notesFile.resolved), notesPath);
   if (!notes.trim()) throw new Error('发布说明不能为空');
   const manifest = {
     version, tag: `v${version}`, title: `笺 ${version}`,

@@ -93,6 +93,19 @@ Git Bash 安装位置因机器而异，使用本机实际路径。默认构建�
 
 当前版本为 Android versionCode `5` / versionName `2.2.0`，Windows 安装包版本 `2.2.0`。
 
+## 自动发布
+
+推送到 `main` 或推送 `v*` 标签会触发 [.github/workflows/release.yml](.github/workflows/release.yml)。
+工作流分别在 Windows、macOS 与 Ubuntu 运行器上构建三端产物，最后调用
+`scripts/prepare-release.mjs` 生成规范命名附件、`RELEASE_NOTES.md`、`SHA256SUMS.txt`
+和来源清单。标签构建会把附件与发布说明上传到对应的 GitHub Release；
+普通分支构建只保存 `prepared-release` 附件，用于发布前审阅。
+
+Android Release 默认使用 debug 密钥签名；如需对外分发正式签名包，
+先在仓库 Secrets 中配置 Android 签名材料并更新该步骤。macOS 包未做 Developer ID
+公证，首次打开仍需按系统提示确认。发布说明模板在 `docs/releases/v<版本>.md`，
+新增版本前应先补充对应文案。
+
 ## 版本管理
 
 源码、资源、Gradle wrapper、文档和测试入库。依赖缓存、构建目录、发布二进制、预览媒体、
