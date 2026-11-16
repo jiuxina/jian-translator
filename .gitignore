@@ -3,19 +3,28 @@
 .workbuddy/
 .codex/
 .agents/
+node_modules/
 **/__pycache__/
 *.py[cod]
+*.pyc
 desktop/patch/setup.rs.orig
+app/macos/node_modules/
+app/macos/.generated/
+npm-debug.log*
+yarn-error.log*
 
 # Android machine configuration, caches and signing credentials
 android/.gradle/
 android/build/
 android/app/build/
+**/build/
 android/local.properties
 android/signing.properties
 android/keystore/
 *.keystore
 *.jks
+.idea/
+.vscode/
 .env
 .env.local
 

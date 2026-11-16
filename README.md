@@ -1,82 +1,119 @@
 # 笺
 
-Windows、Android 与网页共用的翻译界面。`web/` 是当前界面、主题和交互的源码；
-Windows 通过 Pake/Tauri 加载本地页面，Android 使用 WebView 加载同一份资源。
+**一款好看又好用的翻译工具，支持 Windows、macOS、Android 和网页。**
 
-当前源码版本为 `2.2.0`；既有发布包 `output/笺-2.1.0.exe`、`output/笺-2.1.0.msi`、
-`output/笺-2.1.0.apk` 保留不覆盖。新发布包使用版本化文件名，校验值见 `output/SHA256SUMS.txt`。
-电脑点击左上角“笺”、手机点击底栏右侧齿轮打开菜单，再进入“设置”即可调整外观与翻译偏好。
-模式和模型滑块支持按住横向拖动，越过相邻项阈值时立即切换；文本滚动条随主题显示为透明轨道与细圆角滑块。
-设置分类使用连续滑块与内容淡入淡出；主界面、设置控件和 Windows 悬浮窗共用 SVG 位移折射液态玻璃模型。
-液态玻璃设置集中在“液态玻璃”分类；旧的材质、玻璃强度和卡片透出选项已移除。
-参考实现说明与当前运行时验收状态见 [界面主题记录](docs/ui-theme.md) 和
-[Windows 窗口集成说明](docs/desktop-integration.md)。关于页提供开源仓库链接。
-完整的父子依赖、覆盖顺序和平台差异见 [设置项关系简报](docs/settings-audit.md)。
-上一轮安装包为 `output/笺-2.2.0-界面优化.exe`、`output/笺-2.2.0-界面优化.msi`、
-`output/笺-2.2.0-界面优化.apk`；应用版本保持 `2.2.0`，原有发布包继续保留。
-本轮交付为 `output/笺-2.2.0-交互优化.exe`、`output/笺-2.2.0-交互优化.msi`、
-`output/笺-2.2.0-交互优化.apk`，包含手机底栏、安全区、拖动选择、滚动条和浮窗背景范围修正。
-全量替换液态玻璃后的包为 `output/笺-2.2.0-液态玻璃.exe`、
-`output/笺-2.2.0-液态玻璃.msi`、`output/笺-2.2.0-液态玻璃.apk`；
-Android 包使用 versionCode `5` / versionName `2.2.0`。本轮校验值见 `output/SHA256SUMS.txt`。
+![Platform Windows](https://img.shields.io/badge/platform-Windows-blue)
+![Platform macOS](https://img.shields.io/badge/platform-macOS-black)
+![Platform Android](https://img.shields.io/badge/platform-Android-green)
+![License](https://img.shields.io/badge/license-CC%20BY--NC--SA%204.0-lightgrey)
 
-## 本地验证
+## ✨ 它能做什么
 
-需要 Node.js 22 或以上以及 Chrome。无需安装前端依赖。
+- **文本翻译**：输入或粘贴一段话，选择语言后点击翻译；最多支持 8000 字。
+- **图片翻译**：拍照、选图或粘贴截图，识别画面里的文字并翻译。
+- **长文翻译**：打开 `.txt` 或 `.md` 文件，自动分段翻译并拼成完整译文。
+- **音节控制**：把译文控制在指定的音节数附近，适合字幕、配音和歌词。
+- **个性化外观**：提供浅色、深色、主题色、壁纸、字体和液态玻璃设置。
+- **桌面小功能**：Windows 和 macOS 支持快捷键唤起；Windows 还提供划词悬浮窗。
 
-```powershell
-node tests/serve-preview.mjs web 8899
-```
+翻译服务来自 [bilibili Index-Translate](https://github.com/bilibili/Index-Translate) 的官方公开 API。
+本项目是非官方客户端，与哔哩哔哩没有隶属关系。
 
-另开独立 Chrome 调试会话，指定 `--remote-debugging-port=9223` 和位于 `.build/` 的
-独立 `--user-data-dir`，然后执行：
+## 📱 界面一览
 
-```powershell
-node tests/verify-motion.mjs
-node tests/verify-liquid-glass.mjs
-```
+应用主界面分为“文本”“音节”“长文”三个模式；左右两栏分别放原文和译文，底部按钮负责清空与翻译。
+电脑点击左上角“笺”，手机点击右下角“设置”，可以进入个性化设置和关于页。
 
-回归使用本地桥接替身并拦截外部请求，不调用翻译接口。界面设计、验证记录和历史成品说明见
-[docs/ui-theme.md](docs/ui-theme.md)。
-`IT_CDP_ORIGIN` 可指定其他 Chrome 调试地址，`IT_PREVIEW_ORIGIN` 可指定其他本地预览地址。
-完整离线浏览器回归本轮唯一执行结果为 `127/128`；覆盖连续动画、设置事务、窗口桥接契约、
-移动端触控、旧偏好迁移和高对比背景下真实折射像素变化。唯一失败是语言轮盘反向动画的固定帧采样，
-针对性动画时钟探针已确认正向与反向位移正常；液态玻璃计算测试由
-`node tests/verify-liquid-glass.mjs` 单独验证。离线 Chromium 结果不代表已完成打包后 Windows
-WebView2 或 Android System WebView 的实机视觉验收。
+## 📦 安装
 
-## Windows 构建
+### Windows
 
-需要 Git Bash、Node.js、Rust MSVC 工具链及 WebView2。当前补丁针对 **Pake 3.18.0**；
-将该版本安装在 `.build/npm-global`，仅在构建进程设置 `npm_config_prefix` 指向该目录，
-再用 Git Bash 执行 `app/rebuild.sh`。补丁应用器会把 `desktop/` 的源码复制到本地 Pake 模板。
+1. 打开 [Releases](https://github.com/jiuxina/jian-translator/releases)。
+2. 下载 `.exe` 免安装版，或下载 `.msi` 安装版。
+3. 双击运行；如果 Windows 提醒未知发布者，选择“仍要运行”。
 
-```powershell
-$env:npm_config_prefix = "$PWD/.build/npm-global"
-$env:IT_OUT_DIR = "$PWD/.build/release-stage"
-& 'D:\Program Files\Git\usr\bin\bash.exe' app/rebuild.sh
-```
+### Android
 
-Git Bash 安装位置因机器而异，使用本机实际路径。默认构建输出在 `output/`；设置 `IT_OUT_DIR`
-可把产物写到隔离目录，正在运行的桌面程序可以继续工作。
+1. 打开 [Releases](https://github.com/jiuxina/jian-translator/releases)。
+2. 下载最新 `.apk`。
+3. 允许安装来自此来源的应用；使用拍照翻译时授权相机权限。
 
-## Android 构建
+### macOS
 
-需要 JDK 17、Android SDK 35 和 Gradle wrapper。`android/local.properties` 仅存本机 SDK
-路径；发布签名从 `android/signing.properties` 读取，可参考同目录的 example。密钥和真实
-签名配置均不入库。缺少签名配置时仍可执行 Debug 编译，Release 打包需要完整本地配置。
+1. 打开 [Releases](https://github.com/jiuxina/jian-translator/releases)。
+2. 下载适用于 Mac 的 `.dmg` 或 `.zip`。
+3. 首次打开时按 macOS 提示允许运行；使用划词功能时授权辅助功能与自动化权限。
 
-先用 PowerShell `Copy-Item` 将 `web/` 中前端资源覆盖至 `android/app/src/main/assets/`，
-校验一致后，在 `android/` 执行：
+### 网页版
 
-```powershell
-.\gradlew.bat -g ..\.build\gradle-home :app:assembleRelease -x syncWebAssets --offline --console=plain
-```
+`web/index.html` 需要通过本地静态服务器在 Chromium 系浏览器中打开；部分界面效果和桌面端可能有差异。
 
-历史 `syncWebAssets` 任务会删除目标目录，因此此处使用覆盖同步并跳过该任务。
-当前版本为 Android versionCode `5` / versionName `2.2.0`，Windows 安装包版本 `2.2.0`。
+## 🚀 快速上手
 
-## 版本管理
+1. 打开应用，选择“文本”“图片”“音节”或“长文”模式。
+2. 选择源语言和目标语言；不确定时可以先粘贴内容再调整。
+3. 点击“翻译”，等待右侧出现结果。
+4. 点击“复制”保存译文；长文还能直接下载结果。
 
-源码、资源、Gradle wrapper、文档和测试入库。依赖缓存、构建目录、发布二进制、预览媒体、
-本机配置与签名文件保留在工作区但由 Git 忽略。`output/SHA256SUMS.txt` 记录发布包校验值。
+> 想改变主题、字体、壁纸、玻璃质感或翻译偏好，请进入“设置”。这里的大部分调整会保存在本机。
+
+## ⌨️ 常用桌面功能
+
+| 功能 | Windows 快捷键 | macOS 快捷键 | 说明 |
+| --- | --- | --- | --- |
+| 显示主窗口 | `Ctrl+Alt+I` | `Cmd+Alt+I` | 从任何位置快速唤起应用 |
+| 划词翻译 | `Ctrl+Alt+T` | `Cmd+Alt+T` | 选中文本后呼出悬浮窗 |
+| 打开设置 | `Ctrl+,` | `Cmd+,` | macOS 支持系统标准快捷键 |
+
+默认快捷键可在设置中查看和调整。关闭窗口通常会保留托盘；完全退出请使用系统托盘或应用菜单。
+
+## 🧩 权限说明
+
+| 平台 | 权限 / 授权 | 用途 |
+| --- | --- | --- |
+| Android | 相机 | 在应用内拍摄待翻译图片 |
+| Android | 网络 | 连接翻译接口 |
+| Windows | 本机设置与剪贴板 | 保存外观偏好、支持划词结果复制 |
+| macOS | 辅助功能、System Events | 仅在触发划词翻译时捕获选中文本 |
+| macOS | 通知或登录项授权 | 快捷键、托盘和开机启动相关能力按需申请 |
+
+应用不会上传你的壁纸、设置或本机文档；只有你主动提交翻译的内容会发送到翻译接口。
+
+## ❓ 常见问题
+
+**翻译请求失败怎么办？**  
+先检查网络连接。公开接口可能临时繁忙或限流，稍后重试；长文可以尝试更小的分块。
+
+**图片翻译没有结果？**  
+图片要清晰、文字不能过度倾斜或遮挡；也可以先把图片保存到本地，再在应用里重新选择。
+
+**快捷键没有反应？**  
+确认应用正在运行，并检查其他软件是否占用了相同快捷键；macOS 需要允许对应的辅助功能权限。
+
+**界面效果不正常？**  
+网页版和部分 WebView 可能不支持完整液态玻璃折射。更新系统浏览器或使用桌面安装包通常更稳定。
+
+**旧版本设置还在吗？**  
+应用会在升级时尽量迁移兼容的偏好；不兼容的旧外观参数会恢复默认，翻译偏好会尽量保留。
+
+## 🤝 参与贡献
+
+欢迎报告问题、提出功能建议或提交 Pull Request。普通用户可以直接在
+[Issues](https://github.com/jiuxina/jian-translator/issues) 中描述使用的平台、步骤和看到的结果。
+
+开发者文档、构建流程、测试记录和历史实现说明已整理到
+[技术文档](docs/technical.md)；界面细节另见
+[界面主题记录](docs/ui-theme.md)。
+
+## 📄 开源协议
+
+本项目采用 **Creative Commons BY-NC-SA 4.0** 协议发布。
+
+你可以自由共享和改编，但需要署名、不得用于商业目的，并且改编内容必须以相同协议发布。
+完整条款见 [LICENSE](LICENSE)。
+
+## 👨‍💻 作者
+
+**jiuxina**
+
+如果这个项目对你有帮助，欢迎点一个 Star ⭐。
