@@ -19,9 +19,10 @@ Windows WebView2 已知的同步创建死锁路径。
 macOS 生命周期 **20/20**。没有重新执行整套测试。两类原生回归均有编译与运行超时，
 不会因未来死锁回归无限挂起。
 
-关闭与重开修复的上一候选已成功构建；最终“快速重用先隐藏”补丁的 Release 重建尚未完成：
-自动执行审批连续超时，编译子进程未启动。下节表格保留上一候选的大小与哈希，
-不可视为最终源码交付；最终构建目录预留为 `.build/popup-release-stage-20261118/`。
+最终“快速重用先隐藏”补丁已成功构建为 Release，源码提交为 `26b644c`，
+构建目录为 `.build/popup-release-stage-20261118/`。此前审批超时的尝试未启动编译，
+后续成功构建的 EXE/MSI 已同步到交付目录。编译后只核对版本、原应用身份和产物哈希，
+复用修改阶段已有的定向结果，没有重复运行回归。
 
 ## 划词时先显示悬浮窗（2026-11-17，后续关闭修复见上节）
 
@@ -67,15 +68,15 @@ macOS 保留取词串行保护，取词未结束时重复快捷键不会启动�
 全部内容、网络、剪贴板和窗口边界均为合成数据或替身，不读取真实用户数据。
 这些检查不等于真实 Windows HWND / WebView2 焦点、macOS 权限与系统复制验收；
 Windows 目标 `cargo check --target x86_64-pc-windows-msvc --offline` 已通过，
-上一候选 EXE/MSI Release 构建成功，名称“笺”和应用标识 `ink.jian.translate` 保持原样，
-EXE 的 FileVersion / ProductVersion 均为 `2.3.0`。候选记录如下，最终重建状态见本页首节：
+最终 EXE/MSI Release 构建成功，名称“笺”和应用标识 `ink.jian.translate` 保持原样，
+EXE 的 FileVersion / ProductVersion 均为 `2.3.0`。交付记录如下：
 
 | 文件 | 字节数 | SHA-256 |
 | --- | ---: | --- |
-| `output/笺-2.3.0.exe` | 9,489,920 | `61168629e7fcd86796f41a4d9d80ee23e81f950656c0382317f41bb532f314f9` |
-| `output/笺-2.3.0.msi` | 4,333,568 | `3dfe1211377f888c488388787009a07729e537ed04ac7bcb40426e293f39f659` |
+| `output/笺-2.3.0.exe` | 9,490,432 | `c7c2eddfc2ff166949ce7be22e772262e6b81ae6e7f6a721a121ca2ab02bbb28` |
+| `output/笺-2.3.0.msi` | 4,333,568 | `453dc619ae3d0a97682b0356418e01637939d7dd2f6b8141c851aa5639c18a04` |
 
-修复关闭与重开问题后的构建目录为 `.build/popup-release-stage-20261117-final/`，
+最终构建目录为 `.build/popup-release-stage-20261118/`，
 来源哈希与资产清单为 `.build/popup-release-artifacts.json`；上一版构建仍保留在原隔离目录。
 窗口补丁另以四项定向检查验证：
 主窗口显示与回退聚焦排除预热浮窗、重复应用、CRLF 和变化锚点失败，

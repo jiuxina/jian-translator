@@ -11,6 +11,16 @@
 [Release 准备记录](release-preparation.md)；桌面产物详情记录在
 [桌面集成说明](desktop-integration.md)。
 
+## 编译后验证约定
+
+按用户要求，常规打包采用精简验证：构建成功后，一次核对产物类型、版本、原应用名称与
+应用标识，确认本次变更涉及的资源已打入包内，并更新交付文件哈希。需要签名的产物只做
+必要的签名检查。已有的同源码验证结果直接复用，不重复编译、不在打包后重跑整套回归，
+也不默认追加浏览器、原生窗口或跨平台探针。
+
+功能修改期间执行与变更直接相关的最小检查；只有失败、新修改或尚未解决的具体问题，
+才追加相应的定向诊断。确需完整回归时，在源码和相关文档完成后执行一次，结果单独记录。
+
 ## 架构与当前能力
 
 Windows、macOS、Android 与网页共用的翻译界面。`web/` 是界面、主题和交互的源码；
@@ -117,9 +127,9 @@ macOS 定向检查用 Electron 窗口和延迟取词替身执行实际生命周�
 复现旧的窗口可见性缓存失步，并验证生产显示函数在真实 Tao 下连续 12 次隐藏、重开；
 不创建 WebView、不发送输入、不激活窗口，不能替代实际应用的取词和焦点验收。
 结果分别为 `.build/popup-latency.json`、`.build/windows-popup-lifecycle.json` 与
-`.build/macos-popup-lifecycle.json`。Windows 目标离线 `cargo check` 与上一候选 Release
-构建已通过；当前最终快速重用补丁的重建受自动执行审批超时阻塞，
-`output/笺-2.3.0.exe` / `output/笺-2.3.0.msi` 仍是上一候选，完成后按同名更新。
+`.build/macos-popup-lifecycle.json`。Windows 目标离线 `cargo check` 与最终 Release
+构建已通过，源码提交为 `26b644c`；`output/笺-2.3.0.exe` /
+`output/笺-2.3.0.msi` 已更新为包含快速重用修复的产物。
 真实窗口焦点仍需设备验收。主窗口唤起时排除预热浮窗的补丁另有四项定向检查，
 入口为 `python tests/verify-desktop-patch.py DesktopPopupRevealTests`。
 
