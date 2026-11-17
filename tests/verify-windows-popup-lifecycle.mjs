@@ -20,19 +20,25 @@ function productionFunction(name) {
   assert.ok(start >= 0 && end > start, `Production function ${name} is present`);
   return source.slice(start, end + 2);
 }
+const ensureSource = productionFunction('ensure_popup');
+assert.match(ensureSource, /CloseRequested\s*\{\s*api,\s*\.\.\s*\}[\s\S]*?api\.prevent_close\(\)/,
+  'A native close request must not synchronously destroy the reusable WebView');
+assert.match(ensureSource, /dismiss_popup_if_current\(&popup_handle,\s*&popup,\s*generation\)/,
+  'A native close request must use the same generation-safe hide path as Escape');
 const functions = [
   'popup_request_is_current', 'next_popup_generation', 'cancel_popup_request',
-  'set_popup_capture_mode', 'popup_extended_style', 'show_popup_without_focus',
-  'complete_popup', 'present_popup', 'run_selection_translate',
+  'set_popup_capture_mode', 'show_popup_without_focus',
+  'complete_popup', 'present_popup', 'run_selection_translate', 'dismiss_popup_if_current',
 ].map(productionFunction).join('\n\n');
 const watcherFunctions = [
   'popup_request_is_current', 'next_popup_generation', 'cancel_popup_request',
+  'popup_pointer_buttons', 'popup_pointer_pressed_outside',
   'dismiss_popup_if_current', 'watch_popup',
 ].map(productionFunction).join('\n\n');
 
 const fixture = String.raw`
 #![allow(non_snake_case, non_upper_case_globals, dead_code)]
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
@@ -41,31 +47,33 @@ const APP_WINDOW_LABEL: &str = "main";
 static POPUP_SEQ: AtomicU64 = AtomicU64::new(0);
 static POPUP_GENERATION: AtomicU64 = AtomicU64::new(0);
 static ACTIVE: Mutex<Option<Arc<World>>> = Mutex::new(None);
-static LAST_ERROR: AtomicU32 = AtomicU32::new(0);
 
 struct World {
     data: Mutex<Data>,
     release: Condvar,
+    event_thread: std::thread::ThreadId,
 }
 struct Data {
     events: Vec<String>,
     visible: bool,
+    framework_visible: bool,
+    focusable: bool,
     created: bool,
     capture_released: bool,
     text: String,
     main: bool,
-    style: isize,
-    cached_style: isize,
-    fail_refresh: bool,
-    fail_style: bool,
+    fail_focusable: bool,
+    fail_show: bool,
 }
 impl World {
     fn new(main: bool, text: &str) -> Arc<Self> {
         let world = Arc::new(Self {
-            data: Mutex::new(Data { events: vec![], visible: false, created: false,
-                capture_released: false, text: text.into(), main, style: 0x80,
-                cached_style: 0x80, fail_refresh: false, fail_style: false }),
+            data: Mutex::new(Data { events: vec![], visible: false, framework_visible: false,
+                focusable: true, created: false,
+                capture_released: false, text: text.into(), main,
+                fail_focusable: false, fail_show: false }),
             release: Condvar::new(),
+            event_thread: std::thread::current().id(),
         });
         *ACTIVE.lock().unwrap() = Some(world.clone());
         POPUP_GENERATION.store(0, Ordering::Release);
@@ -79,8 +87,11 @@ impl World {
         self.release.notify_all();
     }
     fn wait(&self, event: &str) {
+        self.wait_count(event, 1);
+    }
+    fn wait_count(&self, event: &str, count: usize) {
         let started = Instant::now();
-        while !self.events().iter().any(|value| value == event) {
+        while self.events().iter().filter(|value| value.as_str() == event).count() < count {
             assert!(started.elapsed() < Duration::from_secs(3), "Missing event {event}: {:?}", self.events());
             std::thread::sleep(Duration::from_millis(1));
         }
@@ -108,13 +119,57 @@ impl WebviewWindow {
     fn is_visible(&self) -> Result<bool, String> { Ok(world().data.lock().unwrap().visible) }
     fn eval(&self, script: &str) -> Result<(), String> {
         if script.contains("__popupPresent") { world().log("present-animation"); }
+        if script.contains("__popupDismiss") { world().log("dismiss"); }
+        Ok(())
+    }
+    fn set_focusable(&self, focusable: bool) -> Result<(), String> {
+        let state = world();
+        let mut data = state.data.lock().unwrap();
+        if data.fail_focusable {
+            data.events.push("focusable-failed".into());
+            return Err("Synthetic focusability failure".into());
+        }
+        if !focusable {
+            assert!(!data.visible,
+                "A still-visible result must be hidden before disabling activation and showing its next request");
+        }
+        data.focusable = focusable;
+        data.events.push(if focusable { "focusable-ready" } else { "focusable-pending" }.into());
+        Ok(())
+    }
+    fn show(&self) -> Result<(), String> {
+        let state = world();
+        let mut data = state.data.lock().unwrap();
+        if data.fail_show {
+            data.events.push("show-failed".into());
+            return Err("Synthetic show failure".into());
+        }
+        assert!(!data.focusable, "The source application must retain focus before copy");
+        data.visible = true;
+        data.framework_visible = true;
+        data.events.push("show-inactive".into());
+        Ok(())
+    }
+    fn hide(&self) -> Result<(), String> {
+        let state = world();
+        let mut data = state.data.lock().unwrap();
+        data.visible = false;
+        data.framework_visible = false;
+        data.events.push("hide".into());
+        Ok(())
+    }
+    fn destroy(&self) -> Result<(), String> {
+        world().log("destroy");
+        world().data.lock().unwrap().created = false;
         Ok(())
     }
     fn set_focus(&self) -> Result<(), String> {
         let state = world();
         let mut data = state.data.lock().unwrap();
-        assert_eq!(data.cached_style & windows_sys::Win32::UI::WindowsAndMessaging::WS_EX_NOACTIVATE as isize, 0,
-            "Focus cannot precede the native style-cache refresh");
+        if !data.framework_visible || !data.focusable {
+            data.events.push("framework-focus-skipped".into());
+            return Ok(());
+        }
         data.events.push("focus".into());
         Ok(())
     }
@@ -131,14 +186,19 @@ fn deliver_popup(_: &WebviewWindow, payload: &str, _: &()) { world().log(payload
 fn ensure_popup(_: &AppHandle) -> Option<WebviewWindow> {
     let state = world();
     let mut data = state.data.lock().unwrap();
-    if !data.created { data.events.push("create".into()); data.created = true; }
+    if !data.created {
+        assert_ne!(std::thread::current().id(), state.event_thread,
+            "A cold WebView must never be built synchronously in its UI event handler");
+        data.events.push("create".into());
+        data.created = true;
+    }
     Some(WebviewWindow)
 }
 fn position_popup(_: &AppHandle, _: &WebviewWindow) { world().log("position"); }
 fn retry_popup_delivery(_: &WebviewWindow, _: &str, _: u64) { world().log("retry-scheduled"); }
 fn watch_popup(_: AppHandle, _: WebviewWindow, _: u64) { world().log("watch"); }
 fn popup_is_foreground(_: &AppHandle) -> bool { false }
-fn hide_popup(_: &AppHandle) { world().log("hide"); world().data.lock().unwrap().visible = false; }
+fn hide_popup(_: &AppHandle) { WebviewWindow.hide().unwrap(); }
 fn cancel_startup_reveal(_: &Arc<AtomicBool>) { world().log("cancel-startup"); }
 fn show_all_app_windows(_: &AppHandle, _: bool) { world().log("show-main"); }
 fn capture_selection(_: u64) -> String {
@@ -152,68 +212,6 @@ fn capture_selection(_: u64) -> String {
 mod serde_json {
     pub fn to_string(value: &str) -> Result<String, String> { Ok(format!("{value:?}")) }
 }
-mod windows_sys {
-    pub mod Win32 {
-        pub mod Foundation {
-            pub unsafe fn SetLastError(error: u32) { crate::LAST_ERROR.store(error, crate::Ordering::Release); }
-            pub unsafe fn GetLastError() -> u32 { crate::LAST_ERROR.load(crate::Ordering::Acquire) }
-        }
-        pub mod UI {
-            pub mod WindowsAndMessaging {
-                use std::ffi::c_void;
-                pub const GWL_EXSTYLE: i32 = -20;
-                pub const WS_EX_NOACTIVATE: u32 = 0x08000000;
-                pub const SWP_FRAMECHANGED: u32 = 0x20;
-                pub const SWP_NOMOVE: u32 = 2;
-                pub const SWP_NOSIZE: u32 = 1;
-                pub const SWP_NOZORDER: u32 = 4;
-                pub const SWP_NOOWNERZORDER: u32 = 0x200;
-                pub const SWP_NOACTIVATE: u32 = 0x10;
-                pub const SW_SHOWNOACTIVATE: i32 = 4;
-                pub unsafe fn GetWindowLongPtrW(_: *mut c_void, _: i32) -> isize {
-                    crate::world().data.lock().unwrap().style
-                }
-                pub unsafe fn SetWindowLongPtrW(_: *mut c_void, _: i32, style: isize) -> isize {
-                    let state = crate::world();
-                    let mut data = state.data.lock().unwrap();
-                    if data.fail_style {
-                        crate::LAST_ERROR.store(5, crate::Ordering::Release);
-                        return 0;
-                    }
-                    let previous = data.style;
-                    data.style = style;
-                    data.events.push(if style & WS_EX_NOACTIVATE as isize != 0 { "style-pending" } else { "style-ready" }.into());
-                    previous
-                }
-                pub unsafe fn SetWindowPos(_: *mut c_void, _: *mut c_void, x: i32, y: i32, width: i32, height: i32, flags: u32) -> i32 {
-                    assert_eq!([x, y, width, height], [0, 0, 0, 0]);
-                    assert_eq!(flags, SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOOWNERZORDER | SWP_NOACTIVATE,
-                        "The refresh must preserve geometry, Z order and activation");
-                    let state = crate::world();
-                    let mut data = state.data.lock().unwrap();
-                    if data.fail_refresh {
-                        crate::LAST_ERROR.store(5, crate::Ordering::Release);
-                        data.events.push("refresh-failed".into());
-                        return 0;
-                    }
-                    data.cached_style = data.style;
-                    let pending = data.style & WS_EX_NOACTIVATE as isize != 0;
-                    data.events.push(if pending { "refresh-pending" } else { "refresh-ready" }.into());
-                    1
-                }
-                pub unsafe fn ShowWindow(_: *mut c_void, command: i32) -> i32 {
-                    assert_eq!(command, SW_SHOWNOACTIVATE);
-                    let state = crate::world();
-                    let mut data = state.data.lock().unwrap();
-                    data.visible = true;
-                    data.events.push("show-inactive".into());
-                    1
-                }
-            }
-        }
-    }
-}
-
 ${functions}
 
 fn before(events: &[String], left: &str, right: &str) {
@@ -228,7 +226,7 @@ fn main() {
     start();
     state.wait("capture-start");
     let pending = state.events();
-    before(&pending, "refresh-pending", "show-inactive");
+    before(&pending, "focusable-pending", "show-inactive");
     before(&pending, "payload:1:pending", "show-inactive");
     before(&pending, "show-inactive", "capture-start");
     before(&pending, "present-animation", "capture-start");
@@ -238,11 +236,51 @@ fn main() {
     state.wait("focus");
     let ready = state.events();
     before(&ready, "capture-finished", "payload:1:ready");
-    before(&ready, "refresh-ready", "focus");
+    before(&ready, "focusable-ready", "focus");
     assert_eq!(ready.iter().filter(|event| event.as_str() == "create").count(), 1);
     assert_eq!(ready.iter().filter(|event| event.as_str() == "show-inactive").count(), 1);
     assert_eq!(ready.iter().filter(|event| event.as_str() == "present-animation").count(), 1);
-    check("Ready updates the existing popup once and refreshes native activation before focusing");
+    check("The first result updates the same popup and restores framework-visible focusability before focusing");
+    for round in 2..=12 {
+        let generation = POPUP_GENERATION.load(Ordering::Acquire);
+        dismiss_popup_if_current(&AppHandle, &WebviewWindow, generation);
+        assert!(!state.data.lock().unwrap().visible);
+        assert!(state.data.lock().unwrap().created);
+        assert!(!state.events().iter().any(|event| event == "destroy"));
+        {
+            let mut data = state.data.lock().unwrap();
+            data.capture_released = false;
+            data.text = format!("Synthetic selection {round}");
+        }
+        start();
+        state.wait_count("capture-start", round);
+        state.release_capture();
+        state.wait_count("focus", round);
+        assert_eq!(state.events().iter().filter(|event| event.as_str() == "create").count(), 1);
+    }
+    check("Twelve close and shortcut cycles reuse one live WebView and continue capture and translation");
+
+    let quick_start = state.events().len();
+    {
+        let mut data = state.data.lock().unwrap();
+        assert!(data.visible && data.framework_visible && data.focusable,
+            "The previous result must still be visible before its watcher reacts");
+        data.capture_released = false;
+        data.text = "Quick source selection".into();
+    }
+    // The source application is foreground again, but the old popup has not
+    // reached its 160ms watcher tick. Do not dismiss it before this shortcut.
+    start();
+    state.wait_count("capture-start", 13);
+    let quick_pending = state.events()[quick_start..].to_vec();
+    before(&quick_pending, "hide", "focusable-pending");
+    before(&quick_pending, "focusable-pending", "show-inactive");
+    before(&quick_pending, "show-inactive", "capture-start");
+    assert!(!quick_pending.iter().any(|event| event == "focus" || event == "destroy"));
+    assert_eq!(state.events().iter().filter(|event| event.as_str() == "create").count(), 1);
+    state.release_capture();
+    state.wait_count("focus", 13);
+    check("A quick shortcut hides the still-visible prior result before nonactivating reuse and preserves source focus");
 
     let state = World::new(false, "Late selection");
     start();
@@ -282,25 +320,35 @@ fn main() {
     assert!(!notice.iter().any(|event| event == "show-main"));
     check("An empty main-window selection still displays its existing notice destination");
 
-    let state = World::new(false, "Text after a failed refresh");
+    let state = World::new(false, "Text after a failed focusability change");
     state.data.lock().unwrap().created = true;
-    state.data.lock().unwrap().visible = true;
     set_popup_capture_mode(&WebviewWindow, true).unwrap();
-    state.data.lock().unwrap().fail_refresh = true;
+    state.data.lock().unwrap().visible = true;
+    state.data.lock().unwrap().framework_visible = true;
+    state.data.lock().unwrap().fail_focusable = true;
     let generation = next_popup_generation();
     complete_popup(&AppHandle, 1, generation, "Synthetic translation", "", "auto");
     let failed = state.events();
-    assert!(failed.iter().any(|event| event == "refresh-failed"));
+    assert!(failed.iter().any(|event| event == "focusable-failed"));
     assert!(failed.iter().any(|event| event == "payload:1:ready"));
     assert!(!failed.iter().any(|event| event == "focus"));
-    check("A failed style refresh still delivers text and does not claim focus readiness");
-    state.data.lock().unwrap().fail_refresh = false;
+    check("A failed focusability update still delivers text without falsely claiming focus readiness");
+    state.data.lock().unwrap().fail_focusable = false;
     set_popup_capture_mode(&WebviewWindow, false).unwrap();
-    assert_eq!(state.events().last().unwrap(), "refresh-ready");
-    check("Retry refreshes the native cache even when the style bit already has its desired value");
-    state.data.lock().unwrap().fail_style = true;
+    assert_eq!(state.events().last().unwrap(), "focusable-ready");
+    check("Retry can restore focusability after a framework operation failure");
+    state.data.lock().unwrap().fail_focusable = true;
     assert!(set_popup_capture_mode(&WebviewWindow, true).is_err());
-    check("A failed native style write is reported");
+    check("A failed framework focusability change is reported");
+
+    let state = World::new(false, "No capture after show failure");
+    state.data.lock().unwrap().fail_show = true;
+    start();
+    state.wait("show-failed");
+    std::thread::sleep(Duration::from_millis(20));
+    assert!(!state.events().iter().any(|event| event == "capture-start"));
+    assert!(!state.data.lock().unwrap().visible);
+    check("A failed pending show does not copy selection or leave a falsely visible popup");
 }
 `;
 
@@ -309,15 +357,22 @@ await mkdir(output, { recursive: true });
 const rustSource = path.join(output, 'popup_lifecycle.rs');
 const executable = path.join(output, process.platform === 'win32' ? 'popup_lifecycle.exe' : 'popup_lifecycle');
 await writeFile(rustSource, fixture, 'utf8');
-execFileSync(rustc, ['--edition=2021', rustSource, '-o', executable], { stdio: 'pipe' });
-let text = execFileSync(executable, [], { encoding: 'utf8' });
+execFileSync(rustc, ['--edition=2021', rustSource, '-o', executable], {
+  stdio: 'pipe', windowsHide: true, timeout: 120000,
+});
+let text = execFileSync(executable, [], { encoding: 'utf8', windowsHide: true, timeout: 15000 });
+text += 'PASS Native CloseRequested prevents WebView destruction and uses the reusable dismissal path\n';
 const watcherFixture = String.raw`
 #![allow(non_snake_case, dead_code)]
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 static POPUP_GENERATION: AtomicU64 = AtomicU64::new(0);
 static FOREGROUND_READS: AtomicUsize = AtomicUsize::new(0);
+static OUTSIDE_CLICK: AtomicUsize = AtomicUsize::new(0);
+static POINTER_INSIDE: AtomicBool = AtomicBool::new(false);
+static ESCAPE: AtomicBool = AtomicBool::new(false);
+static VISIBLE: AtomicBool = AtomicBool::new(true);
 static EVENTS: Mutex<Vec<String>> = Mutex::new(vec![]);
 static UI_QUEUE: Mutex<Vec<Box<dyn FnOnce() + Send>>> = Mutex::new(vec![]);
 fn log(event: &str) { EVENTS.lock().unwrap().push(event.into()); }
@@ -342,20 +397,42 @@ impl AppHandle {
 }
 impl WebviewWindow {
     fn hwnd(&self) -> Result<Hwnd, String> { Ok(Hwnd(std::ptr::dangling_mut())) }
-    fn is_visible(&self) -> Result<bool, String> { Ok(true) }
+    fn is_visible(&self) -> Result<bool, String> { Ok(VISIBLE.load(Ordering::Acquire)) }
     fn eval(&self, script: &str) -> Result<(), String> {
         assert!(script.contains("__popupDismiss"));
         log("dismiss");
+        Ok(())
+    }
+    fn hide(&self) -> Result<(), String> {
+        VISIBLE.store(false, Ordering::Release);
+        log("hide");
         Ok(())
     }
     fn destroy(&self) -> Result<(), String> { log("destroy"); Ok(()) }
 }
 mod windows_sys {
     pub mod Win32 {
+        pub mod Foundation {
+            #[derive(Default)]
+            pub struct POINT { pub x: i32, pub y: i32 }
+            #[derive(Default)]
+            pub struct RECT { pub left: i32, pub top: i32, pub right: i32, pub bottom: i32 }
+        }
         pub mod UI {
             pub mod Input {
                 pub mod KeyboardAndMouse {
-                    pub unsafe fn GetAsyncKeyState(_: i32) -> i16 { 0 }
+                    pub const VK_LBUTTON: u16 = 1;
+                    pub const VK_RBUTTON: u16 = 2;
+                    pub const VK_MBUTTON: u16 = 4;
+                    pub const VK_XBUTTON1: u16 = 5;
+                    pub const VK_XBUTTON2: u16 = 6;
+                    pub unsafe fn GetAsyncKeyState(key: i32) -> i16 {
+                        if key == 1 && crate::OUTSIDE_CLICK.load(crate::Ordering::Acquire) != 0 {
+                            0x8001u16 as i16
+                        } else if key == 0x1B && crate::ESCAPE.swap(false, crate::Ordering::AcqRel) {
+                            0x8001u16 as i16
+                        } else { 0 }
+                    }
                 }
             }
             pub mod WindowsAndMessaging {
@@ -366,8 +443,24 @@ mod windows_sys {
                         std::ptr::dangling_mut()
                     } else {
                         if read == 1 { crate::log("blur-confirmation-started"); }
+                        if read == 100 { crate::log("nonforeground-poll"); }
                         std::ptr::null_mut()
                     }
+                }
+                pub unsafe fn GetCursorPos(point: *mut super::super::Foundation::POINT) -> i32 {
+                    let point = unsafe { &mut *point };
+                    let coordinate = if crate::POINTER_INSIDE.load(crate::Ordering::Acquire) { 100 } else { 500 };
+                    point.x = coordinate;
+                    point.y = coordinate;
+                    1
+                }
+                pub unsafe fn GetWindowRect(_: *mut std::ffi::c_void, rect: *mut super::super::Foundation::RECT) -> i32 {
+                    let rect = unsafe { &mut *rect };
+                    rect.left = 0;
+                    rect.top = 0;
+                    rect.right = 200;
+                    rect.bottom = 200;
+                    1
                 }
             }
         }
@@ -402,16 +495,69 @@ fn main() {
     assert!(!popup_request_is_current(newer));
     let events = EVENTS.lock().unwrap();
     let dismiss = events.iter().position(|event| event == "dismiss").unwrap();
-    let destroy = events.iter().position(|event| event == "destroy").unwrap();
-    assert!(dismiss < destroy);
-    println!("PASS The current request is invalidated and dismissed before its native window closes");
+    let hide = events.iter().position(|event| event == "hide").unwrap();
+    assert!(dismiss < hide);
+    assert!(!events.iter().any(|event| event == "destroy"));
+    drop(events);
+    println!("PASS The current request is invalidated and dismissed before hiding its reusable WebView");
+
+    EVENTS.lock().unwrap().clear();
+    VISIBLE.store(true, Ordering::Release);
+    FOREGROUND_READS.store(100, Ordering::Release);
+    let never_focused = next_popup_generation();
+    watch_popup(AppHandle, WebviewWindow, never_focused);
+    wait("nonforeground-poll");
+    OUTSIDE_CLICK.store(1, Ordering::Release);
+    let start = Instant::now();
+    while UI_QUEUE.lock().unwrap().is_empty() && start.elapsed() < Duration::from_secs(1) {
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert!(!UI_QUEUE.lock().unwrap().is_empty(),
+        "Clicking outside a nonactivating popup must close it even if Windows never granted foreground focus");
+    let task = UI_QUEUE.lock().unwrap().remove(0);
+    task();
+    assert!(!popup_request_is_current(never_focused));
+    println!("PASS An outside click dismisses the first nonactivating popup without waiting for foreground focus");
+
+    EVENTS.lock().unwrap().clear();
+    VISIBLE.store(true, Ordering::Release);
+    FOREGROUND_READS.store(100, Ordering::Release);
+    OUTSIDE_CLICK.store(0, Ordering::Release);
+    POINTER_INSIDE.store(true, Ordering::Release);
+    let inside = next_popup_generation();
+    watch_popup(AppHandle, WebviewWindow, inside);
+    wait("nonforeground-poll");
+    OUTSIDE_CLICK.store(1, Ordering::Release);
+    std::thread::sleep(Duration::from_millis(220));
+    assert!(UI_QUEUE.lock().unwrap().is_empty(), "Clicks inside the popup must not dismiss its content");
+    cancel_popup_request(inside);
+    std::thread::sleep(Duration::from_millis(200));
+    println!("PASS Clicks inside an unfocused popup remain available for its controls");
+
+    EVENTS.lock().unwrap().clear();
+    VISIBLE.store(true, Ordering::Release);
+    FOREGROUND_READS.store(100, Ordering::Release);
+    OUTSIDE_CLICK.store(0, Ordering::Release);
+    POINTER_INSIDE.store(false, Ordering::Release);
+    let escape = next_popup_generation();
+    watch_popup(AppHandle, WebviewWindow, escape);
+    wait("nonforeground-poll");
+    ESCAPE.store(true, Ordering::Release);
+    wait("close-queued");
+    let task = UI_QUEUE.lock().unwrap().remove(0);
+    task();
+    assert!(!popup_request_is_current(escape));
+    assert!(!EVENTS.lock().unwrap().iter().any(|event| event == "destroy"));
+    println!("PASS Escape hides and invalidates the popup without tearing down its WebView");
 }
 `;
 const watcherSource = path.join(output, 'popup_watchdog.rs');
 const watcherExecutable = path.join(output, process.platform === 'win32' ? 'popup_watchdog.exe' : 'popup_watchdog');
 await writeFile(watcherSource, watcherFixture, 'utf8');
-execFileSync(rustc, ['--edition=2021', watcherSource, '-o', watcherExecutable], { stdio: 'pipe' });
-text += execFileSync(watcherExecutable, [], { encoding: 'utf8' });
+execFileSync(rustc, ['--edition=2021', watcherSource, '-o', watcherExecutable], {
+  stdio: 'pipe', windowsHide: true, timeout: 120000,
+});
+text += execFileSync(watcherExecutable, [], { encoding: 'utf8', windowsHide: true, timeout: 15000 });
 console.log(text.trim());
 const checks = text.trim().split(/\r?\n/).filter((line) => line.startsWith('PASS '));
 await writeFile(path.join(root, '.build/windows-popup-lifecycle.json'), `${JSON.stringify({

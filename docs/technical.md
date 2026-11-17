@@ -104,6 +104,7 @@ node tests/verify-macos.mjs
 ```powershell
 node tests/verify-popup-latency.mjs
 node tests/verify-windows-popup-lifecycle.mjs
+node tests/verify-windows-popup-native.mjs
 node tests/verify-macos-popup-lifecycle.mjs
 ```
 
@@ -111,10 +112,14 @@ node tests/verify-macos-popup-lifecycle.mjs
 它只创建自己的 `about:blank` 页面，使用延迟网络与剪贴板替身，检查真实入场和文字动画。
 Windows 定向检查需要本机 Rust 编译器，将实际生产函数提取到合成 Win32/Tauri 边界；
 macOS 定向检查用 Electron 窗口和延迟取词替身执行实际生命周期函数。
-三者分别为 **22/22**、**12/12**、**20/20** 通过，不读取真实选区、剪贴板、偏好或浏览器会话。
+共享渲染、Windows 生命周期及 macOS 生命周期分别为 **22/22**、**19/19**、**20/20** 通过，
+不读取真实选区、剪贴板、偏好或浏览器会话。Windows 自有离屏 HWND 探针另为 **3/3**，
+复现旧的窗口可见性缓存失步，并验证生产显示函数在真实 Tao 下连续 12 次隐藏、重开；
+不创建 WebView、不发送输入、不激活窗口，不能替代实际应用的取词和焦点验收。
 结果分别为 `.build/popup-latency.json`、`.build/windows-popup-lifecycle.json` 与
-`.build/macos-popup-lifecycle.json`。Windows 目标离线 `cargo check` 与最终 Release
-构建已通过，产物为 `output/笺-2.3.0.exe` / `output/笺-2.3.0.msi`；
+`.build/macos-popup-lifecycle.json`。Windows 目标离线 `cargo check` 与上一候选 Release
+构建已通过；当前最终快速重用补丁的重建受自动执行审批超时阻塞，
+`output/笺-2.3.0.exe` / `output/笺-2.3.0.msi` 仍是上一候选，完成后按同名更新。
 真实窗口焦点仍需设备验收。主窗口唤起时排除预热浮窗的补丁另有四项定向检查，
 入口为 `python tests/verify-desktop-patch.py DesktopPopupRevealTests`。
 

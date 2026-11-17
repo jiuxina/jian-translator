@@ -1,6 +1,29 @@
 # 桌面窗口与设置集成
 
-## 当前：划词时先显示悬浮窗（2026-11-17）
+## 当前：浮窗关闭与再次唤起修复（2026-11-18）
+
+用户反馈首次翻译后点外部无法关闭，Esc 关闭后再次按快捷键会使应用未响应。
+旧版用原生 `ShowWindow` 显示，却没有更新 Tao 的可见性缓存，导致框架聚焦和隐藏操作
+不能可靠执行；Esc 又销毁 WebView，下一次唤起在 UI 事件线程同步重建窗口，进入
+Windows WebView2 已知的同步创建死锁路径。
+
+当前显示、可聚焦与隐藏均走框架 API；关闭只取消请求并隐藏，同一 WebView 可反复复用。
+冷创建和预热由后台线程串行处理，UI 线程只呈现既有窗口。窗口已可见时先隐藏，
+再切为不可聚焦等待态，避免快速重用时 Tao 更新样式意外激活旧窗。
+外部点击判断不再依赖浮窗曾取得前台焦点，内部点击仍保留，Esc 也使用相同的隐藏路径。
+首次快速入场、缩放与流式文字淡入均保留。
+
+生产函数提取式回归 **19/19**，覆盖首次未聚焦外点关闭、Esc 隐藏、12 次重开、
+旧结果仍可见时快速重用、错误路径与创建线程约束。真实 Tao 自有离屏窗口探针 **3/3**，
+复现旧可见性缓存错误并验证生产辅助函数 12 次显示／隐藏／重开；共享渲染 **22/22**，
+macOS 生命周期 **20/20**。没有重新执行整套测试。两类原生回归均有编译与运行超时，
+不会因未来死锁回归无限挂起。
+
+关闭与重开修复的上一候选已成功构建；最终“快速重用先隐藏”补丁的 Release 重建尚未完成：
+自动执行审批连续超时，编译子进程未启动。下节表格保留上一候选的大小与哈希，
+不可视为最终源码交付；最终构建目录预留为 `.build/popup-release-stage-20261118/`。
+
+## 划词时先显示悬浮窗（2026-11-17，后续关闭修复见上节）
 
 悬浮窗模式改为先展示等待态，再异步取词和接收译文。旧流程在显示窗口前等待复制选区，
 Windows 还包含固定等待、修饰键释放和剪贴板变化轮询；macOS 等待系统脚本复制完成。
@@ -8,10 +31,15 @@ Windows 还包含固定等待、修饰键释放和剪贴板变化轮询；macOS 
 
 Windows 和 macOS 均预热隐藏的本地悬浮窗，不在预热或空闲时读取选区与剪贴板。
 快捷键触发后先定位并显示等待态，取词期间不激活窗口，原应用保有焦点。
-Windows 使用 `SW_SHOWNOACTIVATE` 和取词期的 `WS_EX_NOACTIVATE`；
-取词后清除该样式并以 `SetWindowPos(...SWP_FRAMECHANGED)` 刷新，成功后才聚焦。
+Windows 使用 Tao 管理的 `set_focusable(false)` / `show()` 同步原生窗口与框架可见性；
+取词后恢复焦点能力并聚焦。Windows 外部点击轮询独立于前台焦点判断，因此初次无激活
+显示时点选空白处也会关闭。
 macOS 使用 `showInactive()`，取词完成后恢复可聚焦状态。
 已打开的 macOS 浮窗会先清理旧失焦回调再复用，避免关闭尚未完成时重用失效窗口。
+
+关闭路径隐藏并复用同一个 WebView，不销毁后再于热键事件线程重建。冷启动所需窗口创建
+移至后台线程并串行化，避免 Windows WebView2 在 UI 事件处理器中同步创建而卡死。
+主窗口“显示全部窗口”的路径跳过预热悬浮窗，避免空闲窗口意外出现。
 
 共用数据协议为 `{id, phase, text, notice, target}`，阶段为 `pending`、`ready` 或 `notice`。
 同一请求从等待态推进一次，不为等待态提交空翻译；正式文本在原窗口内开始流式翻译，
@@ -27,24 +55,28 @@ macOS 保留取词串行保护，取词未结束时重复快捷键不会启动�
 | 检查 | 结果 | 范围 |
 | --- | ---: | --- |
 | `tests/verify-popup-latency.mjs` | 22/22 | 在真实 Chromium 渲染中延迟响应，检查等待态先绘制、实际入场与流式淡入、单次请求、取消和旧结果隔离。 |
-| `tests/verify-windows-popup-lifecycle.mjs` | 12/12 | 提取生产 Rust 函数，使用合成 Win32/Tauri 边界验证先显示后取词、窗口样式刷新、焦点交接、取消、失败及真实 watchdog 的过期关闭。 |
+| `tests/verify-windows-popup-lifecycle.mjs` | 19/19 | 提取生产 Rust 函数，使用合成 Win32/Tauri 边界验证框架可见与焦点缓存、首次未聚焦外点关闭、内部点击保留、Esc 隐藏复用、12 次重开、快速重用、创建线程、取消、失败及 watchdog 代次竞争。 |
+| `tests/verify-windows-popup-native.mjs` | 3/3 | 使用真实 Tao 0.34.5 与自有离屏 HWND 复现旧可见缓存错误，验证生产辅助函数的 12 次显示、隐藏与重开，等待显示不改变前台窗口。 |
 | `tests/verify-macos-popup-lifecycle.mjs` | 20/20 | 执行生产生命周期函数，使用合成 Electron 窗口和延迟选区验证无激活等待、同窗更新、连续触发、关闭与重试。 |
 
 报告分别为 `.build/popup-latency.json`、`.build/windows-popup-lifecycle.json`、
 `.build/macos-popup-lifecycle.json`；等待态截图为 `.build/popup-pending.png`，已实际查看。
+原生探针报告为 `.build/popup-native-probe-result.json`。它仅创建两个自有离屏小窗口，
+不读取系统剪贴板或选区，不发送输入，也不创建 WebView；不能把该结果当作真实 WebView2
+构建或完成态抢焦点验收。
 全部内容、网络、剪贴板和窗口边界均为合成数据或替身，不读取真实用户数据。
 这些检查不等于真实 Windows HWND / WebView2 焦点、macOS 权限与系统复制验收；
-Windows 目标 `cargo check --target x86_64-pc-windows-msvc --offline` 已通过；
-最终 EXE/MSI Release 构建成功，名称“笺”和应用标识 `ink.jian.translate` 保持原样，
-EXE 的 FileVersion / ProductVersion 均为 `2.3.0`。交付如下：
+Windows 目标 `cargo check --target x86_64-pc-windows-msvc --offline` 已通过，
+上一候选 EXE/MSI Release 构建成功，名称“笺”和应用标识 `ink.jian.translate` 保持原样，
+EXE 的 FileVersion / ProductVersion 均为 `2.3.0`。候选记录如下，最终重建状态见本页首节：
 
 | 文件 | 字节数 | SHA-256 |
 | --- | ---: | --- |
-| `output/笺-2.3.0.exe` | 9,485,824 | `127e72c260d66553a80309c08f71c018d55128bade4cc775dc4d6e280f7562fd` |
-| `output/笺-2.3.0.msi` | 4,329,472 | `b70c3adbe93f917e5067a16e2acadf3a311f2285afc34dc900bcce33b1436edc` |
+| `output/笺-2.3.0.exe` | 9,489,920 | `61168629e7fcd86796f41a4d9d80ee23e81f950656c0382317f41bb532f314f9` |
+| `output/笺-2.3.0.msi` | 4,333,568 | `3dfe1211377f888c488388787009a07729e537ed04ac7bcb40426e293f39f659` |
 
-构建目录为 `.build/popup-release-stage-20261117/`，来源哈希与资产清单为
-`.build/popup-release-artifacts.json`，既有历史包保留。
+修复关闭与重开问题后的构建目录为 `.build/popup-release-stage-20261117-final/`，
+来源哈希与资产清单为 `.build/popup-release-artifacts.json`；上一版构建仍保留在原隔离目录。
 窗口补丁另以四项定向检查验证：
 主窗口显示与回退聚焦排除预热浮窗、重复应用、CRLF 和变化锚点失败，
 入口为 `python tests/verify-desktop-patch.py DesktopPopupRevealTests`。

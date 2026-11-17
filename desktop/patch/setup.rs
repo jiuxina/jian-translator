@@ -74,6 +74,7 @@ static CLIPBOARD_TRANSACTION: Mutex<()> = Mutex::new(());
 static POPUP_SEQ: AtomicU64 = AtomicU64::new(0);
 // watchdog 代次：新翻译顶掉旧 watchdog，避免多个线程同时盯一个窗口
 static POPUP_GENERATION: AtomicU64 = AtomicU64::new(0);
+static POPUP_CREATION: Mutex<()> = Mutex::new(());
 
 fn settings_file(app: &AppHandle) -> Option<PathBuf> {
     app.path()
@@ -802,94 +803,20 @@ fn popup_payload(id: u64, phase: &str, text: &str, notice: &str, target: &str) -
     .to_string()
 }
 
-#[cfg(target_os = "windows")]
 fn set_popup_capture_mode(window: &WebviewWindow, capturing: bool) -> Result<(), String> {
-    use windows_sys::Win32::Foundation::{GetLastError, SetLastError};
-    use windows_sys::Win32::UI::WindowsAndMessaging::{
-        GetWindowLongPtrW, SetWindowLongPtrW, SetWindowPos, GWL_EXSTYLE, SWP_FRAMECHANGED,
-        SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOOWNERZORDER, SWP_NOSIZE, SWP_NOZORDER, WS_EX_NOACTIVATE,
-    };
-    let hwnd = window
-        .hwnd()
-        .map_err(|error| format!("无法获取划词悬浮窗句柄：{error}"))?;
-    // SAFETY: the HWND belongs to this live popup and is only used synchronously.
-    let current = unsafe {
-        SetLastError(0);
-        let style = GetWindowLongPtrW(hwnd.0, GWL_EXSTYLE);
-        let error = GetLastError();
-        if style == 0 && error != 0 {
-            return Err(format!("无法读取划词悬浮窗激活样式：Windows 错误 {error}"));
-        }
-        style
-    };
-    let next = popup_extended_style(current, WS_EX_NOACTIVATE as isize, capturing);
-
-    // SAFETY: the HWND is live. A cleared last-error distinguishes a valid zero
-    // previous style from a failed SetWindowLongPtrW call.
-    if next != current {
-        unsafe {
-            SetLastError(0);
-            let previous = SetWindowLongPtrW(hwnd.0, GWL_EXSTYLE, next);
-            let error = GetLastError();
-            if previous == 0 && error != 0 {
-                return Err(format!("无法设置划词悬浮窗激活样式：Windows 错误 {error}"));
-            }
-        }
-    }
-
-    // SetWindowLongPtrW updates the style value, but Windows can cache the
-    // non-client style until SetWindowPos receives SWP_FRAMECHANGED. Keep the
-    // popup's geometry and Z order and never activate it during this refresh.
-    // SAFETY: null insert-after is ignored with SWP_NOZORDER; all geometry is preserved.
-    let refreshed = unsafe {
-        SetWindowPos(
-            hwnd.0,
-            std::ptr::null_mut(),
-            0,
-            0,
-            0,
-            0,
-            SWP_FRAMECHANGED
-                | SWP_NOMOVE
-                | SWP_NOSIZE
-                | SWP_NOZORDER
-                | SWP_NOOWNERZORDER
-                | SWP_NOACTIVATE,
-        )
-    };
-    if refreshed == 0 {
-        let error = unsafe { GetLastError() };
-        return Err(format!("无法刷新划词悬浮窗激活样式：Windows 错误 {error}"));
-    }
-    Ok(())
+    // Keep Tao's focusability cache and native extended styles in agreement.
+    // Changing only WS_EX_NOACTIVATE bypasses the framework's window state.
+    window
+        .set_focusable(!capturing)
+        .map_err(|error| format!("无法更新划词悬浮窗聚焦状态：{error}"))
 }
 
-#[cfg(not(target_os = "windows"))]
-fn set_popup_capture_mode(_window: &WebviewWindow, _capturing: bool) -> Result<(), String> {
-    Ok(())
-}
-
-#[cfg(any(test, target_os = "windows"))]
-fn popup_extended_style(current: isize, no_activate: isize, capturing: bool) -> isize {
-    if capturing {
-        current | no_activate
-    } else {
-        current & !no_activate
-    }
-}
-
-#[cfg(target_os = "windows")]
-fn show_popup_without_focus(window: &WebviewWindow) {
-    use windows_sys::Win32::UI::WindowsAndMessaging::{ShowWindow, SW_SHOWNOACTIVATE};
-    if let Ok(hwnd) = window.hwnd() {
-        // SAFETY: the HWND belongs to this live popup. This never activates it.
-        unsafe { ShowWindow(hwnd.0, SW_SHOWNOACTIVATE) };
-    }
-}
-
-#[cfg(not(target_os = "windows"))]
-fn show_popup_without_focus(window: &WebviewWindow) {
-    let _ = window.show();
+fn show_popup_without_focus(window: &WebviewWindow) -> Result<(), String> {
+    // Capture mode is set before show. Using the framework API is essential:
+    // raw ShowWindow leaves Tao's VISIBLE flag false, so later set_focus is a no-op.
+    window
+        .show()
+        .map_err(|error| format!("无法显示划词悬浮窗：{error}"))
 }
 
 fn retry_popup_delivery(window: &WebviewWindow, payload: &str, generation: u64) {
@@ -963,33 +890,57 @@ fn present_popup(
 ) {
     let payload = popup_payload(id, "pending", "", "", target);
     let handle = app.clone();
-    let main_thread_app = handle.clone();
-    let _ = handle.run_on_main_thread(move || {
+    std::thread::spawn(move || {
         if !popup_request_is_current(generation) {
             return;
         }
-        let Some(window) = ensure_popup(&main_thread_app) else {
+        // WebView construction must stay off the Windows UI event handler.
+        // The normal path reuses the hidden window, including after Escape.
+        let Some(window) = ensure_popup(&handle) else {
             return;
         };
-        if let Err(error) = set_popup_capture_mode(&window, true) {
-            // SW_SHOWNOACTIVATE still protects the source application on first
-            // show; report that pointer activation may be less restricted.
-            eprintln!("[IT] {error}");
+        let main_thread_app = handle.clone();
+        if let Err(error) = handle.run_on_main_thread(move || {
+            if !popup_request_is_current(generation) {
+                return;
+            }
+            // A rapid shortcut can arrive before the old watchdog hides a popup
+            // that just lost focus. Tao's style transition on a visible window
+            // may use SW_SHOW, so hide through Tao before entering no-focus mode.
+            if window.is_visible().unwrap_or(false) {
+                if let Err(error) = window.hide() {
+                    eprintln!("[IT] 隐藏旧划词悬浮窗失败：{error}");
+                    cancel_popup_request(generation);
+                    return;
+                }
+            }
+            if let Err(error) = set_popup_capture_mode(&window, true) {
+                eprintln!("[IT] {error}");
+                cancel_popup_request(generation);
+                return;
+            }
+            let appearance = popup_appearance(&current_settings());
+            deliver_popup(&window, &payload, &appearance);
+            position_popup(&main_thread_app, &window);
+            if let Err(error) = show_popup_without_focus(&window) {
+                eprintln!("[IT] {error}");
+                cancel_popup_request(generation);
+                return;
+            }
+            let _ = window.eval(
+                "window.__itPopupPresentRequested=true;window.__popupPresent&&window.__popupPresent()",
+            );
+            retry_popup_delivery(&window, &payload, generation);
+            watch_popup(main_thread_app.clone(), window, generation);
+            after_present();
+        }) {
+            eprintln!("[IT] 调度划词悬浮窗显示失败：{error}");
         }
-        let appearance = popup_appearance(&current_settings());
-        deliver_popup(&window, &payload, &appearance);
-        position_popup(&main_thread_app, &window);
-        show_popup_without_focus(&window);
-        let _ = window.eval(
-            "window.__itPopupPresentRequested=true;window.__popupPresent&&window.__popupPresent()",
-        );
-        retry_popup_delivery(&window, &payload, generation);
-        watch_popup(main_thread_app.clone(), window, generation);
-        after_present();
     });
 }
 
 fn ensure_popup(app: &AppHandle) -> Option<WebviewWindow> {
+    let _creation = POPUP_CREATION.lock().ok()?;
     if let Some(window) = app.get_webview_window(POPUP_LABEL) {
         return Some(window);
     }
@@ -1020,11 +971,11 @@ fn ensure_popup(app: &AppHandle) -> Option<WebviewWindow> {
         let _ = window.eval(POPUP_BOOTSTRAP);
         let popup_handle = app.clone();
         window.on_window_event(move |event| {
-            if matches!(event, tauri::WindowEvent::CloseRequested { .. }) {
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                api.prevent_close();
                 let generation = POPUP_GENERATION.load(Ordering::Acquire);
-                cancel_popup_request(generation);
                 if let Some(popup) = popup_handle.get_webview_window(POPUP_LABEL) {
-                    let _ = popup.eval("window.__popupDismiss&&window.__popupDismiss()");
+                    dismiss_popup_if_current(&popup_handle, &popup, generation);
                 }
             }
         });
@@ -1072,7 +1023,7 @@ fn dismiss_popup_if_current(app: &AppHandle, window: &WebviewWindow, generation:
     let window = window.clone();
     if let Err(error) = app.run_on_main_thread(move || {
         // Showing and closing are serialized on the UI thread. Claim only this
-        // request immediately before destructive work; a queued old watchdog
+        // request immediately before hiding; a queued old watchdog
         // must not close a window already reused by a newer shortcut.
         if POPUP_GENERATION
             .compare_exchange(
@@ -1086,15 +1037,63 @@ fn dismiss_popup_if_current(app: &AppHandle, window: &WebviewWindow, generation:
             return;
         }
         let _ = window.eval("window.__popupDismiss&&window.__popupDismiss()");
-        if let Err(error) = window.destroy() {
-            eprintln!("[IT] 关闭划词悬浮窗失败：{error}");
+        if let Err(error) = window.hide() {
+            eprintln!("[IT] 隐藏划词悬浮窗失败：{error}");
         }
     }) {
         eprintln!("[IT] 调度划词悬浮窗关闭失败：{error}");
     }
 }
 
+#[cfg(target_os = "windows")]
+fn popup_pointer_buttons() -> (u8, u8) {
+    use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
+        GetAsyncKeyState, VK_LBUTTON, VK_MBUTTON, VK_RBUTTON,
+    };
+    let mut down = 0u8;
+    let mut pressed = 0u8;
+    for (index, button) in [VK_LBUTTON, VK_RBUTTON, VK_MBUTTON].into_iter().enumerate() {
+        // Read only button state while this popup is active; no input is logged.
+        let state = unsafe { GetAsyncKeyState(button as i32) } as u16;
+        if state & 0x8000 != 0 {
+            down |= 1 << index;
+        }
+        if state & 1 != 0 {
+            pressed |= 1 << index;
+        }
+    }
+    (down, pressed)
+}
+
+#[cfg(target_os = "windows")]
+fn popup_pointer_pressed_outside(window: &WebviewWindow, previous_buttons: &mut u8) -> bool {
+    use windows_sys::Win32::Foundation::{POINT, RECT};
+    use windows_sys::Win32::UI::WindowsAndMessaging::{GetCursorPos, GetWindowRect};
+
+    let (down, pressed) = popup_pointer_buttons();
+    let clicked = (down | pressed) & !*previous_buttons != 0;
+    *previous_buttons = down;
+    if !clicked {
+        return false;
+    }
+    let Ok(hwnd) = window.hwnd() else {
+        return false;
+    };
+    let mut pointer = POINT::default();
+    let mut rect = RECT::default();
+    // SAFETY: both outputs are initialized stack values and the HWND is live.
+    if unsafe { GetCursorPos(&mut pointer) == 0 || GetWindowRect(hwnd.0, &mut rect) == 0 } {
+        return false;
+    }
+    pointer.x < rect.left
+        || pointer.x >= rect.right
+        || pointer.y < rect.top
+        || pointer.y >= rect.bottom
+}
+
 fn watch_popup(app: AppHandle, window: WebviewWindow, generation: u64) {
+    #[cfg(target_os = "windows")]
+    let mut previous_buttons = popup_pointer_buttons().0;
     std::thread::spawn(move || {
         let mut seen_foreground = false;
         let mut ticks = 0u32;
@@ -1121,6 +1120,12 @@ fn watch_popup(app: AppHandle, window: WebviewWindow, generation: u64) {
                 use windows_sys::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState;
                 use windows_sys::Win32::UI::WindowsAndMessaging::GetForegroundWindow;
 
+                // The source keeps focus during capture, and Windows may reject
+                // later activation. Outside pointer dismissal must work in both cases.
+                if popup_pointer_pressed_outside(&window, &mut previous_buttons) {
+                    dismiss_popup_if_current(&app, &window, generation);
+                    break;
+                }
                 let foreground = unsafe { GetForegroundWindow() };
                 let mine = window.hwnd().map(|h| h.0 as isize).unwrap_or(0);
                 let is_me = foreground as isize == mine;
@@ -2363,7 +2368,7 @@ pub fn set_global_shortcut(
         // Prepare the hidden document early; arrival animation starts only on
         // __popupPresent, so warming does not consume its visible fade.
         let warm_app = app.clone();
-        let _ = app.run_on_main_thread(move || {
+        std::thread::spawn(move || {
             if let Some(popup) = ensure_popup(&warm_app) {
                 let _ = popup.eval(&popup_appearance_script(&popup_appearance(
                     &current_settings(),
