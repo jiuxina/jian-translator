@@ -2,9 +2,44 @@
 
 ## 当前版本：v2.3.0
 
+### 当前阶段：界面连贯优化的本地 Release 测试包（2026-11-17）
+
+本轮包含设置打开和分类切换期间的真实玻璃合成修复、紧凑图片附件、Android 键盘覆盖，
+以及设置即时应用和自动持久化。玻璃折射、高光、透明度和已有动效保留；
+设置关闭不回滚，持续输入合并保存，失败可重试。
+
+已构建产物为 `output/笺-2.3.0-界面连贯优化-release.apk`，Android versionName `2.3.0` /
+versionCode `6`。该包使用 **Release** 构建，独立应用标识 `ink.jian.translate.perftest`，
+显示名称“笺·测试”，可与既有 `ink.jian.translate` 安装共存。隔离工程只使用公开源码和
+构建依赖声明，并使用本轮新生成的测试签名证书；不读取或使用正式签名凭据。
+正式应用的配置与数据不会迁入该测试应用。后续用于用户测试的交付同样采用 Release，
+本页保留的 Debug APK 名称仅是早期阶段记录。
+
+本轮最终全量在源码、共用资源、文档和构建完成后只执行一次，
+完整日志为 `.build/ui-polish-final-verification.log`，逐项退出状态清单为
+`.build/ui-polish-final-results.json`。新增回归入口：
+
+- `tests/verify-settings-compositor.mjs`：在真实动画中对比位移滤镜像素，检查最后一帧没有突然补出折射。
+- `tests/verify-attachment-layout.mjs`：不同手机尺寸、横纵图片、文字空间、选择与移除/替换动画。
+- `tests/verify-android-ime.mjs`：生产安全区处理、键盘高度变化、旧系统、旋转与刘海的稳定视口。
+- `tests/verify-settings-preview.mjs` 及更新后的交互场景：即时保存、异步队列、失败重试、过期回调和保存期间重开。
+
+隔离工程的 `assembleRelease --offline --no-daemon` 成功，APK 为 3,616,371 字节，
+SHA-256 为 `3c2a414887870cc398f4b64519e5817c7c237fa38b3fac6279a2ce76f4ef3969`。
+已核验 APK 的版本、独立应用标识、名称和非 debuggable 标志；v2 / v3 签名验证通过，
+包内六项前端资源与 `web/` 逐字节一致。校验文件为同目录的
+`笺-2.3.0-界面连贯优化-release.sha256`，资产清单为 `.build/ui-release-artifact.json`。
+最终测试统计以本轮结果清单为准，不沿用历史或定向结果；该测试包未公开发布。
+本轮完整回归 **15/16 组通过**，综合交互组 **134/136**；
+其两处测试状态依赖修正后，仅运行受影响的两个完整设置场景，**53/53 通过**。
+结果单独保存在 `.build/ui-polish-settings-targeted.json`，不覆盖完整日志或重跑全量。
+Android 实机输入法与系统 WebView、Windows WebView2 和 macOS 原生渲染仍需相应设备确认。
+
+### 历史：v2.3.0 版本升级与发布通道准备（2026-11-16）
+
 2026-11-16，应用、关于页、更新检查、Windows 构建参数与 macOS 清单统一为 `2.3.0`；
 Android 使用 versionName `2.3.0` / versionCode `6`，共用网页资源同步到 assets。
-发布说明见 [v2.3.0](releases/v2.3.0.md)。此次更新未生成本地安装包。
+发布说明见 [v2.3.0](releases/v2.3.0.md)。该版本升级阶段未生成本地安装包。
 
 完成版本提交后，将该提交合并并推送到 `main`，再创建指向同一提交的 `v2.3.0` 标签。
 也可以在 GitHub 新建 Release 时创建该标签，Target 选择包含版本提交的 `main`。
@@ -16,7 +51,7 @@ macOS universal DMG/ZIP 和 Android APK，再上传五项附件与 `SHA256SUMS.t
 应用内更新检查可直接接收该版本。
 发布准备脚本不会为 2.3.0 继承旧 2.2.0 的验收证据，最终构建结果以本次 Actions 为准。
 版本一致性检查覆盖前端、Android 镜像与 versionCode、桌面构建参数和 macOS 锁文件。
-本轮唯一一次完整离线回归的日志与退出状态清单保存为
+该版本升级阶段完整离线回归的日志与退出状态清单保存为
 `.build/version-2.3.0-final-verification.log` 和 `.build/version-2.3.0-final-results.json`。
 
 ## 历史记录：首个 v2.2.0 Release 准备
@@ -24,7 +59,8 @@ macOS universal DMG/ZIP 和 Android APK，再上传五项附件与 `SHA256SUMS.t
 当时候选仓库为 `jiuxina/jian-translator`，候选版本为 `v2.2.0`。
 2026-11-16 通过公开 GitHub REST API 只读核实：仓库可公开访问，
 Release 和标签均为空，默认分支为 `main`，Git 仓库尚为空。
-本地当前没有 Git remote，也没有本地标签。
+当时本地没有 Git remote，也没有本地标签。以下 v2.2.0 内容保留当时的准备状态和验收统计，
+不代表上方本轮测试包的版本、签名或完成状态。
 
 本次只进行发布准备，不创建远程 Release、不上传附件、不推送分支或标签。
 建议先使用 `draft: true / prerelease: true / makeLatest: false`。

@@ -111,6 +111,17 @@
   var closeAboutLayer = null;
   var closeInstructLayer = null;
   var settleSettingsSection = null;
+  var settingsRevealProperty = false;
+  if (typeof CSS !== 'undefined' && typeof CSS.registerProperty === 'function') {
+    try {
+      CSS.registerProperty({ name: '--it-settings-reveal', syntax: '<number>', inherits: true, initialValue: '1' });
+      CSS.registerProperty({ name: '--it-settings-page-reveal', syntax: '<number>', inherits: true, initialValue: '1' });
+      settingsRevealProperty = true;
+    } catch (error) {
+      // A reinjected page may already own the same registered property.
+      settingsRevealProperty = error.name === 'InvalidModificationError';
+    }
+  }
 
   /* 动画只作用于真实控件。重定向前先读取屏幕上的状态，再取消上一段，
      不克隆输入区，也不把正在翻译的内容换成截图。 */
@@ -123,17 +134,18 @@
     var track = motions.get(el);
     if (!track) return;
     motions.delete(el);
+    if (track.revealFrame) cancelAnimationFrame(track.revealFrame);
     track.animation.onfinish = null;
     track.animation.cancel();
   }
 
-  function playMotion(el, frames, duration, done, group, hold) {
+  function playMotion(el, frames, duration, done, group, hold, easing) {
     stopMotion(el);
     if (motionReduced() || !el.animate) {
       if (done) done();
       return;
     }
-    var animation = el.animate(frames, { duration: duration, easing: SCENE_EASE, fill: 'both' });
+    var animation = el.animate(frames, { duration: duration, easing: easing || SCENE_EASE, fill: 'both' });
     var track = {
       animation: animation,
       group: group,
@@ -179,6 +191,10 @@
   /* 弹层从实际入口所在的位置展开，关闭时沿同一路径回收。
      leave 类只保持绘制；交互与辅助技术状态在操作当帧更新。 */
   function moveSurface(surface, origin, opening, done) {
+    if (surface.classList.contains('it-set')) {
+      moveSettingsSurface(surface, origin, opening, done);
+      return;
+    }
     var continuing = motions.has(surface);
     var current = continuing ? visualStyle(surface) : null;
     stopMotion(surface);
@@ -196,6 +212,70 @@
       surface.classList.remove('it-surface-leave');
       if (done) done();
     }, 'surface');
+  }
+
+  function moveSettingsSurface(surface, origin, opening, done) {
+    var continuing = motions.has(surface);
+    var current = getComputedStyle(surface);
+    var reveal = continuing ? parseFloat(current.getPropertyValue('--it-settings-reveal')) : (opening ? 0 : 1);
+    if (!Number.isFinite(reveal)) reveal = opening ? 0 : 1;
+    var transform = continuing ? current.transform : null;
+    stopMotion(surface);
+    surface.classList.toggle('on', opening);
+    surface.classList.toggle('it-surface-leave', !opening);
+    // Opacity on a glass ancestor creates a backdrop root: its descendants
+    // cannot refract the scene behind the dialog until that opacity reaches 1.
+    // Fade only paint leaves and the glass layer itself; the scene stays opaque.
+    var opticalNodes = '[data-it-liquid-preset], [data-it-liquid-background], [data-it-liquid-progressive]';
+    function markLeaves(parent) {
+      Array.prototype.forEach.call(parent.children, function (child) {
+        if (child.matches('[data-it-liquid-background], [data-it-liquid-progressive]') ||
+            (!child.matches(opticalNodes) && !child.querySelector(opticalNodes))) {
+          child.setAttribute('data-it-settings-fade', '');
+        } else {
+          child.removeAttribute('data-it-settings-fade');
+          markLeaves(child);
+        }
+      });
+      if (parent.matches('[data-it-liquid-preset]')) {
+        Array.prototype.slice.call(parent.childNodes).forEach(function (node) {
+          if (node.nodeType !== 3 || !node.textContent.trim()) return;
+          var label = document.createElement('span');
+          label.setAttribute('data-it-settings-fade', '');
+          label.textContent = node.textContent;
+          parent.replaceChild(label, node);
+        });
+      }
+    }
+    markLeaves(surface);
+    var collapsed = surfaceTransform(surface, origin);
+    var from = { transform: transform || (opening ? collapsed : 'none') };
+    var to = { transform: opening ? 'none' : collapsed };
+    if (settingsRevealProperty) {
+      from['--it-settings-reveal'] = String(reveal);
+      to['--it-settings-reveal'] = opening ? '1' : '0';
+    }
+    surface.style.setProperty('--it-settings-reveal', String(reveal));
+    playMotion(surface, [from, to], DIALOG_DURATION, function () {
+      surface.style.removeProperty('--it-settings-reveal');
+      surface.classList.remove('it-surface-leave');
+      if (done) done();
+    }, 'surface');
+    // Older WebViews can animate the same paint variable using the existing
+    // animation's eased progress instead of dropping the fade.
+    if (!settingsRevealProperty) followSettingsReveal(surface, '--it-settings-reveal', reveal, opening ? 1 : 0);
+  }
+
+  function followSettingsReveal(surface, property, from, to) {
+    var track = motions.get(surface);
+    if (!track) return;
+    function updateReveal() {
+      if (motions.get(surface) !== track) return;
+      var progress = track.animation.effect.getComputedTiming().progress;
+      if (progress != null) surface.style.setProperty(property, String(from + (to - from) * progress));
+      track.revealFrame = requestAnimationFrame(updateReveal);
+    }
+    updateReveal();
   }
 
   /* 浏览器 Escape 与 Android 返回键共用；每次只回收最上面一层。 */
@@ -1866,7 +1946,10 @@
       function reveal() {
         if (seq !== imageSeq || revealed) return;
         revealed = true;
-        resize(Math.min(180, box.clientWidth * img.naturalHeight / Math.max(1, img.naturalWidth)), true);
+        // An image is a compact attachment, not another full-height card.
+        // Its layout stays stable for portrait, landscape and replacement images.
+        var attachmentHeight = parseFloat(getComputedStyle(box).getPropertyValue('--it-attachment-height')) || 88;
+        resize(attachmentHeight, true);
       }
       img.onload = reveal;
       img.onerror = function () {
@@ -3054,8 +3137,8 @@
           </div>
         </div>
         <div class="it-set-foot"><button type="button" class="ghost" data-reset-section>恢复本组默认</button>
-          <span class="sp"></span><button type="button" class="ghost" data-close="1">取消</button>
-          <button type="button" class="primary" id="it-set-save">保存</button></div>
+          <span class="sp"></span><span class="it-set-note">修改即时生效</span>
+          <button type="button" class="ghost" id="it-set-retry" hidden>重试保存</button></div>
       </div>`;
     document.body.appendChild(modal);
     setupLiquidGlassSurfaces(modal);
@@ -3078,6 +3161,11 @@
     var settingsLoaded = false;
     var popupPreviewData = null;
     var settingsSaving = false;
+    var settingsDirty = false;
+    var persistenceTimer = 0;
+    var persistenceRevision = 0;
+    var persistenceFailure = '';
+    var persistedSettingsJson = '';
     var settingsOpening = null;
     var glassTarget = 'card';
     var activeSection = 'appearance';
@@ -3101,7 +3189,7 @@
 
     function renderUpdateStatus() {
       var button = $('it-update-check');
-      button.disabled = updateChecking || settingsSaving || (Bridge.isDesktop && !settingsLoaded);
+      button.disabled = updateChecking || (Bridge.isDesktop && !settingsLoaded);
       button.textContent = updateChecking ? '检查中…' : '立即检查';
       var status = $('it-update-status');
       status.textContent = updateMessage;
@@ -3251,6 +3339,8 @@
 
     function setSettingsSection(section) {
       modal.querySelectorAll('[data-pref-section]').forEach(function (page) {
+        stopMotion(page);
+        page.style.removeProperty('--it-settings-page-reveal');
         var selected = page.getAttribute('data-pref-section') === section;
         page.hidden = !selected;
         page.inert = !selected;
@@ -3335,6 +3425,20 @@
       updateSettingsNavigation(false);
     };
 
+    function fadeSettingsSection(page, from, to, transform, duration) {
+      if (settingsRevealProperty) return;
+      var property = '--it-settings-page-reveal';
+      if (!Number.isFinite(from)) from = 1 - to;
+      page.style.setProperty(property, String(from));
+      playMotion(page, [{ transform: transform }, {
+        transform: to ? 'translateY(0)' : 'translateY(-4px)'
+      }], duration, function () {
+        page.style.removeProperty(property);
+      }, 'settings-page', false,
+      getComputedStyle(document.documentElement).getPropertyValue('--lg-ease-enter').trim() || SCENE_EASE);
+      followSettingsReveal(page, property, from, to);
+    }
+
     function switchSettingsSection(section) {
       var target = modal.querySelector('[data-pref-section="' + section + '"]');
       if (!target || section === activeSection) return;
@@ -3367,10 +3471,14 @@
       var sequence = ++sectionTransitionSeq;
       sectionTransitionPhase = 'leave';
       if (body) body.setAttribute('aria-busy', 'true');
+      var leavingStyle = getComputedStyle(leaving);
+      var leavingReveal = parseFloat(leavingStyle.getPropertyValue('--it-settings-page-reveal'));
+      var leavingTransform = leavingStyle.transform;
       leaving.inert = true;
       leaving.setAttribute('aria-hidden', 'true');
       leaving.classList.remove('is-entering', 'is-entered');
       leaving.classList.add('is-leaving');
+      fadeSettingsSection(leaving, leavingReveal, 0, leavingTransform, duration);
 
       sectionTransitionTimer = setTimeout(function () {
         if (sequence !== sectionTransitionSeq || !modal.classList.contains('on')) return;
@@ -3394,7 +3502,9 @@
             if (sequence !== sectionTransitionSeq || !modal.classList.contains('on') ||
                 controller.signal.aborted) return;
             sectionPreparation = null;
+            var enteringTransform = getComputedStyle(target).transform;
             target.classList.add('is-entered');
+            fadeSettingsSection(target, 0, 1, enteringTransform, duration);
             sectionTransitionTimer = setTimeout(function () {
               if (sequence !== sectionTransitionSeq || !modal.classList.contains('on')) return;
               target.inert = false;
@@ -3480,6 +3590,81 @@
       });
     }
 
+    function renderPersistenceStatus() {
+      $('it-set-retry').hidden = !persistenceFailure;
+      if (persistenceFailure) {
+        $('it-set-status').textContent = '更改已应用，尚未保存';
+      } else if (settingsLoaded) {
+        $('it-set-status').textContent = '';
+      }
+    }
+
+    function queueSettingsPersistence(immediate) {
+      if (!settingsState) return;
+      settingsDirty = true;
+      persistenceRevision++;
+      clearTimeout(persistenceTimer);
+      persistenceTimer = 0;
+      if (immediate) persistSettings();
+      else persistenceTimer = setTimeout(function () {
+        persistenceTimer = 0;
+        persistSettings();
+      }, 200);
+    }
+
+    function persistSettings() {
+      if (settingsSaving || !settingsDirty || !settingsState) return;
+      flushPreferencePreview();
+      var submission = copyObject(settingsState);
+      var revision = persistenceRevision;
+      var serialized = JSON.stringify(submission);
+      if (serialized === persistedSettingsJson && !persistenceFailure) {
+        settingsDirty = false;
+        return;
+      }
+      settingsDirty = false;
+      settingsSaving = true;
+      function finish(error) {
+        settingsSaving = false;
+        if (error) {
+          settingsDirty = true;
+          persistenceFailure = error.message || String(error);
+          toast('设置已应用，保存失败：' + persistenceFailure, true);
+        } else {
+          persistedSettingsJson = serialized;
+          committedSettings = copyObject(submission);
+          persistenceFailure = '';
+          if (scheduleAppUpdateCheck) scheduleAppUpdateCheck();
+        }
+        renderPersistenceStatus();
+        // Only the latest queued snapshot can follow this write. A failed
+        // snapshot is retried by the user or a later edit, never in a loop.
+        if (settingsDirty && !persistenceTimer &&
+            (!error || revision !== persistenceRevision)) persistSettings();
+      }
+      function cacheSubmission() {
+        try {
+          // A newer edit remains the live source of truth while an older
+          // desktop write completes. Never copy old values back into the UI.
+          if (revision === persistenceRevision || serialized === JSON.stringify(settingsState)) {
+            localStorage.setItem(PREFERENCES_KEY, JSON.stringify(submission.preferences));
+          }
+          if (Bridge.isAndroid && window.NativeBridge &&
+              typeof window.NativeBridge.commitAppearance === 'function' &&
+              !window.NativeBridge.commitAppearance(nativeAppearanceSnapshot(submission.preferences))) {
+            throw new Error('原生外观缓存未能更新');
+          }
+          finish();
+        } catch (error) { finish(error); }
+      }
+      if (!Bridge.isDesktop) { cacheSubmission(); return; }
+      Bridge.invoke('it_save_settings', { settings: submission }).then(function (errors) {
+        if (errors && errors.length) { finish(new Error(errors.join('；'))); return; }
+        cacheSubmission();
+      }).catch(finish);
+    }
+    on($('it-set-retry'), 'click', function () { queueSettingsPersistence(true); });
+
     function fill() {
       if (!settingsState) return;
       updateGlassControls();
@@ -3492,7 +3677,7 @@
       $('it-set-autostart').checked = !!settingsState.auto_start;
       $('it-set-starttotray').checked = settingsState.start_to_tray !== false;
       $('it-pref-background-status').textContent = settingsState.preferences.background.data ?
-        '已选择背景图片，保存设置后保留。' : '未选择背景图片。';
+        '已选择背景图片。' : '未选择背景图片。';
       if (fontFamilySelect) {
         var selectedFamily = settingsState.preferences.appearance.systemFontFamily;
         var hasSelectedFamily = Array.prototype.some.call(fontFamilySelect.options, function (option) {
@@ -3515,36 +3700,32 @@
       var colorMode = settingsState.preferences.appearance.fontColorMode;
       var controlsReady = !Bridge.isDesktop || settingsLoaded;
       var colorControl = modal.querySelector('[data-pref="appearance.fontColor"]');
-      if (colorControl) colorControl.disabled = settingsSaving || !controlsReady || colorMode !== 'custom';
-      if (fontFamilySelect) fontFamilySelect.disabled = settingsSaving || !controlsReady || !systemFontsReady;
+      if (colorControl) colorControl.disabled = !controlsReady || colorMode !== 'custom';
+      if (fontFamilySelect) fontFamilySelect.disabled = !controlsReady || !systemFontsReady;
       var popupStatus = $('it-popup-background-status');
       if (popupStatus) popupStatus.textContent = settingsState.preferences.popup.backgroundData ?
-        '已选择独立图片，保存后悬浮窗将使用该图片。' : '悬浮窗跟随主窗口背景。';
+        '已选择独立图片。' : '悬浮窗跟随主窗口背景。';
       updatePopupPreview();
       if (!sectionTransitionTarget) updateSettingsNavigation(false);
       refreshSelectButtons(false);
       renderUpdateStatus();
+      renderPersistenceStatus();
     }
 
     function loadSystemFonts(session) {
-      if (!Bridge.isDesktop || !fontFamilySelect) return;
+      if (!Bridge.isDesktop || !fontFamilySelect || systemFontsReady) return Promise.resolve();
       systemFontsReady = false;
       populateSystemFonts([]);
-      fill();
-      Bridge.invoke('it_list_system_fonts').then(function (fonts) {
-        if (session !== settingsSeq || !modal.classList.contains('on')) return;
+      return Bridge.invoke('it_list_system_fonts').then(function (fonts) {
+        if (session !== settingsSeq) return;
         populateSystemFonts(fonts);
         systemFontsReady = true;
-        fill();
-        enableControls(true);
       }).catch(function (error) {
-        if (session !== settingsSeq || !modal.classList.contains('on')) return;
+        if (session !== settingsSeq) return;
         populateSystemFonts([]);
         systemFontsReady = true;
-        fill();
         fontStatus.textContent = '无法读取系统字体列表：' + error;
         fontStatus.hidden = false;
-        enableControls(true);
       });
     }
 
@@ -3575,6 +3756,7 @@
       settingsState[recording.key] = mods.join('+') + '+' + key;
       stopRecord();
       fill();
+      queueSettingsPersistence(true);
     }
 
     function startRecord(input, key) {
@@ -3587,7 +3769,7 @@
 
     function enableControls(enabled) {
       var controlsEnabled = enabled && (!Bridge.isDesktop || settingsLoaded);
-      modal.querySelectorAll('.it-set-body input, .it-set-body select, .it-set-body button, #it-set-save, [data-reset-section]')
+      modal.querySelectorAll('.it-set-body input, .it-set-body select, .it-set-body button, [data-reset-section]')
         .forEach(function (control) { control.disabled = !controlsEnabled; });
       var colorControl = modal.querySelector('[data-pref="appearance.fontColor"]');
       if (colorControl) colorControl.disabled = !controlsEnabled ||
@@ -3606,17 +3788,16 @@
         cancelPreferencePreview();
         return true;
       }
-      if (settingsSaving) return true;
-      cancelPreferencePreview();
+      flushPreferencePreview();
+      clearTimeout(persistenceTimer);
+      persistenceTimer = 0;
+      persistSettings();
       stopRecord();
       closeSelect();
       cancelSettingsSectionTransition(activeSection);
       settingsSeq++;
       backgroundPickSeq++;
       popupBackgroundPickSeq++;
-      settingsState = committedSettings ? copyObject(committedSettings) : copyObject(DEFAULT_SETTINGS);
-      applyPreferences(settingsState.preferences);
-      fill();
       backgroundState.forEach(function (entry) { entry.el.inert = entry.inert; });
       backgroundState = [];
       if (returnFocus && returnFocus.isConnected) returnFocus.focus({ preventScroll: true });
@@ -3642,13 +3823,28 @@
       cancelSettingsSectionTransition(activeSection);
       returnFocus = (source && source.trigger) || document.activeElement;
       settingsOrigin = (source && source.origin) || rectOf(returnFocus);
-      settingsState = settingsFromSaved(null, activePreferences);
+      var keepLiveSettings = settingsSaving || settingsDirty || !!persistenceFailure;
+      if (!keepLiveSettings) settingsState = settingsFromSaved(null, activePreferences);
       var resetBackgroundOnOpen = !!(source && source.resetBackground);
-      committedSettings = copyObject(settingsState);
+      if (!keepLiveSettings) committedSettings = copyObject(settingsState);
       if (resetBackgroundOnOpen) settingsState.preferences.background.data = '';
-      fill();
       var controller = new AbortController();
-      var preparation = preparePageGlass(modal, controller.signal);
+      function prepareAndReveal() {
+        if (seq !== settingsSeq || controller.signal.aborted) return;
+        settingsLoaded = true;
+        applyPreferences(settingsState.preferences);
+        enableControls(true);
+        fill();
+        var preparation = preparePageGlass(modal, controller.signal);
+        if (preparation) {
+          settingsOpening = controller;
+          preparation.then(reveal).catch(function (error) {
+            if (settingsOpening !== controller || error.name === 'AbortError') return;
+            settingsOpening = null;
+            toast('玻璃效果准备失败，请重试', true);
+          });
+        } else reveal();
+      }
       function reveal() {
         if (seq !== settingsSeq || controller.signal.aborted) return;
         settingsOpening = null;
@@ -3665,45 +3861,34 @@
         });
         moveSurface(dialog, settingsOrigin, true);
         dialog.querySelector('[data-close]').focus({ preventScroll: true });
-        if (resetBackgroundOnOpen) applyPreferences(settingsState.preferences);
         if (Bridge.isDesktop) {
-          enableControls(false);
-          $('it-set-status').textContent = '读取中';
           Bridge.invoke('it_set_hotkeys_enabled', { enabled: false }).catch(function () {});
-          loadSystemFonts(seq);
-          Bridge.invoke('it_get_settings').then(function (saved) {
-            if (seq !== settingsSeq || !modal.classList.contains('on')) return;
-            settingsState = settingsFromSaved(saved, readSavedPreferences());
-            committedSettings = copyObject(settingsState);
-            if (resetBackgroundOnOpen) settingsState.preferences.background.data = '';
-            applyPreferences(settingsState.preferences);
-            fill();
-            $('it-set-status').textContent = '';
-            settingsLoaded = true;
-            enableControls(true);
-          }).catch(function (error) {
-            if (seq !== settingsSeq) return;
-            $('it-set-status').textContent = '读取失败，请关闭后重试';
-            toast('设置读取失败：' + error, true);
-          });
-        } else {
-          applyPreferences(settingsState.preferences);
-          $('it-set-status').textContent = '';
-          enableControls(true);
         }
+        if (resetBackgroundOnOpen) queueSettingsPersistence(true);
       }
-      if (preparation) {
+      if (Bridge.isDesktop && !keepLiveSettings) {
         settingsOpening = controller;
-        preparation.then(reveal).catch(function (error) {
-          if (settingsOpening !== controller || error.name === 'AbortError') return;
+        Promise.all([Bridge.invoke('it_get_settings'), loadSystemFonts(seq)]).then(function (results) {
+          if (seq !== settingsSeq || controller.signal.aborted) return;
+          settingsState = settingsFromSaved(results[0], readSavedPreferences());
+          committedSettings = copyObject(settingsState);
+          persistedSettingsJson = JSON.stringify(settingsState);
+          if (resetBackgroundOnOpen) settingsState.preferences.background.data = '';
+          prepareAndReveal();
+        }).catch(function (error) {
+          if (seq !== settingsSeq || controller.signal.aborted) return;
           settingsOpening = null;
-          toast('玻璃效果准备失败，请重试', true);
+          toast('设置读取失败：' + error, true);
         });
-      } else reveal();
+      } else {
+        if (!persistedSettingsJson && !keepLiveSettings) persistedSettingsJson = JSON.stringify(settingsState);
+        prepareAndReveal();
+      }
     };
 
     prewarmSettingsGlass = function () {
-      if (modal.classList.contains('on') || settingsOpening) return;
+      if (modal.classList.contains('on') || settingsOpening || settingsSaving || settingsDirty ||
+          persistenceFailure) return;
       settingsState = settingsFromSaved(null, activePreferences);
       fill();
       var preparation = preparePageGlass(modal);
@@ -3751,6 +3936,7 @@
         }
         applyPreferences(settingsState.preferences);
         fill();
+        queueSettingsPersistence(true);
       }
       if (e.target.closest && e.target.closest('#it-pref-pick-background')) {
         var selection = ++backgroundPickSeq;
@@ -3765,6 +3951,7 @@
             cancelPreferencePreview();
             applyPreferences(settingsState.preferences);
             fill();
+            queueSettingsPersistence(true);
           });
         });
       }
@@ -3774,6 +3961,7 @@
         cancelPreferencePreview();
         applyPreferences(settingsState.preferences);
         fill();
+        queueSettingsPersistence(true);
       }
       if (e.target.closest && e.target.closest('#it-popup-pick-background')) {
         var popupSelection = ++popupBackgroundPickSeq;
@@ -3785,14 +3973,18 @@
             if (!settingsState || popupSession !== settingsSeq ||
                 popupSelection !== popupBackgroundPickSeq || !modal.classList.contains('on')) return;
             settingsState.preferences.popup.backgroundData = compressed;
+            applyPreferences(settingsState.preferences);
             fill();
+            queueSettingsPersistence(true);
           });
         });
       }
       if (e.target.closest && e.target.closest('#it-popup-follow-background')) {
         popupBackgroundPickSeq++;
         settingsState.preferences.popup.backgroundData = '';
+        applyPreferences(settingsState.preferences);
         fill();
+        queueSettingsPersistence(true);
       }
     });
     on(document, 'keydown', function (e) {
@@ -3836,19 +4028,30 @@
     }, { passive: true });
     on($('it-set-selection'), 'click', function () { startRecord(this, 'selection_shortcut'); });
     on($('it-set-activation'), 'click', function () { startRecord(this, 'activation_shortcut'); });
-    on($('it-set-mode'), 'change', function () { settingsState.open_main_window = this.value === 'main'; });
-    on($('it-set-lang'), 'change', function () { settingsState.target_lang = this.value; });
-    on($('it-set-autostart'), 'change', function () { settingsState.auto_start = this.checked; });
-    on($('it-set-starttotray'), 'change', function () { settingsState.start_to_tray = this.checked; });
+    on($('it-set-mode'), 'change', function () {
+      settingsState.open_main_window = this.value === 'main'; queueSettingsPersistence(true);
+    });
+    on($('it-set-lang'), 'change', function () {
+      settingsState.target_lang = this.value; queueSettingsPersistence(true);
+    });
+    on($('it-set-autostart'), 'change', function () {
+      settingsState.auto_start = this.checked; queueSettingsPersistence(true);
+    });
+    on($('it-set-starttotray'), 'change', function () {
+      settingsState.start_to_tray = this.checked; queueSettingsPersistence(true);
+    });
 
     function updatePreference(control, final) {
-      if (settingsSaving || !settingsState || !control.hasAttribute('data-pref')) return;
+      if (!settingsState || !control.hasAttribute('data-pref')) return;
       var path = control.getAttribute('data-pref');
       var value = control.type === 'checkbox' ? control.checked : control.value;
       if (control.getAttribute('data-pref-type') === 'number') value = Number(value);
       var previous = valueAtPath(settingsState.preferences, path);
       if (previous === value) {
-        if (final) flushPreferencePreview();
+        if (final) {
+          flushPreferencePreview();
+          if (settingsDirty) queueSettingsPersistence(true);
+        }
         return;
       }
       assignAtPath(settingsState.preferences, path, value);
@@ -3864,79 +4067,10 @@
         applyPreferences(settingsState.preferences);
         fill();
       }
+      queueSettingsPersistence(final || (control.type !== 'range' && control.type !== 'color'));
     }
     on(modal, 'input', function (e) { updatePreference(e.target, false); });
     on(modal, 'change', function (e) { updatePreference(e.target, true); });
-
-    on($('it-set-save'), 'click', function () {
-      if (settingsSaving) return;
-      flushPreferencePreview();
-      stopRecord();
-      closeSelect();
-      backgroundPickSeq++;
-      popupBackgroundPickSeq++;
-      var submission = copyObject(settingsState);
-      settingsSaving = true;
-      var button = this;
-      delete button.dataset.cacheError;
-      enableControls(false);
-      modal.querySelectorAll('.it-set-nav button, [data-close]').forEach(function (control) {
-        control.disabled = true;
-      });
-      $('it-set-status').textContent = '保存中';
-      function unlock() {
-        settingsSaving = false;
-        enableControls(true);
-        modal.querySelectorAll('.it-set-nav button, [data-close]').forEach(function (control) {
-          control.disabled = false;
-        });
-        $('it-set-status').textContent = '';
-      }
-      var finishSave = function () {
-        try {
-          localStorage.setItem(PREFERENCES_KEY, JSON.stringify(submission.preferences));
-        } catch (error) {
-          if (!Bridge.isDesktop) {
-            unlock();
-            toast('设置保存失败：' + error, true);
-            return;
-          }
-          button.dataset.cacheError = 'true';
-        }
-        if (Bridge.isAndroid && window.NativeBridge &&
-            typeof window.NativeBridge.commitAppearance === 'function') {
-          try {
-            if (!window.NativeBridge.commitAppearance(nativeAppearanceSnapshot(submission.preferences))) {
-              button.dataset.cacheError = 'true';
-            }
-          } catch (error) {
-            button.dataset.cacheError = 'true';
-          }
-        }
-        committedSettings = copyObject(submission);
-        settingsState = copyObject(submission);
-        applyPreferences(committedSettings.preferences);
-        if (scheduleAppUpdateCheck) scheduleAppUpdateCheck();
-        unlock();
-        toast(button.dataset.cacheError === 'true' ?
-          (Bridge.isAndroid ? '设置已保存；原生外观缓存未能更新' : '设置已保存；本机缓存未能更新') :
-          '设置已保存', button.dataset.cacheError === 'true');
-        delete button.dataset.cacheError;
-        close();
-      };
-      if (!Bridge.isDesktop) { finishSave(); return; }
-      Bridge.invoke('it_save_settings', { settings: submission }).then(function (errors) {
-        if (errors && errors.length) {
-          unlock();
-          toast(errors.join('；'), true);
-          return;
-        }
-        finishSave();
-      }).catch(function (error) {
-        unlock();
-        toast('保存失败：' + error, true);
-      });
-    });
 
     if (Bridge.isDesktop) Bridge.invoke('it_set_hotkeys_enabled', { enabled: true }).catch(function () {});
   }

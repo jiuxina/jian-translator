@@ -22,9 +22,9 @@ const normalization = section('  var MODEL_OPTIONS = {', '  function readSavedPr
 const appearance = section('  var PALETTE_COLORS = {', '  window.__itGetAppearance =');
 const pathHelpers = section('  function valueAtPath(', '  function settingsFromSaved(');
 const previewHelpers = section('    function updatePreferenceControl(', '    function fill()');
-const preferenceEvents = section('    function updatePreference(control, final)', "    on($('it-set-save'), 'click'");
+const preferenceEvents = section('    function updatePreference(control, final)',
+  "    if (Bridge.isDesktop) Bridge.invoke('it_set_hotkeys_enabled', { enabled: true })");
 const closeSource = section('    function close() {\n      if (!modal.classList.contains', '    closeSettingsLayer = close;');
-const saveSource = section("    on($('it-set-save'), 'click'", "    if (Bridge.isDesktop) Bridge.invoke('it_set_hotkeys_enabled', { enabled: true })");
 
 function styleFixture(onWrite = () => {}) {
   const properties = new Map();
@@ -101,13 +101,16 @@ function appearanceFixture() {
   assert.equal(attempts, 2, 'A failed native delivery is retried and not cached as successful');
 }
 
-function settingsFixture() {
+function settingsFixture({ desktop = false } = {}) {
   let frameId = 0;
   const frames = new Map();
+  const timers = new Map();
   const handlers = new Map();
   const elements = new Map();
   const snapshots = [];
   const writes = [];
+  const nativeWrites = [];
+  const errors = [];
   const counts = { fill: 0, popup: 0 };
   const classes = new Set(['on']);
   const modal = {
@@ -129,10 +132,14 @@ function settingsFixture() {
     LANGS: { en: 'English', zh: 'Chinese' },
     requestAnimationFrame: (callback) => { const id = ++frameId; frames.set(id, callback); return id; },
     cancelAnimationFrame: (id) => frames.delete(id),
+    setTimeout: (callback, delay) => { const id = ++frameId; timers.set(id, { callback, delay }); return id; },
+    clearTimeout: (id) => timers.delete(id),
     modal, dialog: {}, settingsOrigin: null, returnFocus: null, backgroundState: [],
     settingsSeq: 1, backgroundPickSeq: 0, popupBackgroundPickSeq: 0,
     preferencePreviewFrame: 0, preferencePreviewPending: false, preferencePreviewSequence: 0,
     settingsSaving: false, settingsOpening: null, activeSection: 'glass',
+    settingsDirty: false, persistenceTimer: 0, persistenceRevision: 0,
+    persistenceFailure: '', persistedSettingsJson: '', settingsLoaded: true,
     applyPreferences: (preferences) => snapshots.push(JSON.parse(JSON.stringify(preferences))),
     updatePopupPreview: () => counts.popup++,
     fill: () => counts.fill++,
@@ -143,17 +150,22 @@ function settingsFixture() {
     on: (target, type, callback) => handlers.set(`${target.id}:${type}`, callback),
     stopRecord() {}, closeSelect() {}, cancelSettingsSectionTransition() {}, enableControls() {},
     moveSurface: (target, origin, opening, done) => done(),
-    Bridge: { isDesktop: false, isAndroid: false },
+    Bridge: { isDesktop: desktop, isAndroid: false, invoke(command, args) {
+      if (command !== 'it_save_settings') return Promise.resolve();
+      return new Promise((resolve, reject) => nativeWrites.push({
+        snapshot: JSON.parse(JSON.stringify(args.settings)), resolve, reject,
+      }));
+    } },
     PREFERENCES_KEY: 'synthetic-preferences',
     localStorage: { setItem: (key, value) => writes.push({ key, value: JSON.parse(value) }) },
-    toast() {},
+    toast: (message) => errors.push(message),
     scheduleAppUpdateCheck: null,
   });
   vm.runInContext(`${normalization}\n${pathHelpers}
     var settingsState = { preferences: normalizePreferences() };
     var committedSettings = copyObject(settingsState);
     var DEFAULT_SETTINGS = copyObject(settingsState);
-    ${previewHelpers}\n${preferenceEvents}\n${closeSource}\n${saveSource}`, context);
+    ${previewHelpers}\n${preferenceEvents}\n${closeSource}`, context);
   const control = (path, type = 'range', min = 0, max = 100) => {
     const output = {
       textContent: '',
@@ -170,7 +182,7 @@ function settingsFixture() {
     };
   };
   return {
-    context, frames, snapshots, counts, writes, control,
+    context, frames, timers, snapshots, counts, writes, control, nativeWrites, errors,
     event(type, input) { handlers.get(`modal:${type}`)({ target: input }); },
     frame() {
       const callbacks = [...frames.values()];
@@ -178,7 +190,13 @@ function settingsFixture() {
       callbacks.forEach((callback) => callback());
     },
     close() { vm.runInContext('close()', context); },
-    save() { handlers.get('it-set-save:click').call(element('it-set-save')); },
+    persist() {
+      const callbacks = [...timers.values()];
+      timers.clear();
+      callbacks.forEach(({ callback }) => callback());
+    },
+    retry() { handlers.get('it-set-retry:click').call(element('it-set-retry')); },
+    get: element,
   };
 }
 
@@ -200,6 +218,7 @@ function settingsFixture() {
   assert.equal(test.snapshots[0].liquidGlass.pill.refractionLevel, 40, 'The frame applies the latest draft');
   test.event('change', input);
   assert.equal(test.snapshots.length, 1, 'An unchanged change event does not repeat the preview');
+  assert.equal(test.writes.length, 1, 'Releasing the range persists the last value without a Save action');
   input.value = '25';
   test.event('input', input);
   test.event('change', input);
@@ -231,10 +250,11 @@ function settingsFixture() {
   test.event('input', input);
   const stale = [...test.frames.values()][0];
   test.close();
-  assert.equal(test.frames.size, 0, 'Cancel removes the pending preview frame');
-  assert.equal(test.snapshots.at(-1).background.blur, 0, 'Cancel restores the committed appearance');
+  assert.equal(test.frames.size, 0, 'Closing flushes the pending preview frame');
+  assert.equal(test.snapshots.at(-1).background.blur, 17, 'Closing keeps the currently applied appearance');
+  assert.equal(test.writes.at(-1).value.background.blur, 17, 'Closing persists the latest input immediately');
   stale();
-  assert.equal(test.snapshots.at(-1).background.blur, 0, 'A stale callback cannot revive a canceled draft');
+  assert.equal(test.snapshots.at(-1).background.blur, 17, 'A stale callback cannot repaint after closing');
 }
 
 {
@@ -242,12 +262,98 @@ function settingsFixture() {
   const input = test.control('background.opacity', 'range', 0, 80);
   input.value = '52';
   test.event('input', input);
-  test.save();
-  assert.equal(test.frames.size, 0, 'Save flushes and consumes any pending preview');
+  assert.equal(test.writes.length, 0, 'Continuous input coalesces persistence until its idle boundary');
+  assert.equal([...test.timers.values()][0].delay, 200);
+  test.frame();
+  test.persist();
+  assert.equal(test.frames.size, 0);
   assert.equal(test.writes.length, 1);
-  assert.equal(test.writes[0].value.background.opacity, 52, 'Save persists the latest synchronous draft');
+  assert.equal(test.writes[0].value.background.opacity, 52, 'The idle boundary persists the current setting');
   assert.equal(test.context.committedSettings.preferences.background.opacity, 52);
-  assert.equal(test.snapshots.at(-1).background.opacity, 52, 'Closing after save keeps the submitted value');
+  test.close();
+  assert.equal(test.snapshots.at(-1).background.opacity, 52);
 }
 
-console.log('Settings preview checks passed: frame batching, flush/cancel, native dedupe and exact geometry refresh.');
+const settlePromises = async () => { await Promise.resolve(); await Promise.resolve(); };
+{
+  const test = settingsFixture({ desktop: true });
+  const mode = test.control('appearance.mode', 'select-one');
+  mode.value = 'dark';
+  test.event('change', mode);
+  assert.equal(test.nativeWrites.length, 1);
+  const palette = test.control('appearance.palette', 'select-one');
+  palette.value = 'sage';
+  test.event('change', palette);
+  assert.equal(test.nativeWrites.length, 1, 'Desktop writes are serialized while edits stay available');
+  assert.equal(test.context.settingsState.preferences.appearance.palette, 'sage');
+  test.nativeWrites[0].resolve([]);
+  await settlePromises();
+  assert.equal(test.nativeWrites.length, 2, 'The latest changed snapshot follows the previous write');
+  assert.equal(test.writes.length, 0, 'An older completion cannot overwrite the newer local settings');
+  assert.equal(test.context.settingsState.preferences.appearance.palette, 'sage',
+    'A completed write never replaces the current controls with an old snapshot');
+  test.nativeWrites[1].resolve([]);
+  await settlePromises();
+  assert.equal(test.writes.length, 1);
+  assert.equal(test.writes[0].value.appearance.palette, 'sage');
+}
+{
+  const test = settingsFixture({ desktop: true });
+  const mode = test.control('appearance.mode', 'select-one');
+  mode.value = 'dark';
+  test.event('change', mode);
+  const palette = test.control('appearance.palette', 'select-one');
+  palette.value = 'sage';
+  test.event('change', palette);
+  palette.value = 'sakura';
+  test.event('change', palette);
+  test.nativeWrites[0].resolve([]);
+  await settlePromises();
+  assert.equal(test.nativeWrites.length, 1, 'Returning to the active snapshot avoids a redundant native write');
+  assert.equal(test.writes.length, 1,
+    'Returning to the active snapshot still commits the latest preferences to the local cache');
+  assert.equal(test.writes[0].value.appearance.mode, 'dark');
+  assert.equal(test.writes[0].value.appearance.palette, 'sakura');
+  assert.equal(test.context.settingsDirty, false);
+}
+{
+  const test = settingsFixture({ desktop: true });
+  const mode = test.control('appearance.mode', 'select-one');
+  mode.value = 'dark';
+  test.event('change', mode);
+  test.nativeWrites[0].resolve(['Synthetic shortcut conflict']);
+  await settlePromises();
+  assert.equal(test.context.settingsDirty, true, 'A failed setting remains retryable');
+  assert.equal(test.context.settingsState.preferences.appearance.mode, 'dark',
+    'A failed write does not revert the already-applied user edit');
+  assert.equal(test.get('it-set-retry').hidden, false);
+  assert.equal(test.nativeWrites.length, 1, 'Persistence failures do not create an automatic retry loop');
+  test.retry();
+  assert.equal(test.nativeWrites.length, 2);
+  test.nativeWrites[1].resolve([]);
+  await settlePromises();
+  assert.equal(test.context.settingsDirty, false);
+  assert.equal(test.get('it-set-retry').hidden, true);
+  assert.equal(test.writes[0].value.appearance.mode, 'dark');
+}
+{
+  const test = settingsFixture();
+  const store = test.context.localStorage.setItem;
+  let attempts = 0;
+  test.context.localStorage.setItem = (key, value) => {
+    if (++attempts === 1) throw new Error('Synthetic local cache failure');
+    store(key, value);
+  };
+  const mode = test.control('appearance.mode', 'select-one');
+  mode.value = 'dark';
+  test.event('change', mode);
+  assert.equal(test.context.settingsDirty, true, 'A failed web cache write remains dirty');
+  assert.equal(test.get('it-set-retry').hidden, false);
+  assert.equal(test.writes.length, 0);
+  test.retry();
+  assert.equal(test.writes[0].value.appearance.mode, 'dark');
+  assert.equal(test.context.settingsDirty, false);
+  assert.equal(test.get('it-set-retry').hidden, true);
+}
+
+console.log('Live settings checks passed: frame batching, persistence, close, serialized writes and failure retry.');

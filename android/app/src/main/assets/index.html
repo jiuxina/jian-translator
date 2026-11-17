@@ -70,17 +70,19 @@
     </div>
 
     <div class="panes">
-      <div class="card">
+      <div class="card composer-source">
         <div class="card-head">
           <span>原文</span>
           <span class="spacer"></span>
           <span id="count">0 / 8000</span>
         </div>
-        <div class="card-body">
-          <textarea class="src" id="src" placeholder="输入或粘贴要翻译的内容，也可以直接贴一张图。"></textarea>
-          <div class="img-preview" id="img-preview">
-            <img id="img-thumb" alt="待翻译图片">
-            <button type="button" class="del" id="img-del" aria-label="移除图片">×</button>
+        <div class="card-body composer-body">
+          <div class="composer-scroll">
+            <div class="img-preview" id="img-preview">
+              <img id="img-thumb" alt="待翻译图片">
+              <button type="button" class="del" id="img-del" aria-label="移除图片">×</button>
+            </div>
+            <textarea class="src" id="src" placeholder="输入或粘贴要翻译的内容，也可以直接贴一张图。"></textarea>
           </div>
           <details class="instruct" id="instruct-box">
             <summary><span>翻译要求</span><span class="badge" id="instruct-badge" hidden>已启用</span></summary>

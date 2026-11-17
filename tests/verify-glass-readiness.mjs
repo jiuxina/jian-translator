@@ -571,7 +571,7 @@ try {
   await page.evaluate(`(() => {
     const probe = window.__readinessProbe;
     probe.animations = []; probe.holdWorker();
-    document.getElementById('it-set-save').style.borderRadius = '11.63px';
+    document.querySelector('.it-set-foot [data-reset-section]').style.borderRadius = '11.63px';
     ItLiquidGlass.refresh(document.querySelector('.it-set-mask'));
     window.__itOpenSettings({ section: 'appearance', trigger: document.getElementById('mobile-settings') });
   })()`);
@@ -614,7 +614,8 @@ try {
     await page.evaluate(`(() => {
       const target = document.querySelector('[data-pref-section="reading"]');
       return getComputedStyle(target).visibility === 'hidden' ||
-        Number(getComputedStyle(target).opacity) === 0 || target.hidden;
+        Number(getComputedStyle(target).getPropertyValue('--it-settings-page-reveal')) === 0 ||
+        target.hidden;
     })()`));
   await page.evaluate('window.__readinessProbe.releaseWorker()');
   await page.until(`(() => {

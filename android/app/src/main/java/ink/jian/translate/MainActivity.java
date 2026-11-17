@@ -41,6 +41,7 @@ import android.widget.Toast;
 import androidx.core.graphics.Insets;
 import androidx.core.view.OnApplyWindowInsetsListener;
 import androidx.core.view.ViewCompat;
+import androidx.core.view.WindowCompat;
 import androidx.core.view.WindowInsetsCompat;
 import androidx.exifinterface.media.ExifInterface;
 
@@ -115,13 +116,19 @@ public class MainActivity extends Activity {
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         appearance = loadAppearanceSnapshot();
+        // The keyboard overlays the page. Resizing or panning the WebView
+        // would squeeze both translation cards and rebuild their controls.
+        getWindow().setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_NOTHING);
+        // This root owns every system-bar inset. Older DecorViews must not
+        // reserve the navigation bar before applyInsets handles it once.
+        WindowCompat.setDecorFitsSystemWindows(getWindow(), false);
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
             Window window = getWindow();
             window.addFlags(WindowManager.LayoutParams.FLAG_DRAWS_SYSTEM_BAR_BACKGROUNDS);
             window.setStatusBarColor(Color.TRANSPARENT);
             window.setNavigationBarColor(Color.TRANSPARENT);
-            window.getDecorView().setSystemUiVisibility(systemUiFlags());
+            window.getDecorView().setSystemUiVisibility(mainWindowSystemUiFlags());
         }
 
         root = new FrameLayout(this);
@@ -243,12 +250,13 @@ public class MainActivity extends Activity {
         ViewCompat.setOnApplyWindowInsetsListener(root, new OnApplyWindowInsetsListener() {
             @Override
             public WindowInsetsCompat onApplyWindowInsets(View v, WindowInsetsCompat insets) {
-                int handledTypes = WindowInsetsCompat.Type.systemBars()
-                        | WindowInsetsCompat.Type.displayCutout() | WindowInsetsCompat.Type.ime();
-                Insets safeArea = insets.getInsets(handledTypes);
+                int safeAreaTypes = WindowInsetsCompat.Type.systemBars()
+                        | WindowInsetsCompat.Type.displayCutout();
+                Insets safeArea = insets.getInsetsIgnoringVisibility(safeAreaTypes);
                 if (webView != null) {
                     // WebView padding does not constrain fixed-position HTML controls.
-                    // Resize its actual viewport so CSS and touch coordinates share the safe area.
+                    // Only persistent system chrome constrains the viewport.
+                    // IME visibility and height must not change the page's layout.
                     FrameLayout.LayoutParams params =
                             (FrameLayout.LayoutParams) webView.getLayoutParams();
                     if (params.leftMargin != safeArea.left || params.topMargin != safeArea.top
@@ -258,9 +266,10 @@ public class MainActivity extends Activity {
                         webView.setLayoutParams(params);
                     }
                 }
-                // The native frame owns these insets; do not let WebView apply them a second time.
+                // The native frame owns system chrome. Consume the keyboard's
+                // inset as well so WebView does not shrink its content a second time.
                 return new WindowInsetsCompat.Builder(insets)
-                        .setInsets(handledTypes, Insets.NONE).build();
+                        .setInsets(safeAreaTypes | WindowInsetsCompat.Type.ime(), Insets.NONE).build();
             }
         });
         ViewCompat.requestApplyInsets(root);
@@ -333,6 +342,10 @@ public class MainActivity extends Activity {
         return flags;
     }
 
+    private int mainWindowSystemUiFlags() {
+        return systemUiFlags() | View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION;
+    }
+
     private void applyNativeAppearance(NativeAppearance next) {
         appearance = next;
         if (root != null) root.setBackground(ambientBackground());
@@ -346,7 +359,7 @@ public class MainActivity extends Activity {
             retryButton.setBackground(retryBackground);
         }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
-            getWindow().getDecorView().setSystemUiVisibility(systemUiFlags());
+            getWindow().getDecorView().setSystemUiVisibility(mainWindowSystemUiFlags());
         }
         applyPhotoSourceAppearance();
     }

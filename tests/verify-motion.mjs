@@ -203,10 +203,14 @@ const desktopScript = `
         auto_start: false, start_to_tray: true,
         preferences: JSON.parse(localStorage.getItem('it-preferences') || 'null')
       });
-      if (command === 'it_list_system_fonts') return Promise.resolve([
-        'Arial', 'Microsoft YaHei UI',
-        ...Array.from({ length: 15 }, (_, index) => 'Offline Test Font ' + index)
-      ]);
+      if (command === 'it_list_system_fonts') {
+        const fonts = ['Arial', 'Microsoft YaHei UI',
+          ...Array.from({ length: 15 }, (_, index) => 'Offline Test Font ' + index)];
+        if (!window.__motionTest.delaySystemFonts) return Promise.resolve(fonts);
+        return new Promise((resolve) => {
+          window.__motionTest.resolveSystemFonts = () => resolve(fonts);
+        });
+      }
       if (command === 'it_write_clipboard_text') return Promise.resolve(true);
       if (command === 'it_save_settings') {
         const submitted = JSON.parse(JSON.stringify(args.settings));
@@ -1039,16 +1043,28 @@ try {
         const dock = document.querySelector('.dock.on').getBoundingClientRect();
         const touch = Math.min(...[...document.querySelectorAll('.tabs button')]
           .map((button) => button.getBoundingClientRect().height));
+        const focusRects = ['#pane-text', '.mobile-navigation'].map((selector) => {
+          const rect = document.querySelector(selector).getBoundingClientRect();
+          return [rect.x, rect.y, rect.width, rect.height];
+        });
         return { navBottom: nav.bottom, navTop: nav.top, dockBottom: dock.bottom,
-          touch, width: innerWidth, height: innerHeight };
+          touch, width: innerWidth, height: innerHeight, focusRects };
       })()`);
       check(`${width}×${height} 导航触控与安全区`,
         layout.touch >= 48 && layout.navBottom <= height &&
         layout.dockBottom <= layout.navTop - 4, JSON.stringify(layout));
       await page.click('#src');
-      check(`${width}×${height} 输入焦点使底栏让位`,
-        await page.evaluate(`document.activeElement.id === 'src' &&
-          document.querySelector('.mobile-navigation').getClientRects().length === 0`));
+      const focusedLayout = await page.evaluate(`(() => {
+        const focusRects = ['#pane-text', '.mobile-navigation'].map((selector) => {
+          const rect = document.querySelector(selector).getBoundingClientRect();
+          return [rect.x, rect.y, rect.width, rect.height];
+        });
+        return { focused: document.activeElement.id === 'src', focusRects };
+      })()`);
+      check(`${width}×${height} 输入焦点保持页面与底栏尺寸位置`,
+        focusedLayout.focused && focusedLayout.focusRects.every((rect, index) =>
+          rect.every((value, edge) => Math.abs(value - layout.focusRects[index][edge]) < .25)),
+        JSON.stringify(focusedLayout));
       await page.evaluate(`document.getElementById('src').blur()`);
       await page.until(`document.querySelector('.tabs').getClientRects().length > 0`);
       await page.evaluate(`document.getElementById('out-text').textContent = '离线验证译文'`);
@@ -1178,7 +1194,7 @@ try {
     })()`);
   });
 
-  await scenario('通用偏好预览、撤销和保存', async () => {
+  await scenario('通用偏好实时应用与持久化', async () => {
     check('文本2B模型显示名称简化为2B且模型标识不变', await page.evaluate(`(() => {
       const model = document.querySelector('#model-text [data-model="index-mt-2b"]');
       return model?.textContent.trim() === '2B';
@@ -1204,26 +1220,46 @@ try {
         defaults?.popup?.cardReveal === undefined && defaults?.popup?.backgroundData === '' &&
         defaults?.translation?.defaultTab === 'text';
     })()`));
-    await page.evaluate(`window.__itDebug.preferences.apply(
-      window.__itDebug.preferences.normalize({
-        background: { data: 'data:image/png;base64,AA==' }
-      }))`);
+    // Start from an actually persisted image. A debug-only appearance preview
+    // must not inherit a previous scenario's last-persisted settings snapshot.
+    await page.evaluate(`(() => {
+      const canvas = document.createElement('canvas');
+      canvas.width = canvas.height = 2;
+      const context = canvas.getContext('2d');
+      context.fillStyle = '#5372a2';
+      context.fillRect(0, 0, 2, 2);
+      const saved = window.__itDebug.preferences.normalize({
+        background: { data: canvas.toDataURL('image/png') }
+      });
+      localStorage.setItem('it-preferences', JSON.stringify(saved));
+    })()`);
+    await page.send('Page.reload');
+    await page.until(`document.readyState === 'complete' && !!window.__itDebug`);
     await openMenu(page);
     await page.click('#more-menu [data-act="settings"]');
     await page.until(`document.querySelector('.it-set-mask')?.getAttribute('aria-hidden') === 'false'`);
     await selectSettingsSection(page, 'background');
+    check('恢复背景前确有已持久化的图片且控件已呈现', await page.evaluate(`(() => {
+      const saved = JSON.parse(localStorage.getItem('it-preferences'));
+      const reset = document.getElementById('it-pref-reset-background');
+      return saved.background.data.startsWith('data:image/png;base64,') &&
+        !!document.getElementById('it-bg-style') &&
+        document.getElementById('it-pref-background-status').textContent === '已选择背景图片。' &&
+        !reset.disabled && reset.getClientRects().length > 0;
+    })()`));
     await page.click('#it-pref-reset-background');
     const backgroundResetState = await page.evaluate(`(() => ({
       status: document.getElementById('it-pref-background-status').textContent,
       style: !!document.getElementById('it-bg-style'),
       data: window.__itDebug.preferences.normalize({}).background.data
     }))()`);
-    check('更多菜单恢复默认背景会预览清除且可撤销',
+    check('恢复默认背景立即清除并保存',
       backgroundResetState.status === '未选择背景图片。' && !backgroundResetState.style,
       JSON.stringify(backgroundResetState));
     await page.key('Escape');
     await page.until(`document.querySelector('.it-set-mask')?.getAttribute('aria-hidden') === 'true'`);
-    check('取消背景恢复会保留原图', await page.evaluate(`!!document.getElementById('it-bg-style')`));
+    check('关闭设置保留已应用的背景恢复', await page.evaluate(`!document.getElementById('it-bg-style') &&
+      JSON.parse(localStorage.getItem('it-preferences')).background.data === ''`));
     await page.evaluate(`window.__itDebug.preferences.apply(window.__itDebug.preferences.defaults)`);
     const nativeSnapshotCheck = await page.evaluate(`(() => {
       const api = window.__itDebug.preferences;
@@ -1314,12 +1350,14 @@ try {
       control.value = 'dark';
       control.dispatchEvent(new Event('change', { bubbles: true }));
     })()`);
-    check('外观草稿实时预览深色主题', await page.evaluate(`
-      document.documentElement.dataset.itTheme === 'dark'`));
+    check('修改主题立即应用且无需保存按钮', await page.evaluate(`
+      document.documentElement.dataset.itTheme === 'dark' && !document.getElementById('it-set-save') &&
+      ![...document.querySelectorAll('.it-set-foot button')].some((button) => /^(保存|取消)$/.test(button.textContent))`));
     await page.key('Escape');
     await page.until(`document.querySelector('.it-set-mask')?.getAttribute('aria-hidden') === 'true'`);
-    check('Escape 取消恢复已保存外观', await page.evaluate(`
-      document.documentElement.dataset.itTheme === 'light'`));
+    check('Escape 关闭后保留并持久化当前外观', await page.evaluate(`
+      document.documentElement.dataset.itTheme === 'dark' &&
+      JSON.parse(localStorage.getItem('it-preferences')).appearance.mode === 'dark'`));
 
     await openMenu(page);
     await page.click('#more-menu [data-act="settings"]');
@@ -1354,9 +1392,9 @@ try {
       setPreference('translation.rememberLanguages', false);
       setPreference('translation.rememberModels', false);
     })()`);
-    await page.click('#it-set-save');
+    await page.key('Escape');
     await page.until(`document.querySelector('.it-set-mask')?.getAttribute('aria-hidden') === 'true'`);
-    check('网页保存偏好后保留预览并持久化完整配置', await page.evaluate(`(() => {
+    check('网页实时持久化完整配置且关闭不回滚', await page.evaluate(`(() => {
       const saved = JSON.parse(localStorage.getItem('it-preferences') || 'null');
       return document.documentElement.dataset.itTheme === 'dark' &&
         saved?.appearance?.mode === 'dark' && saved?.appearance?.palette === 'sage' &&
@@ -1406,12 +1444,12 @@ try {
 
   await scenario('桌面设置焦点与返回', async () => {
     await page.evaluate(`(() => {
-      const saved = JSON.parse(localStorage.getItem('it-preferences') || 'null');
-      if (!saved) return;
-      saved.appearance.fontWeight = 400;
-      saved.appearance.fontColorMode = 'theme';
-      delete saved.popup.cardReveal;
-      saved.popup.backgroundData = '';
+      // This scenario owns its expected appearance instead of depending on
+      // whether the preceding web persistence scenario completed.
+      const saved = window.__itDebug.preferences.normalize({
+        appearance: { mode: 'dark', palette: 'sage', fontWeight: 400, fontColorMode: 'theme' },
+        popup: { backgroundData: '' }
+      });
       localStorage.setItem('it-preferences', JSON.stringify(saved));
     })()`);
     const created = await controller.send('Target.createTarget', { url: 'about:blank' });
@@ -1430,6 +1468,28 @@ try {
     await desktop.send('Emulation.setDeviceMetricsOverride', {
       width: 1180, height: 900, deviceScaleFactor: 1, mobile: false,
     });
+    await desktop.evaluate(`(() => {
+      window.__motionTest.delaySystemFonts = true;
+      window.__itOpenSettings({ trigger: document.getElementById('brand') });
+    })()`);
+    await desktop.until(`typeof window.__motionTest.resolveSystemFonts === 'function'`);
+    check('桌面设置在系统字体与最终布局就绪前保持隐藏', await desktop.evaluate(`(() => {
+      const modal = document.querySelector('.it-set-mask');
+      return !modal.classList.contains('on') && modal.getAttribute('aria-hidden') === 'true' &&
+        modal.inert && document.querySelector('.it-set').getAnimations().length === 0 &&
+        !window.__motionTest.invoked.some((entry) =>
+          entry.command === 'it_set_hotkeys_enabled' && entry.args.enabled === false);
+    })()`));
+    check('桌面设置准备期间系统返回可取消打开', await desktop.evaluate(`window.__itHandleBack() === true`));
+    await desktop.evaluate(`(() => {
+      window.__motionTest.delaySystemFonts = false;
+      window.__motionTest.resolveSystemFonts();
+      return new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    })()`);
+    check('较晚返回的字体不会重新打开已取消的设置', await desktop.evaluate(`(() => {
+      const modal = document.querySelector('.it-set-mask');
+      return !modal.classList.contains('on') && modal.getAttribute('aria-hidden') === 'true' && modal.inert;
+    })()`));
     await desktop.click('#brand');
     await desktop.click('#more-menu [data-act="settings"]');
     await desktop.until(`document.querySelector('.it-set-mask').getAttribute('aria-hidden') === 'false'`);
@@ -1444,7 +1504,7 @@ try {
         document.getElementById('src').focus();
         return document.activeElement.id !== 'src';
       })()`));
-    await desktop.until(`!document.getElementById('it-set-save').disabled`);
+    await desktop.until(`!document.getElementById('it-pref-theme').disabled`);
     check('PC 设置提供系统字体选择并加载原生列表', await desktop.evaluate(`(() => {
       const select = document.querySelector('[data-pref="appearance.systemFontFamily"]');
       return !!select && [...select.options].some((option) => option.value === 'Arial') &&
@@ -1583,12 +1643,15 @@ try {
     const rapidSettings = await desktop.evaluate(`(async () => {
       document.querySelector('[data-pref-tab="background"]').click();
       await new Promise((resolve) => setTimeout(resolve, 45));
-      const before = getComputedStyle(document.querySelector('[data-pref-section="appearance"]')).opacity;
+      const before = getComputedStyle(document.querySelector('[data-pref-section="appearance"]'))
+        .getPropertyValue('--it-settings-page-reveal');
       document.querySelector('[data-pref-tab="reading"]').click();
-      const after = getComputedStyle(document.querySelector('[data-pref-section="appearance"]')).opacity;
+      const after = getComputedStyle(document.querySelector('[data-pref-section="appearance"]'))
+        .getPropertyValue('--it-settings-page-reveal');
       return { before, after, skipped: document.querySelector('[data-pref-section="background"]').hidden };
     })()`);
     check('设置连续切换保留当前淡出状态并跳过中间页',
+      Number(rapidSettings.before) > 0 && Number(rapidSettings.before) < 1 &&
       Math.abs(Number(rapidSettings.before) - Number(rapidSettings.after)) < .05 && rapidSettings.skipped);
     await desktop.until(`!document.querySelector('[data-pref-section="reading"]').hidden &&
       !document.querySelector('[data-pref-section="reading"]').inert`);
@@ -1622,7 +1685,8 @@ try {
       const pages = [...document.querySelectorAll('[data-pref-section]')].filter((page) => !page.hidden);
       return pages.length === 1 && pages[0].dataset.prefSection === 'background' &&
         !pages[0].classList.contains('is-leaving') && !pages[0].classList.contains('is-entering') &&
-        getComputedStyle(pages[0]).opacity === '1';
+        getComputedStyle(pages[0]).opacity === '1' &&
+        Number(getComputedStyle(pages[0]).getPropertyValue('--it-settings-page-reveal')) === 1;
     })()`));
     await desktop.send('Emulation.setEmulatedMedia', {
       features: [{ name: 'prefers-reduced-motion', value: 'no-preference' }],
@@ -1678,6 +1742,16 @@ try {
     }))()`);
     check('悬浮窗可恢复跟随主窗口背景', popupFollowState.status === '悬浮窗跟随主窗口背景。' &&
       popupFollowState.image === 'none', JSON.stringify(popupFollowState));
+    check('重置电脑功能前通用外观与当前分类符合测试输入', await desktop.evaluate(`(() => {
+      const button = document.querySelector('[data-reset-section]');
+      const rect = button.getBoundingClientRect();
+      const hit = document.elementFromPoint(rect.x + rect.width / 2, rect.y + rect.height / 2);
+      return document.documentElement.dataset.itTheme === 'dark' &&
+        document.documentElement.dataset.itPalette === 'sage' &&
+        !document.querySelector('[data-pref-section="desktop"]').hidden &&
+        !document.querySelector('[data-pref-section="desktop"]').inert &&
+        !button.disabled && (hit === button || button.contains(hit));
+    })()`));
     const glassBeforeDesktopReset = await desktop.evaluate(`document.querySelector('[data-pref="liquidGlass.pill.refractionLevel"]').value`);
     await desktop.click('[data-reset-section]');
     check('恢复电脑功能默认值不会重置通用外观', await desktop.evaluate(`
@@ -1709,7 +1783,7 @@ try {
     await desktop.click('#brand');
     await desktop.click('#more-menu [data-act="settings"]');
     await desktop.until(`document.querySelector('.it-set-mask').getAttribute('aria-hidden') === 'false' &&
-      !document.getElementById('it-set-save').disabled`);
+      !document.getElementById('it-pref-theme').disabled`);
     await desktop.evaluate(`(() => {
       const setPreference = (path, value) => {
         const control = document.querySelector('[data-pref="' + path + '"]');
@@ -1775,27 +1849,42 @@ try {
         value('appearance.layout') === 'compact' && value('appearance.motion') === 'reduced' &&
         !document.querySelector('[data-pref="appearance.ambientLight"]').checked;
     })()`));
+    await desktop.until(`window.__motionTest.savedSettings?.preferences.liquidGlass.card.backgroundOpacity === 60`);
     await desktop.evaluate(`(() => {
-      const theme = document.getElementById('it-pref-theme');
-      theme.value = 'dark';
-      theme.dispatchEvent(new Event('change', { bubbles: true }));
       window.__motionTest.saveDelay = 10000;
+      const scale = document.querySelector('[data-pref="appearance.fontScale"]');
+      scale.value = '135';
+      scale.dispatchEvent(new Event('change', { bubbles: true }));
     })()`);
-    await desktop.click('#it-set-save');
-    check('保存处理中禁用编辑、类别导航和关闭控件', await desktop.evaluate(`(() => {
-      const controls = [...document.querySelectorAll(
-        '.it-set-mask .it-set-body input, .it-set-mask .it-set-body select, ' +
-        '.it-set-mask .it-set-nav button, .it-set-mask [data-close], ' +
-        '.it-set-mask [data-reset-section], #it-set-save')];
-      return controls.length > 0 && controls.every((control) => control.disabled);
+    await desktop.until(`typeof window.__motionTest.resolveSave === 'function'`);
+    check('后台保存不会禁用编辑、类别导航和关闭控件', await desktop.evaluate(`(() => {
+      const controls = [document.getElementById('it-pref-theme'),
+        document.querySelector('[data-pref-tab="appearance"]'),
+        document.querySelector('.it-set-x'), document.querySelector('[data-reset-section]')];
+      const scale = document.querySelector('[data-pref="appearance.fontScale"]');
+      scale.value = '130';
+      scale.dispatchEvent(new Event('change', { bubbles: true }));
+      return controls.every((control) => !control.disabled) &&
+        document.getElementById('it-set-save') === null;
     })()`));
     await desktop.key('Escape');
-    check('保存处理中 Escape 不撤销或关闭提交', await desktop.evaluate(`
-      document.querySelector('.it-set-mask').getAttribute('aria-hidden') === 'false' &&
+    check('后台保存时 Escape 可以关闭且保留最新更改', await desktop.evaluate(`
+      document.querySelector('.it-set-mask').getAttribute('aria-hidden') === 'true' &&
       document.documentElement.dataset.itTheme === 'dark'`));
-    await desktop.evaluate(`window.__motionTest.resolveSave()`);
-    await desktop.until(`document.querySelector('.it-set-mask').getAttribute('aria-hidden') === 'true'`);
-    check('异步保存使用提交快照并在完成后保留同一份偏好', await desktop.evaluate(`(() => {
+    const settingsReadsBeforeReopen = await desktop.evaluate(`window.__motionTest.invoked.filter(
+      (entry) => entry.command === 'it_get_settings').length`);
+    await desktop.evaluate(`window.__itOpenSettings({ section: 'reading' })`);
+    await desktop.until(`document.querySelector('.it-set-mask').getAttribute('aria-hidden') === 'false'`);
+    check('未完成保存时重开设置保持最新草稿并继续编辑', await desktop.evaluate(`(() => {
+      const scale = document.querySelector('[data-pref="appearance.fontScale"]');
+      return scale.value === '130' && !scale.disabled &&
+        window.__motionTest.invoked.filter((entry) => entry.command === 'it_get_settings').length ===
+          ${settingsReadsBeforeReopen};
+    })()`));
+    await desktop.key('Escape');
+    await desktop.evaluate(`window.__motionTest.saveDelay = 0; window.__motionTest.resolveSave()`);
+    await desktop.until(`window.__motionTest.savedSettings?.preferences.appearance.fontScale === 130`);
+    check('异步保存按序提交最新快照且旧写入不覆盖新偏好', await desktop.evaluate(`(() => {
       const submitted = window.__motionTest.submittedSettings;
       const saved = window.__motionTest.savedSettings;
       const local = JSON.parse(localStorage.getItem('it-preferences') || 'null');
@@ -1822,7 +1911,7 @@ try {
         document.getElementById('btn-dl').textContent === '下载';
     })()`));
     await desktop.evaluate(`window.__itOpenSettings({section:'updates'})`);
-    await desktop.until(`!document.getElementById('it-set-save').disabled &&
+    await desktop.until(`!document.getElementById('it-pref-theme').disabled &&
       !document.querySelector('[data-pref-section="updates"]').hidden`);
     check('更新设置提供自动检查开关与当前版本', await desktop.evaluate(`(() => {
       const page=document.querySelector('[data-pref-section="updates"]');
@@ -1850,9 +1939,10 @@ try {
       const control=document.querySelector('[data-pref="updates.autoCheck"]');
       control.checked=false;control.dispatchEvent(new Event('change',{bubbles:true}));
     })()`);
-    await desktop.click('#it-set-save');
+    await desktop.key('Escape');
     await desktop.until(`document.querySelector('.it-set-mask').getAttribute('aria-hidden')==='true'`);
-    check('自动检查开关随完整设置事务保存', await desktop.evaluate(`
+    await desktop.until(`window.__motionTest.savedSettings?.preferences.updates.autoCheck === false`);
+    check('自动检查开关即时保存完整设置', await desktop.evaluate(`
       window.__motionTest.savedSettings.preferences.updates.autoCheck===false &&
       JSON.parse(localStorage.getItem('it-preferences')).updates.autoCheck===false`));
   });
@@ -1875,7 +1965,7 @@ try {
     })()`));
     await mac.evaluate(`window.__motionTest.nativeAction({ type: 'open-settings' })`);
     await mac.until(`document.querySelector('.it-set-mask')?.getAttribute('aria-hidden') === 'false' &&
-      !document.getElementById('it-set-save').disabled`);
+      !document.getElementById('it-pref-theme').disabled`);
     check('macOS 原生设置入口加载桌面设置与系统字体列表', await mac.evaluate(`(() => {
       const fonts = document.querySelector('[data-pref="appearance.systemFontFamily"]');
       return document.querySelector('.it-set').contains(document.activeElement) &&
@@ -1895,9 +1985,10 @@ try {
     });
     check('macOS 快捷键录制识别 Command 与 Option', await mac.evaluate(`
       document.getElementById('it-set-selection').value === 'Cmd+Alt+K'`));
-    await mac.click('#it-set-save');
+    await mac.key('Escape');
     await mac.until(`document.querySelector('.it-set-mask')?.getAttribute('aria-hidden') === 'true'`);
-    check('macOS 使用相同设置事务保存 Command 快捷键与分组玻璃参数', await mac.evaluate(`(() => {
+    await mac.until(`window.__motionTest.savedSettings?.selection_shortcut === 'Cmd+Alt+K'`);
+    check('macOS 即时保存 Command 快捷键与分组玻璃参数', await mac.evaluate(`(() => {
       const saved = window.__motionTest.savedSettings;
       return saved?.selection_shortcut === 'Cmd+Alt+K' &&
         saved.preferences.version === 3 &&

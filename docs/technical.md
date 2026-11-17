@@ -22,6 +22,16 @@ Tab 选中滑块保留原有静止外观，并持续使用透明填充与相同�
 界面标签默认不可长按选择，原文、实际译文及可编辑输入保留正常选择与复制。
 Tab 与设置入场前预热并检查当前尺寸的玻璃 PNG 已解码；冷目标等待准备完成，
 已预热目标直接使用原动画。快速反向切换或返回会取消旧等待，不改变玻璃材质。
+设置入场与分类切换还需要保持背景采样链：遮罩、对话框和分类祖先保持 `opacity:1`，
+遮罩暗化、文字、磨砂填充与光学绘制层分别接收淡入进度，保留原有变换与光学参数。
+数值自定义属性无法注册时使用逐帧回退；不会等整体淡入结束才补出折射。
+桌面设置先读取原生偏好和系统字体，再准备最终布局的玻璃；取消后较晚的回调不能重开窗口。
+原文图片使用紧凑附件缩略图，横图和纵图占用相同高度，添加、删除和替换动画继续保留；
+提交翻译使用原图数据，删除附件不清空文字。Android 键盘覆盖页面，保留系统栏和刘海安全区，
+IME 高度不压缩 WebView；输入焦点不再隐藏底栏或挤压卡片。
+设置移除取消和保存，修改即时应用并自动保存；范围/颜色输入逐帧预览、空闲 200ms 合并持久化，
+松手或关闭立即提交。桌面保存队列不锁定操作，关闭不回滚，失败保留重试状态，
+旧写入和过期加载不得覆盖较新值。分组重置、背景、快捷键和更新开关均自动保存。
 交互玻璃的边缘折射带按圆角的 40% 计算，限制在 1–8px；
 大胶囊不再让折射区域覆盖控件大部分内部，原高光、透明度与动画参数保留。
 旧注入脚本与主题资源也已从源码和后续 Android 资源输入中移除；历史安装包继续保留。
@@ -38,12 +48,17 @@ Windows 普通窗口外圆角为 22 DIP，最大化与全屏时清除裁剪，�
 全量替换液态玻璃后的包为 `output/笺-2.2.0-液态玻璃.exe`、
 `output/笺-2.2.0-液态玻璃.msi`、`output/笺-2.2.0-液态玻璃.apk`；
 这些历史 Android 包使用 versionCode `5` / versionName `2.2.0`，校验值见 `output/SHA256SUMS.txt`。
-2.3.0 发布说明见 [v2.3.0](releases/v2.3.0.md)，版本升级未重新生成本地安装包；
+2.3.0 发布说明见 [v2.3.0](releases/v2.3.0.md)，2026-11-16 的版本升级阶段未重新生成本地安装包；
 推送包含本轮提交的 `v2.3.0` 标签后，由发布工作流构建并上传三端附件。
+2026-11-17 的界面连贯优化已单独构建本地 Release 测试包
+`output/笺-2.3.0-界面连贯优化-release.apk`；使用独立应用标识
+`ink.jian.translate.perftest`、名称“笺·测试”和新生成的测试证书，可与既有安装共存。
+该测试包版本为 `2.3.0` / code `6`，不使用正式签名凭据，也不等同于正式发布附件。
 
 ## 本地验证
 
 需要 Node.js 22 或以上以及 Chrome。无需安装前端依赖。
+`verify-android-ime` 还需要 JDK 17 的 `javac` / `java`，使用合成平台替身，不依赖 Android SDK 或真实设备。
 性能优化的实现、前后测量与复现方式见 [性能优化记录](performance.md)。
 
 ```powershell
@@ -61,6 +76,9 @@ node tests/verify-image-import.mjs
 node tests/verify-settings-preview.mjs
 node tests/verify-segment-drag.mjs
 node tests/verify-glass-readiness.mjs
+node tests/verify-settings-compositor.mjs
+node tests/verify-attachment-layout.mjs
+node tests/verify-android-ime.mjs
 node tests/verify-updates.mjs
 node app/macos/build.mjs --prepare-only
 node tests/verify-macos.mjs
@@ -77,7 +95,16 @@ Android 连续输入、拖动、窗口变化与后台光学图生成另由
 首帧玻璃准备、取消竞争、PNG 解码、语言边框与文字选择的独立回归见
 `tests/verify-glass-readiness.mjs`，默认本地预览端口 `8874`、Chrome 调试端口 `9238`，
 同样可用 `IT_PREVIEW_ORIGIN` / `IT_CDP_ORIGIN` 覆盖。
-上一任务最终离线浏览器回归为 `127/128`；覆盖连续动画、设置事务、窗口桥接契约、
+新增设置合成探针在实际动画 30%、65%、99.5%、100% 对比真实位移滤镜的像素变化，
+默认输出 `.build/settings-compositor-optimized.json`；附件布局探针默认输出
+`.build/attachment-layout.json`。这两个探针默认预览端口 `8875`、Chrome 调试端口 `9240`，
+复用独立测试会话。Android IME 探针用生产 insets 逻辑和平台替身验证稳定视口、旧系统、
+旋转及刘海；它不能替代某款真实输入法的设备验收。
+本轮最终全量在全部相关实现、资源、文档和构建完成后仅执行一次，
+日志为 `.build/ui-polish-final-verification.log` 与
+`.build/ui-polish-final-results.json`。此前的单项定向结果不合并成一次全量通过声明。
+
+历史任务最终离线浏览器回归为 `127/128`；覆盖连续动画、设置事务、窗口桥接契约、
 移动端触控、旧偏好迁移和高对比背景下真实折射像素变化。唯一失败是语言轮盘反向动画的固定帧采样，
 针对性动画时钟探针已确认正向与反向位移正常；液态玻璃计算测试由
 `node tests/verify-liquid-glass.mjs` 单独验证。离线 Chromium 结果不代表已完成打包后 Windows
@@ -110,7 +137,10 @@ Git Bash 安装位置因机器而异，使用本机实际路径。默认构建�
 
 需要 JDK 17、Android SDK 35 和 Gradle wrapper。`android/local.properties` 仅存本机 SDK
 路径；发布签名从 `android/signing.properties` 读取，可参考同目录的 example。密钥和真实
-签名配置均不入库。缺少签名配置时仍可执行 Debug 编译，Release 打包需要完整本地配置。
+签名配置均不入库。以上是正式发布签名流程，本轮本地测试不读取这些实际配置和凭据。
+后续交付用户测试的 APK 均使用 Release 构建；本轮在隔离工程中复制公开源码，
+为 `ink.jian.translate.perftest` 生成新的测试签名证书，避免覆盖已安装的正式应用。
+测试证书与构建类型相互独立，使用测试证书不代表 Debug 构建。
 
 构建前的 `syncWebAssets` 只覆盖 `web/` 六项资源，不删除源资源或 assets 目录。
 在 `android/` 执行：

@@ -396,9 +396,10 @@ try {
   await page.evaluate(`window.__itHandleBack()`);
   await page.until(`!document.querySelector('.it-set-mask').classList.contains('on')`);
   await page.evaluate('window.__probeFrames(5)');
-  check('Cancel restores the committed refraction after a pending preview', await page.evaluate(`(() => {
+  check('Closing keeps the applied refraction and its persisted value', await page.evaluate(`(() => {
     const slider = ItLiquidGlass.stateOf(document.querySelector('.tabs-thumb'));
-    return Math.abs(Number(slider.refract.getAttribute('scale')) - slider.maps.maxDisplacement * .4) < 1e-8;
+    return Math.abs(Number(slider.refract.getAttribute('scale')) - slider.maps.maxDisplacement * (.4 * .7)) < 1e-8 &&
+      JSON.parse(localStorage.getItem('it-preferences')).liquidGlass.pill.refractionLevel === 70;
   })()`));
 
   report.measurements.drag = await page.evaluate(`(async () => {
@@ -463,7 +464,7 @@ try {
     const refraction = document.querySelector('[data-pref="liquidGlass.pill.refractionLevel"]');
     refraction.value = '41';
     refraction.dispatchEvent(new Event('input', { bubbles: true }));
-    document.getElementById('it-set-save').click();
+    window.__itHandleBack();
     await window.__probeFrames(4);
     const saved = JSON.parse(localStorage.getItem('it-preferences'));
     const slider = ItLiquidGlass.stateOf(document.querySelector('.tabs-thumb'));
@@ -474,10 +475,10 @@ try {
       closed: !document.querySelector('.it-set-mask').classList.contains('on') };
   })()`);
   check('A real theme change still reaches native appearance', report.measurements.save.darkNative);
-  check('Save flushes the last pending range preview and keeps the committed state',
+  check('Closing flushes and persists the last pending range change without a Save button',
     report.measurements.save.savedMode === 'dark' &&
     report.measurements.save.savedRefraction === 41 && report.measurements.save.closed &&
-    report.measurements.save.commits === 1 &&
+    report.measurements.save.commits >= 1 &&
     Math.abs(report.measurements.save.scale - report.measurements.save.expectedScale) < 1e-8);
 
   await page.evaluate(`(() => {
