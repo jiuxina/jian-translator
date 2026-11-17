@@ -9,7 +9,7 @@ import { readFile } from 'node:fs/promises';
 import vm from 'node:vm';
 
 const source = new TextDecoder('utf-8', { fatal: true }).decode(
-  await readFile(new URL('../web/app.js', import.meta.url)));
+  await readFile(new URL('../web/app.js', import.meta.url))).replace(/\r\n/g, '\n');
 const start = source.indexOf('  function startWriter(el) {');
 const end = source.indexOf('\n  function runText()', start);
 assert.ok(start >= 0 && end > start, 'Production stream writer is present');

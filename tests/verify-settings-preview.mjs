@@ -10,7 +10,7 @@ import vm from 'node:vm';
 const require = createRequire(import.meta.url);
 const glass = require('../web/liquid-glass.js');
 const source = new TextDecoder('utf-8', { fatal: true }).decode(
-  await readFile(new URL('../web/app.js', import.meta.url)));
+  await readFile(new URL('../web/app.js', import.meta.url))).replace(/\r\n/g, '\n');
 function section(startMarker, endMarker) {
   const start = source.indexOf(startMarker);
   const end = source.indexOf(endMarker, start);
@@ -132,7 +132,7 @@ function settingsFixture() {
     modal, dialog: {}, settingsOrigin: null, returnFocus: null, backgroundState: [],
     settingsSeq: 1, backgroundPickSeq: 0, popupBackgroundPickSeq: 0,
     preferencePreviewFrame: 0, preferencePreviewPending: false, preferencePreviewSequence: 0,
-    settingsSaving: false, activeSection: 'glass',
+    settingsSaving: false, settingsOpening: null, activeSection: 'glass',
     applyPreferences: (preferences) => snapshots.push(JSON.parse(JSON.stringify(preferences))),
     updatePopupPreview: () => counts.popup++,
     fill: () => counts.fill++,

@@ -11,7 +11,8 @@ const baseline = process.argv.includes('--baseline');
 const sourceArg = process.argv.indexOf('--source');
 const sourcePath = sourceArg >= 0 ? process.argv[sourceArg + 1] :
   new URL('../web/app.js', import.meta.url);
-const source = new TextDecoder('utf-8', { fatal: true }).decode(await readFile(sourcePath));
+const source = new TextDecoder('utf-8', { fatal: true }).decode(await readFile(sourcePath))
+  .replace(/\r\n/g, '\n');
 const start = source.indexOf('  /* ---------------- 8. 玻璃滑块');
 const end = source.indexOf('  function initModelGroups()', start);
 assert.ok(start >= 0 && end > start, 'Production slider functions are present');

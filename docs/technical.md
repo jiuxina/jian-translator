@@ -18,6 +18,10 @@ Windows 通过 Pake/Tauri 加载本地页面，macOS 使用 Chromium 桌面壳�
 所有模型与设置分类滑块始终使用液态玻璃，按住、拖动、松开或取消不切换材质；
 Tab 选中滑块保留原有静止外观，并持续使用透明填充与相同折射参数。
 语言下拉打开、刷新和选择后均不自动聚焦编辑字段；手动点击搜索框仍可搜索。
+手机语言框展开后保留原边框，不加粉色展开描边；键盘操作继续显示焦点轮廓。
+界面标签默认不可长按选择，原文、实际译文及可编辑输入保留正常选择与复制。
+Tab 与设置入场前预热并检查当前尺寸的玻璃 PNG 已解码；冷目标等待准备完成，
+已预热目标直接使用原动画。快速反向切换或返回会取消旧等待，不改变玻璃材质。
 旧注入脚本与主题资源也已从源码和后续 Android 资源输入中移除；历史安装包继续保留。
 Windows 普通窗口外圆角为 22 DIP，最大化与全屏时清除裁剪，卡片圆角仍可单独设置。
 参考实现说明与当前运行时验收状态见 [界面主题记录](ui-theme.md) 和
@@ -54,6 +58,7 @@ node tests/verify-stream-writer.mjs
 node tests/verify-image-import.mjs
 node tests/verify-settings-preview.mjs
 node tests/verify-segment-drag.mjs
+node tests/verify-glass-readiness.mjs
 node tests/verify-updates.mjs
 node app/macos/build.mjs --prepare-only
 node tests/verify-macos.mjs
@@ -67,6 +72,9 @@ Android 连续输入、拖动、窗口变化与后台光学图生成另由
 390 × 844 / DPR 3 视口和 CPU 4 倍降速，不依赖真实照片或翻译内容。
 支持 Worker / OffscreenCanvas 的 Android WebView 使用后台生成光学贴图，
 不支持或生成失败时使用原算法完整回退；六项网页资源与桌面共用的方式不变。
+首帧玻璃准备、取消竞争、PNG 解码、语言边框与文字选择的独立回归见
+`tests/verify-glass-readiness.mjs`，默认本地预览端口 `8874`、Chrome 调试端口 `9238`，
+同样可用 `IT_PREVIEW_ORIGIN` / `IT_CDP_ORIGIN` 覆盖。
 上一任务最终离线浏览器回归为 `127/128`；覆盖连续动画、设置事务、窗口桥接契约、
 移动端触控、旧偏好迁移和高对比背景下真实折射像素变化。唯一失败是语言轮盘反向动画的固定帧采样，
 针对性动画时钟探针已确认正向与反向位移正常；液态玻璃计算测试由

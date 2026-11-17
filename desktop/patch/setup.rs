@@ -981,6 +981,8 @@ document.documentElement.innerHTML = `
   html,body{margin:0;padding:0;height:100%;background:transparent;overflow:hidden;
     font-family:"PingFang SC","Microsoft YaHei UI","Noto Sans SC",system-ui,sans-serif;
     -webkit-font-smoothing:antialiased;}
+  *{-webkit-user-select:none;user-select:none;}
+  #out,#out *{-webkit-user-select:text;user-select:text;}
   body{box-sizing:border-box;padding:22px;position:relative;isolation:isolate;}
   #card-frame{height:100%;position:relative;isolation:isolate;border-radius:var(--lg-r-lg);
     box-shadow:var(--lg-shadow-strong);

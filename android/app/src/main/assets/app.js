@@ -393,6 +393,9 @@
     var button = document.createElement('button');
     button.type = 'button';
     button.className = 'sel-btn';
+    if (['src-lang', 'tgt-lang', 'it-pref-source', 'it-pref-target', 'it-set-lang'].indexOf(select.id) >= 0) {
+      button.classList.add('it-language-select');
+    }
     button.setAttribute('aria-haspopup', 'listbox');
     button.setAttribute('aria-expanded', 'false');
     if (labelText) button.setAttribute('aria-label', labelText);
@@ -1294,6 +1297,86 @@
   var panes = { text: 'pane-text', syllable: 'pane-syllable', doc: 'pane-doc' };
   var shownTab = 'text';
   var tabSeq = 0;
+  var tabPreparation = null;
+  var glassWarmupFrame = 0;
+  var prewarmSettingsGlass = null;
+  var dockPreparations = new WeakMap();
+
+  function scheduleGlassWarmup() {
+    if (glassWarmupFrame) return;
+    glassWarmupFrame = requestAnimationFrame(function () {
+      glassWarmupFrame = 0;
+      Object.keys(panes).forEach(function (key) {
+        var pane = $(panes[key]);
+        if (pane && !pane.classList.contains('on')) {
+          var pending = preparePageGlass(pane);
+          if (pending) pending.catch(function () { /* A failed surface reports its own error. */ });
+        }
+        var dockPending = prepareTabDock(key);
+        if (dockPending) dockPending.catch(function () { /* Surface errors are reported by the engine. */ });
+      });
+      if (prewarmSettingsGlass) prewarmSettingsGlass();
+    });
+  }
+
+  function selectTabIntent(name) {
+    state.tab = name;
+    document.querySelectorAll('.tabs button[data-tab]').forEach(function (button) {
+      var selected = button.getAttribute('data-tab') === name;
+      button.classList.toggle('on', selected);
+      button.setAttribute('aria-selected', selected ? 'true' : 'false');
+      button.tabIndex = selected ? 0 : -1;
+    });
+  }
+
+  function preparePageGlass(scope, signal) {
+    setupLiquidGlassSurfaces(scope);
+    // Hidden panes still have their real layout. Position their restored model
+    // thumb before requesting its map, rather than on its first visible frame.
+    var groups = scope.querySelectorAll('.models');
+    var instant = [];
+    groups.forEach(function (box) {
+      var panel = box.closest('.pane');
+      if (!panel || panel.classList.contains('on')) return;
+      var button = box.querySelector('button.on') || box.querySelector('button');
+      applyThumbPosition(measureThumb(box, button, true), false, instant);
+    });
+    finishThumbPositions(instant);
+    if (window.ItLiquidGlass.isReady(scope)) return null;
+    return window.ItLiquidGlass.prepare(scope, { signal: signal });
+  }
+
+  function prepareTabDock(name, signal) {
+    var dock = document.querySelector('.dock[data-pane="' + name + '"]');
+    if (!dock) return null;
+    var staging = !dock.classList.contains('on');
+    if (staging) {
+      dock.classList.add('it-glass-preparing');
+      dock.inert = true;
+    }
+    var owners = dockPreparations.get(dock) || new Set();
+    var owner = {};
+    owners.add(owner);
+    dockPreparations.set(dock, owners);
+    var pending = preparePageGlass(dock, signal);
+    function cleanup() {
+      owners.delete(owner);
+      if (owners.size) return;
+      dockPreparations.delete(dock);
+      dock.classList.remove('it-glass-preparing');
+      // Revealing a tab owns its active dock's focus state. A background
+      // warmup must not re-enable it after a dialog has made the page inert.
+      if (!dock.classList.contains('on')) dock.inert = true;
+    }
+    if (!pending) { cleanup(); return null; }
+    return pending.then(function (result) {
+      cleanup();
+      return result;
+    }, function (error) {
+      cleanup();
+      throw error;
+    });
+  }
 
   function tabSurfaces(panel) {
     return Array.prototype.slice.call(panel.querySelectorAll('.models, .panes > .card'));
@@ -1323,8 +1406,65 @@
 
   function switchTab(name) {
     if (!panes[name]) return;
-    if (name === state.tab) return;
+    if (name === state.tab && !tabPreparation) return;
+    if (tabPreparation) tabPreparation.abort();
+    tabPreparation = null;
+    selectTabIntent(name);
+    if (name === shownTab) {
+      Object.keys(panes).forEach(function (key) {
+        var pane = $(panes[key]);
+        pane.inert = key !== name;
+        pane.setAttribute('aria-hidden', key === name ? 'false' : 'true');
+      });
+      document.querySelectorAll('.dock').forEach(function (dock) {
+        dock.inert = dock.getAttribute('data-pane') !== name;
+      });
+      positionThumbs(true);
+      return;
+    }
+    var controller = new AbortController();
+    var pagePreparation = preparePageGlass($(panes[name]), controller.signal);
+    var dockPreparation = prepareTabDock(name, controller.signal);
+    var preparation = pagePreparation || dockPreparation ?
+      Promise.all([pagePreparation, dockPreparation]) : null;
+    if (!preparation) { showTab(name); return; }
+    tabPreparation = controller;
+    // Keep the old scene on screen while the target is being prepared. Its
+    // text fields must stop taking focus as soon as the user selects a new tab.
+    Object.keys(panes).forEach(function (key) {
+      var pane = $(panes[key]);
+      pane.inert = true;
+      pane.setAttribute('aria-hidden', 'true');
+    });
+    document.querySelectorAll('.dock').forEach(function (dock) { dock.inert = true; });
+    var selectedTab = document.querySelector('.tabs button[data-tab="' + name + '"]');
+    var visiblePane = $(panes[shownTab]);
+    if (visiblePane && visiblePane.contains(document.activeElement) && selectedTab) {
+      selectedTab.focus({ preventScroll: true });
+    }
+    positionThumbs(true);
+    preparation.then(function () {
+      if (tabPreparation !== controller || controller.signal.aborted) return;
+      tabPreparation = null;
+      showTab(name);
+    }).catch(function (error) {
+      if (error.name === 'AbortError' || tabPreparation !== controller) return;
+      tabPreparation = null;
+      selectTabIntent(shownTab);
+      Object.keys(panes).forEach(function (key) {
+        var pane = $(panes[key]);
+        pane.inert = key !== shownTab;
+        pane.setAttribute('aria-hidden', key === shownTab ? 'false' : 'true');
+      });
+      document.querySelectorAll('.dock').forEach(function (dock) {
+        dock.inert = dock.getAttribute('data-pane') !== shownTab;
+      });
+      positionThumbs(false);
+      toast('玻璃效果准备失败，请重试', true);
+    });
+  }
 
+  function showTab(name) {
     var oldEl = $(panes[shownTab]);
     var newEl = $(panes[name]);
     if (openSelect && oldEl && oldEl.contains(openSelect.button)) closeSelect();
@@ -1361,6 +1501,8 @@
     });
     document.querySelectorAll('.dock').forEach(function (dock) {
       dock.classList.toggle('on', dock.getAttribute('data-pane') === name);
+      dock.inert = dock.getAttribute('data-pane') !== name;
+      dock.classList.remove('it-glass-preparing');
     });
     if (focusWasInOld) {
       var selectedTab = document.querySelector('.tabs button[data-tab="' + name + '"]');
@@ -1598,13 +1740,13 @@
     positionThumbs();
   }
 
-  function measureThumb(box, btn) {
+  function measureThumb(box, btn, includeHidden) {
     var drag = segmentDragGeometry.get(box);
     // The live gesture owns its thumb. Selection handlers may run synchronously
     // at a threshold, but must not snap it or remeasure after changing classes.
     if (drag && drag.dragging) return null;
     var panel = box.closest('.pane');
-    if (panel && !panel.classList.contains('on')) return null;
+    if (panel && !panel.classList.contains('on') && !includeHidden) return null;
     var thumb = box.querySelector('.models-thumb, .tabs-thumb');
     if (!thumb || !btn) return null;
     var width = btn.offsetWidth;
@@ -2936,6 +3078,7 @@
     var settingsLoaded = false;
     var popupPreviewData = null;
     var settingsSaving = false;
+    var settingsOpening = null;
     var glassTarget = 'card';
     var activeSection = 'appearance';
     var shownSection = 'appearance';
@@ -2944,6 +3087,8 @@
     var sectionTransitionSeq = 0;
     var sectionTransitionTimer = 0;
     var sectionTransitionFrame = 0;
+    var sectionPreparation = null;
+    var stagedSections = new WeakMap();
     var preferencePreviewFrame = 0;
     var preferencePreviewPending = false;
     var preferencePreviewSequence = 0;
@@ -3120,6 +3265,8 @@
     }
 
     function cancelSettingsSectionTransition(section) {
+      if (sectionPreparation) sectionPreparation.abort();
+      sectionPreparation = null;
       clearTimeout(sectionTransitionTimer);
       sectionTransitionTimer = 0;
       if (sectionTransitionFrame) cancelAnimationFrame(sectionTransitionFrame);
@@ -3127,14 +3274,72 @@
       sectionTransitionSeq++;
       setSettingsSection(section || sectionTransitionTarget || shownSection);
     }
+
+    function revealPreparedSettingsSection(section) {
+      var target = modal.querySelector('[data-pref-section="' + section + '"]');
+      if (!target) return;
+      var controller = new AbortController();
+      // A display:none section cannot be measured. Stage it over its normal
+      // content box, fully hidden and inert, until its exact maps are decoded.
+      var staging = target.hidden;
+      if (staging) target.classList.add('it-glass-section-preparing');
+      var owners = stagedSections.get(target) || new Set();
+      var owner = {};
+      owners.add(owner);
+      stagedSections.set(target, owners);
+      function cleanup() {
+        owners.delete(owner);
+        if (owners.size) return;
+        stagedSections.delete(target);
+        target.classList.remove('it-glass-section-preparing');
+      }
+      var preparation = preparePageGlass(target, controller.signal);
+      function reveal() {
+        cleanup();
+        if (controller.signal.aborted || activeSection !== section ||
+            !modal.classList.contains('on')) return;
+        sectionPreparation = null;
+        cancelSettingsSectionTransition(section);
+        var body = modal.querySelector('.it-set-body');
+        if (body) body.scrollTop = 0;
+      }
+      if (!preparation) { reveal(); return; }
+      sectionTransitionTarget = section;
+      sectionPreparation = controller;
+      preparation.then(reveal).catch(function (error) {
+        cleanup();
+        if (error.name !== 'AbortError' && sectionPreparation === controller) {
+          sectionPreparation = null;
+          activeSection = shownSection;
+          cancelSettingsSectionTransition(shownSection);
+          updateSettingsNavigation(false);
+          toast('玻璃效果准备失败，请重试', true);
+        }
+      });
+    }
+
     settleSettingsSection = function () {
-      if (sectionTransitionTarget) cancelSettingsSectionTransition(activeSection);
+      if (sectionTransitionTarget) {
+        var target = modal.querySelector('[data-pref-section="' + activeSection + '"]');
+        if (target && !target.hidden && window.ItLiquidGlass.isReady(target)) {
+          cancelSettingsSectionTransition(activeSection);
+        } else if (!sectionPreparation) {
+          clearTimeout(sectionTransitionTimer);
+          sectionTransitionTimer = 0;
+          if (sectionTransitionFrame) cancelAnimationFrame(sectionTransitionFrame);
+          sectionTransitionFrame = 0;
+          sectionTransitionSeq++;
+          revealPreparedSettingsSection(activeSection);
+        }
+      }
       updateSettingsNavigation(false);
     };
 
     function switchSettingsSection(section) {
       var target = modal.querySelector('[data-pref-section="' + section + '"]');
       if (!target || section === activeSection) return;
+      if (sectionPreparation) sectionPreparation.abort();
+      sectionPreparation = null;
       flushPreferencePreview();
       closeSelect();
       activeSection = section;
@@ -3142,7 +3347,8 @@
       var body = modal.querySelector('.it-set-body');
       var duration = motionReduced() ? 0 : cssDuration('--it-settings-switch-duration', 140);
       if (!modal.classList.contains('on') || duration <= 0 || section === shownSection) {
-        cancelSettingsSectionTransition(section);
+        if (modal.classList.contains('on')) revealPreparedSettingsSection(section);
+        else cancelSettingsSectionTransition(section);
         if (body) body.scrollTop = 0;
         return;
       }
@@ -3168,6 +3374,7 @@
 
       sectionTransitionTimer = setTimeout(function () {
         if (sequence !== sectionTransitionSeq || !modal.classList.contains('on')) return;
+        var previousSection = shownSection;
         target = modal.querySelector('[data-pref-section="' + activeSection + '"]');
         leaving.hidden = true;
         leaving.classList.remove('is-leaving');
@@ -3181,18 +3388,37 @@
         void target.offsetWidth;
         sectionTransitionFrame = requestAnimationFrame(function () {
           if (sequence !== sectionTransitionSeq || !modal.classList.contains('on')) return;
-          target.classList.add('is-entered');
-          sectionTransitionTimer = setTimeout(function () {
-            if (sequence !== sectionTransitionSeq || !modal.classList.contains('on')) return;
-            target.inert = false;
-            target.setAttribute('aria-hidden', 'false');
-            target.classList.remove('is-entering', 'is-entered');
-            sectionTransitionTarget = '';
-            sectionTransitionPhase = '';
-            sectionTransitionTimer = 0;
-            sectionTransitionFrame = 0;
-            if (body) body.removeAttribute('aria-busy');
-          }, duration + 24);
+          var controller = new AbortController();
+          var preparation = preparePageGlass(target, controller.signal);
+          function enter() {
+            if (sequence !== sectionTransitionSeq || !modal.classList.contains('on') ||
+                controller.signal.aborted) return;
+            sectionPreparation = null;
+            target.classList.add('is-entered');
+            sectionTransitionTimer = setTimeout(function () {
+              if (sequence !== sectionTransitionSeq || !modal.classList.contains('on')) return;
+              target.inert = false;
+              target.setAttribute('aria-hidden', 'false');
+              target.classList.remove('is-entering', 'is-entered');
+              sectionTransitionTarget = '';
+              sectionTransitionPhase = '';
+              sectionTransitionTimer = 0;
+              sectionTransitionFrame = 0;
+              if (body) body.removeAttribute('aria-busy');
+            }, duration + 24);
+          }
+          if (preparation) {
+            sectionPreparation = controller;
+            preparation.then(enter).catch(function (error) {
+              if (error.name !== 'AbortError' && sequence === sectionTransitionSeq) {
+                sectionPreparation = null;
+                activeSection = previousSection;
+                cancelSettingsSectionTransition(previousSection);
+                updateSettingsNavigation(false);
+                toast('玻璃效果准备失败，请重试', true);
+              }
+            });
+          } else enter();
         });
       }, duration + 24);
     }
@@ -3372,7 +3598,14 @@
     }
 
     function close() {
-      if (!modal.classList.contains('on')) return false;
+      if (!modal.classList.contains('on') && !settingsOpening) return false;
+      if (settingsOpening) {
+        settingsOpening.abort();
+        settingsOpening = null;
+        settingsSeq++;
+        cancelPreferencePreview();
+        return true;
+      }
       if (settingsSaving) return true;
       cancelPreferencePreview();
       stopRecord();
@@ -3398,7 +3631,7 @@
     closeSettingsLayer = close;
 
     window.__itOpenSettings = function (source) {
-      if (modal.classList.contains('on')) return;
+      if (modal.classList.contains('on') || settingsOpening) return;
       cancelPreferencePreview();
       closeSelect();
       var seq = ++settingsSeq;
@@ -3413,46 +3646,68 @@
       var resetBackgroundOnOpen = !!(source && source.resetBackground);
       committedSettings = copyObject(settingsState);
       if (resetBackgroundOnOpen) settingsState.preferences.background.data = '';
-      modal.inert = false;
-      modal.setAttribute('aria-hidden', 'false');
-      modal.classList.remove('it-surface-leave');
-      modal.classList.add('on');
       fill();
-      backgroundState = Array.prototype.slice.call(document.body.children).filter(function (el) {
-        return el !== modal && !/^(SCRIPT|STYLE)$/.test(el.tagName);
-      }).map(function (el) {
-        var entry = { el: el, inert: el.inert };
-        el.inert = true;
-        return entry;
-      });
-      moveSurface(dialog, settingsOrigin, true);
-      dialog.querySelector('[data-close]').focus({ preventScroll: true });
-      if (resetBackgroundOnOpen) applyPreferences(settingsState.preferences);
-      if (Bridge.isDesktop) {
-        enableControls(false);
-        $('it-set-status').textContent = '读取中';
-        Bridge.invoke('it_set_hotkeys_enabled', { enabled: false }).catch(function () {});
-        loadSystemFonts(seq);
-        Bridge.invoke('it_get_settings').then(function (saved) {
-          if (seq !== settingsSeq || !modal.classList.contains('on')) return;
-          settingsState = settingsFromSaved(saved, readSavedPreferences());
-          committedSettings = copyObject(settingsState);
-          if (resetBackgroundOnOpen) settingsState.preferences.background.data = '';
-          applyPreferences(settingsState.preferences);
-          fill();
-          $('it-set-status').textContent = '';
-          settingsLoaded = true;
-          enableControls(true);
-        }).catch(function (error) {
-          if (seq !== settingsSeq) return;
-          $('it-set-status').textContent = '读取失败，请关闭后重试';
-          toast('设置读取失败：' + error, true);
+      var controller = new AbortController();
+      var preparation = preparePageGlass(modal, controller.signal);
+      function reveal() {
+        if (seq !== settingsSeq || controller.signal.aborted) return;
+        settingsOpening = null;
+        modal.inert = false;
+        modal.setAttribute('aria-hidden', 'false');
+        modal.classList.remove('it-surface-leave');
+        modal.classList.add('on');
+        backgroundState = Array.prototype.slice.call(document.body.children).filter(function (el) {
+          return el !== modal && !/^(SCRIPT|STYLE)$/.test(el.tagName);
+        }).map(function (el) {
+          var entry = { el: el, inert: el.inert };
+          el.inert = true;
+          return entry;
         });
-      } else {
-        applyPreferences(settingsState.preferences);
-        $('it-set-status').textContent = '';
-        enableControls(true);
+        moveSurface(dialog, settingsOrigin, true);
+        dialog.querySelector('[data-close]').focus({ preventScroll: true });
+        if (resetBackgroundOnOpen) applyPreferences(settingsState.preferences);
+        if (Bridge.isDesktop) {
+          enableControls(false);
+          $('it-set-status').textContent = '读取中';
+          Bridge.invoke('it_set_hotkeys_enabled', { enabled: false }).catch(function () {});
+          loadSystemFonts(seq);
+          Bridge.invoke('it_get_settings').then(function (saved) {
+            if (seq !== settingsSeq || !modal.classList.contains('on')) return;
+            settingsState = settingsFromSaved(saved, readSavedPreferences());
+            committedSettings = copyObject(settingsState);
+            if (resetBackgroundOnOpen) settingsState.preferences.background.data = '';
+            applyPreferences(settingsState.preferences);
+            fill();
+            $('it-set-status').textContent = '';
+            settingsLoaded = true;
+            enableControls(true);
+          }).catch(function (error) {
+            if (seq !== settingsSeq) return;
+            $('it-set-status').textContent = '读取失败，请关闭后重试';
+            toast('设置读取失败：' + error, true);
+          });
+        } else {
+          applyPreferences(settingsState.preferences);
+          $('it-set-status').textContent = '';
+          enableControls(true);
+        }
       }
+      if (preparation) {
+        settingsOpening = controller;
+        preparation.then(reveal).catch(function (error) {
+          if (settingsOpening !== controller || error.name === 'AbortError') return;
+          settingsOpening = null;
+          toast('玻璃效果准备失败，请重试', true);
+        });
+      } else reveal();
+    };
+
+    prewarmSettingsGlass = function () {
+      if (modal.classList.contains('on') || settingsOpening) return;
+      settingsState = settingsFromSaved(null, activePreferences);
+      fill();
+      var preparation = preparePageGlass(modal);
+      if (preparation) preparation.catch(function () { /* Surface errors are reported by the engine. */ });
     };
 
     on(modal, 'click', function (e) {
@@ -3769,6 +4024,7 @@
     /* 恢复的是程序化赋值，不会触发 change：手动把按钮文字与模型滑块对齐 */
     refreshSelectButtons(false);
     positionThumbs();
+    scheduleGlassWarmup();
 
     var resizeFrame = 0;
     on(window, 'resize', function () {
@@ -3777,6 +4033,7 @@
         resizeFrame = 0;
         finishMotions();
         positionThumbs(false);
+        if (window.ItLiquidGlass && window.ItLiquidGlass.prepare) scheduleGlassWarmup();
         if (openSelect && openSelect.position) openSelect.position();
       });
     });

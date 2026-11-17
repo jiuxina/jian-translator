@@ -58,6 +58,57 @@
   var activeMapJob = null;
   var mapJobs = new Map();
   var mapWorkCounts = { main: 0, worker: 0, discarded: 0 };
+  var preparations = new Set();
+  var preparationCheckQueued = false;
+
+  function notifyPreparations() {
+    if (!preparations.size || preparationCheckQueued) return;
+    preparationCheckQueued = true;
+    Promise.resolve().then(function () {
+      preparationCheckQueued = false;
+      Array.from(preparations).forEach(function (check) { check(); });
+    });
+  }
+
+  function decodeMapImages(cached) {
+    if (cached.decoded) return Promise.resolve();
+    if (cached.decodePromise) return cached.decodePromise;
+    function decode(source) {
+      return new Promise(function (resolve, reject) {
+        var image = new Image();
+        var timer = setTimeout(function () { finish(new Error('Optical image decoding timed out.')); }, 10000);
+        var finished = false;
+        function finish(error) {
+          if (finished) return;
+          finished = true;
+          clearTimeout(timer);
+          image.onload = image.onerror = null;
+          if (error) reject(error);
+          else resolve();
+        }
+        image.onerror = function () { finish(new Error('Optical image decoding failed.')); };
+        if (typeof image.decode !== 'function') image.onload = function () { finish(); };
+        image.src = source;
+        if (typeof image.decode === 'function') image.decode().then(function () { finish(); }, finish);
+      });
+    }
+    cached.decodePromise = Promise.all([decode(cached.displacementUrl), decode(cached.specularUrl)])
+      .then(function () { cached.decoded = true; });
+    return cached.decodePromise;
+  }
+
+  function geometryError(state, error) {
+    state.readyGeometry = '';
+    state.decoded = false;
+    state.error = error;
+    state.element.dataset.itLiquidState = 'error';
+    document.documentElement.dataset.itLiquidGlass = 'error';
+    if (!state.errorReported) {
+      state.errorReported = true;
+      reportError('generation', error);
+    }
+    notifyPreparations();
+  }
 
   function reportError(code, error) {
     if (typeof document === 'undefined' || typeof CustomEvent !== 'function') return;
@@ -816,6 +867,10 @@
     var width = measurement.width;
     var height = measurement.height;
     if (width < 4 || height < 4) {
+      // display:none removes the current layout, not the previously decoded
+      // local geometry. Re-showing the same control can reuse it immediately;
+      // a different measured size will replace this key before preparation.
+      if (state.readyGeometry && state.geometry === state.readyGeometry) return;
       state.pendingGeometry = '';
       // Attribute observers refresh newly shown surfaces. Rewriting the same
       // pending value for a hidden surface would schedule another refresh on
@@ -828,10 +883,17 @@
     state.renderHeight = height;
     var optics = opticalPreset(state.presetName, radius);
     var key = geometryKey(width, height, radius, optics);
+    if (state.pendingGeometry !== key) {
+      state.error = null;
+      state.readyGeometry = '';
+    }
     state.pendingGeometry = key;
     if (state.geometry === key) {
       updateFilterParameters(state, state.maps);
-      markReady(element);
+      if (state.decoded) {
+        state.readyGeometry = key;
+        markReady(element);
+      } else if (state.mapEntry) applyGeometry(state, key, state.mapEntry);
       return;
     }
     try {
@@ -850,12 +912,7 @@
       var cached = cachedMaps(width, height, radius, optics);
       applyGeometry(state, key, cached);
     } catch (error) {
-      element.dataset.itLiquidState = 'error';
-      document.documentElement.dataset.itLiquidGlass = 'error';
-      if (!state.errorReported) {
-        state.errorReported = true;
-        reportError('generation', error);
-      }
+      geometryError(state, error);
       if (typeof console !== 'undefined' && console.error) {
         console.error('[笺] Liquid Glass filter generation failed.', error);
       }
@@ -866,10 +923,28 @@
     setImageSource(state.displacementImage, cached.displacementUrl);
     setImageSource(state.specularImage, cached.specularUrl);
     state.maps = cached.maps;
+    state.mapEntry = cached;
     state.geometry = key;
     state.errorReported = false;
+    state.error = null;
     updateFilterParameters(state, cached.maps);
-    markReady(state.element);
+    state.decoded = !!cached.decoded;
+    if (cached.decoded) {
+      state.readyGeometry = key;
+      markReady(state.element);
+      notifyPreparations();
+      return;
+    }
+    setAttributeIfChanged(state.element, 'data-it-liquid-state', 'pending');
+    decodeMapImages(cached).then(function () {
+      if (!wantsMap(state, key) || state.geometry !== key) return;
+      state.decoded = true;
+      state.readyGeometry = key;
+      markReady(state.element);
+      notifyPreparations();
+    }, function (error) {
+      if (wantsMap(state, key) && state.geometry === key) geometryError(state, error);
+    });
   }
 
   function supportsRenderer() {
@@ -963,6 +1038,7 @@
     if (state.filter && state.filter.parentNode) state.filter.parentNode.removeChild(state.filter);
     if (state.background && state.background.parentNode) state.background.parentNode.removeChild(state.background);
     if (state.progressive && state.progressive.parentNode) state.progressive.parentNode.removeChild(state.progressive);
+    notifyPreparations();
   }
 
   function configure(input) {
@@ -1024,6 +1100,62 @@
     return attached.get(element) || null;
   }
 
+  function measuredSurfaces(scope) {
+    var measurements = [];
+    attached.forEach(function (state, element) {
+      if (scope && scope !== element && !(scope.contains && scope.contains(element))) return;
+      var size = measureGeometry(state);
+      if (!size || size.width < 4 || size.height < 4) return;
+      measurements.push({ state: state, size: size,
+        key: geometryKey(size.width, size.height, size.radius, opticalPreset(state.presetName, size.radius)) });
+    });
+    return measurements;
+  }
+
+  function isReady(scope) {
+    return measuredSurfaces(scope).every(function (item) {
+      return item.state.readyGeometry === item.key && item.state.pendingGeometry === item.key &&
+        item.state.decoded && !item.state.error;
+    });
+  }
+
+  function prepare(scope, options) {
+    var signal = options && options.signal;
+    return new Promise(function (resolve, reject) {
+      var finished = false;
+      function finish(error) {
+        if (finished) return;
+        finished = true;
+        preparations.delete(check);
+        if (signal) signal.removeEventListener('abort', abort);
+        if (error) reject(error);
+        else resolve(true);
+      }
+      function abort() {
+        var error = new Error('Optical preparation was cancelled.');
+        error.name = 'AbortError';
+        finish(error);
+      }
+      function check() {
+        if (finished) return;
+        if (signal && signal.aborted) { abort(); return; }
+        var items = measuredSurfaces(scope);
+        items.forEach(function (item) {
+          if (!item.state.error) updateGeometry(item.state, item.size);
+        });
+        var failed = items.find(function (item) { return item.state.error; });
+        if (failed) { finish(failed.state.error); return; }
+        if (items.every(function (item) {
+          return item.state.readyGeometry === item.key && item.state.pendingGeometry === item.key &&
+            item.state.decoded;
+        })) finish();
+      }
+      if (signal) signal.addEventListener('abort', abort, { once: true });
+      preparations.add(check);
+      check();
+    });
+  }
+
   return {
     version: 4,
     defaults: normalizePresets(DEFAULTS),
@@ -1045,6 +1177,8 @@
     refresh: refresh,
     ensure: ensure,
     stateOf: stateOf,
+    prepare: prepare,
+    isReady: isReady,
     diagnostics: function () {
       return {
         mainThreadMaps: mapWorkCounts.main,

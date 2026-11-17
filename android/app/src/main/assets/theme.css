@@ -71,7 +71,11 @@
 }
 
 /* ---------- 2. 基础 ---------- */
-* { box-sizing: border-box; }
+* {
+  box-sizing: border-box;
+  -webkit-user-select: none;
+  user-select: none;
+}
 
 html, body {
   margin: 0;
@@ -152,6 +156,17 @@ button:disabled { cursor: default; }
 :focus-visible {
   outline: 2px solid var(--lg-accent);
   outline-offset: 2px;
+}
+
+/* App labels are not document text. Keep native selection and editing only
+   inside editable fields and the actual translated-content regions. */
+textarea:not([disabled]),
+input:not([readonly]):not([disabled]):is(:not([type]), [type="text"], [type="search"], [type="number"], [type="email"], [type="url"], [type="tel"], [type="password"]),
+[contenteditable="true"], [contenteditable="true"] *,
+[contenteditable="plaintext-only"], [contenteditable="plaintext-only"] *,
+.out:not(.card):not(.empty), .out:not(.card):not(.empty) * {
+  -webkit-user-select: text;
+  user-select: text;
 }
 
 /* ---------- 3. 顶栏（桌面端同时就是标题栏） ---------- */
@@ -776,6 +791,8 @@ textarea.src::placeholder { color: var(--lg-ink-faint); }
   background: none;
 }
 .dock.on { display: flex; }
+.dock.it-glass-preparing { display: flex; visibility: hidden; }
+.dock.it-glass-preparing > * { pointer-events: none; }
 .dock > * { pointer-events: auto; }
 
 .btn-primary {
@@ -1255,6 +1272,16 @@ textarea.src::placeholder { color: var(--lg-ink-faint); }
 .it-set-nav button.on { color: var(--lg-accent-deep); }
 .it-set-nav button[hidden] { display: none; }
 .it-set-page[hidden] { display: none; }
+.it-set-body { position: relative; }
+.it-set .it-set-page.it-glass-section-preparing[hidden] {
+  display: block !important;
+  position: absolute;
+  top: 12px;
+  left: 20px;
+  right: 20px;
+  visibility: hidden;
+  pointer-events: none;
+}
 .it-set-page { opacity: 1; transform: translateY(0);
   transition: opacity var(--it-settings-switch-duration) var(--lg-ease-enter),
               transform var(--it-settings-switch-duration) var(--lg-ease-enter); }
@@ -1321,6 +1348,15 @@ textarea.src::placeholder { color: var(--lg-ink-faint); }
 .it-set-row > .it-set-select-wrap .sel-value { width: 100% !important; max-width: none; }
 .it-set-row > .it-set-select-wrap .sel-btn:disabled { opacity: .52; cursor: default; }
 .it-set-color-row > .it-set-select-wrap { flex-basis: 142px; width: 142px; }
+@media (max-width: 760px) {
+  /* Opening a language list keeps its resting edge. Keyboard focus retains
+     the separate :focus-visible outline above. */
+  html:not(.it-desktop) #langbar .sel-btn[aria-expanded="true"],
+  html:not(.it-desktop) .it-set-row > .it-set-select-wrap .sel-btn.it-language-select:hover,
+  html:not(.it-desktop) .it-set-row > .it-set-select-wrap .sel-btn.it-language-select[aria-expanded="true"] {
+    border-color: var(--lg-edge);
+  }
+}
 .it-set-row input.recording {
   border-color: var(--lg-accent);
   background: var(--lg-accent-wash);
@@ -1474,6 +1510,7 @@ html[data-it-layout="compact"] .it-set-row { padding-top: 5px; padding-bottom: 5
   .it-set-color-row > .it-set-select-wrap { flex-basis: min(40%, 142px); width: min(40%, 142px); }
   .it-set-row > .it-set-select-wrap .sel-btn { min-height: 48px; }
   .it-set-body { flex: 1 1 auto; padding: 14px 18px; }
+  .it-set .it-set-page.it-glass-section-preparing[hidden] { top: 14px; left: 18px; right: 18px; }
   .it-set-row { min-height: 48px; }
   .it-set-range { min-height: 48px; padding: 10px 0; }
   .it-set-row select, .it-set-row input[type="text"] { flex-basis: min(55%, 210px); }
