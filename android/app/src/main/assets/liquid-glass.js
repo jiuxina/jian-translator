@@ -171,6 +171,9 @@
     var result = normalizeOptics(OPTICAL_DEFAULTS);
     if (name === 'pill') result.surfaceProfile = 'lip';
     var bezel = Math.max(1, Math.min(result.bezelWidth, numberOr(radius, 1) || 1));
+    // Keep refraction at the control's perimeter instead of filling most of a
+    // capsule. The static content panels do not use these interactive presets.
+    if (name === 'pill' || name === 'button') bezel = Math.max(1, Math.min(8, bezel * .4));
     // Resize the reference optical cross-section as one shape. Keeping a
     // 50px thickness when a small component has a 12px bezel creates a much
     // stronger lens than the reference's 60:50 bezel/thickness proportion.

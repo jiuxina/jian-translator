@@ -55,8 +55,42 @@ for (const name of ['card', 'pill', 'button']) {
       'normalization must preserve small-component optical proportions');
   }
 }
-assert.equal(glass.opticalPreset('button', 12).glassThickness, 10,
-  'a 12px button bezel uses 10px thickness rather than the unscaled 50px reference thickness');
+assert.ok(Math.abs(glass.opticalPreset('button', 12).bezelWidth - 4.8) < 1e-12,
+  'a 12px button corner uses a 4.8px refraction band');
+assert.ok(Math.abs(glass.opticalPreset('button', 12).glassThickness - 4) < 1e-12,
+  'narrowing the optical band also keeps the matching cross-section thickness');
+for (const name of ['pill', 'button']) {
+  for (const radius of [0, 2, 7, 12, 28, 60, 100]) {
+    const preset = glass.opticalPreset(name, radius);
+    assert.ok(preset.bezelWidth >= 1 && preset.bezelWidth <= 8,
+      `${name} limits the optical band without removing it at radius ${radius}`);
+  }
+  const radius = 28;
+  const oldOptics = {
+    ...glass.normalizeOptics(), surfaceProfile: name === 'pill' ? 'lip' : 'convex-circle',
+    bezelWidth: radius, glassThickness: radius * 50 / 60
+  };
+  const before = glass.generateMaps(220, 64, radius, oldOptics);
+  const after = glass.generateMaps(220, 64, radius, glass.opticalPreset(name, radius));
+  const changedPixels = (map) => {
+    let count = 0;
+    for (let index = 0; index < map.displacement.length; index += 4) {
+      if (map.displacement[index] !== 128 || map.displacement[index + 1] !== 128) count++;
+    }
+    return count;
+  };
+  assert.ok(changedPixels(after) > 0 && changedPixels(after) < changedPixels(before) * .5,
+    `${name} keeps real edge refraction over less than half the previous map area`);
+  for (let y = 9; y < 55; y++) {
+    const position = (y * after.mapWidth + 110) * 4;
+    assert.equal(after.displacement[position], 128, `${name} has no optical offset in the inset interior`);
+    assert.equal(after.displacement[position + 1], 128);
+  }
+  assert.deepEqual(after.specular, before.specular,
+    `${name} preserves the original directional highlight map`);
+}
+assert.equal(glass.opticalPreset('card', 28).bezelWidth, 28,
+  'the standalone legacy card preset remains compatible');
 assert.deepEqual(glass.interactionParameters('pill', glass.defaults.pill, false), {
   refractionRatio: .9,
   backgroundOpacity: .1,

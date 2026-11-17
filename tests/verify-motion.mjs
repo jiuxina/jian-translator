@@ -727,7 +727,9 @@ try {
     await page.evaluate(`(() => {
       const contrast = document.createElement('style');
       contrast.id = 'liquid-glass-contrast-test';
-      contrast.textContent = 'body::before{background:repeating-linear-gradient(90deg,#ff1744 0 18px,#1e40ff 18px 36px,#ffe600 36px 54px,#00bd72 54px 72px)!important;animation:none!important}body::after{display:none!important}';
+      // Narrow optical bands need several background edges inside their few
+      // pixel displacement range; keep the pixel-change threshold unchanged.
+      contrast.textContent = 'body::before{background:repeating-linear-gradient(90deg,#ff1744 0 6px,#1e40ff 6px 12px,#ffe600 12px 18px,#00bd72 18px 24px)!important;animation:none!important}body::after{display:none!important}';
       document.head.appendChild(contrast);
       window.__itDebug.preferences.apply(window.__itDebug.preferences.normalize({
         version: 3,
