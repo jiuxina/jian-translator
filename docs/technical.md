@@ -3,6 +3,16 @@
 这份文档面向开发者和维护者，记录架构、构建、验证与历史实现。
 面向普通用户的功能介绍和安装说明见仓库根目录的 `README.md`。
 
+## 文档维护约定
+
+根目录 `README.md` 面向用户，只保留产品介绍、功能、安装、使用与反馈入口。
+开发过程、修复经过、测试统计、本地构建路径、签名状态和待办事项统一写入 `docs/`，
+不追加到 README。实现与验证分别记录在相应专题文档，构建和交付状态记录在
+[Release 准备记录](release-preparation.md)；桌面产物详情记录在
+[桌面集成说明](desktop-integration.md)。
+
+## 架构与当前能力
+
 Windows、macOS、Android 与网页共用的翻译界面。`web/` 是界面、主题和交互的源码；
 Windows 通过 Pake/Tauri 加载本地页面，macOS 使用 Chromium 桌面壳，Android 使用 WebView。
 
@@ -32,6 +42,10 @@ IME 高度不压缩 WebView；输入焦点不再隐藏底栏或挤压卡片。
 设置移除取消和保存，修改即时应用并自动保存；范围/颜色输入逐帧预览、空闲 200ms 合并持久化，
 松手或关闭立即提交。桌面保存队列不锁定操作，关闭不回滚，失败保留重试状态，
 旧写入和过期加载不得覆盖较新值。分组重置、背景、快捷键和更新开关均自动保存。
+桌面划词悬浮窗预先准备隐藏的本地页面，不在预热时读取选区或剪贴板。
+快捷键触发后先以不激活方式显示等待态，再异步取词，保留原应用焦点；
+取词和翻译返回后在同一窗口更新，入场缩放、淡入与流式文字淡入均保留。
+关闭或新请求会使旧请求及迟到的重试、流式片段和复制反馈失效，避免过期内容重新弹窗。
 交互玻璃的边缘折射带按圆角的 40% 计算，限制在 1–8px；
 大胶囊不再让折射区域覆盖控件大部分内部，原高光、透明度与动画参数保留。
 旧注入脚本与主题资源也已从源码和后续 Android 资源输入中移除；历史安装包继续保留。
@@ -85,6 +99,25 @@ node app/macos/build.mjs --prepare-only
 node tests/verify-macos.mjs
 ```
 
+桌面划词提前显示的最小定向检查为：
+
+```powershell
+node tests/verify-popup-latency.mjs
+node tests/verify-windows-popup-lifecycle.mjs
+node tests/verify-macos-popup-lifecycle.mjs
+```
+
+共享渲染探针复用独立 Chromium 调试地址，默认端口 `9240`，也可通过 `IT_CDP_ORIGIN` 指定；
+它只创建自己的 `about:blank` 页面，使用延迟网络与剪贴板替身，检查真实入场和文字动画。
+Windows 定向检查需要本机 Rust 编译器，将实际生产函数提取到合成 Win32/Tauri 边界；
+macOS 定向检查用 Electron 窗口和延迟取词替身执行实际生命周期函数。
+三者分别为 **22/22**、**12/12**、**20/20** 通过，不读取真实选区、剪贴板、偏好或浏览器会话。
+结果分别为 `.build/popup-latency.json`、`.build/windows-popup-lifecycle.json` 与
+`.build/macos-popup-lifecycle.json`。Windows 目标离线 `cargo check` 与最终 Release
+构建已通过，产物为 `output/笺-2.3.0.exe` / `output/笺-2.3.0.msi`；
+真实窗口焦点仍需设备验收。主窗口唤起时排除预热浮窗的补丁另有四项定向检查，
+入口为 `python tests/verify-desktop-patch.py DesktopPopupRevealTests`。
+
 回归使用本地桥接替身并拦截外部请求，不调用翻译接口。界面设计、验证记录和历史成品说明见
 [ui-theme.md](ui-theme.md)。
 `IT_CDP_ORIGIN` 可指定其他 Chrome 调试地址，`IT_PREVIEW_ORIGIN` 可指定其他本地预览地址。
@@ -101,9 +134,11 @@ Android 连续输入、拖动、窗口变化与后台光学图生成另由
 `.build/attachment-layout.json`。这两个探针默认预览端口 `8875`、Chrome 调试端口 `9240`，
 复用独立测试会话。Android IME 探针用生产 insets 逻辑和平台替身验证稳定视口、旧系统、
 旋转及刘海；它不能替代某款真实输入法的设备验收。
-本轮最终全量在全部相关实现、资源、文档和构建完成后仅执行一次，
-日志为 `.build/ui-polish-final-verification.log` 与
-`.build/ui-polish-final-results.json`。此前的单项定向结果不合并成一次全量通过声明。
+本轮界面任务的唯一一次完整回归已记录在 `.build/ui-polish-final-verification.log` 与
+`.build/ui-polish-final-results.json`，结果为 **15/16 组**。两处设置测试状态依赖修正后，
+受影响场景单独检查 **53/53** 通过，记录在 `.build/ui-polish-settings-targeted.json`。
+随后增加的划词提前显示功能只执行上述相关定向检查，不重新运行整套，
+也不将局部通过合并成一次全量通过声明。
 
 历史任务最终离线浏览器回归为 `127/128`；覆盖连续动画、设置事务、窗口桥接契约、
 移动端触控、旧偏好迁移和高对比背景下真实折射像素变化。唯一失败是语言轮盘反向动画的固定帧采样，

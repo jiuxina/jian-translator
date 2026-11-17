@@ -1,4 +1,4 @@
-"""Targeted version-metadata checks; does not invoke builds or native APIs."""
+"""Targeted patch checks; does not invoke builds or native APIs."""
 import importlib.util
 from pathlib import Path
 import unittest
@@ -77,6 +77,90 @@ class DesktopPackageVersionTests(unittest.TestCase):
             with self.subTest(content=content), mock.patch.object(
                     PATCHER, "read", return_value=content), self.assertRaises(RuntimeError):
                 PATCHER.read_app_version("package.json")
+
+
+class DesktopPopupRevealTests(unittest.TestCase):
+    SOURCE = (
+        "pub fn hide_all_app_windows(app: &AppHandle) {\n"
+        "    for window in app.webview_windows().values() {\n"
+        "        let _ = window.hide();\n"
+        "    }\n"
+        "}\n\n"
+        "pub fn show_all_app_windows(app: &AppHandle, init_fullscreen: bool) {\n"
+        "    let windows = app.webview_windows();\n"
+        "    for window in windows.values() {\n"
+        "        let _ = window.unminimize();\n"
+        "        let _ = window.show();\n"
+        "        reapply_window_icon(window);\n"
+        "        #[cfg(target_os = \"linux\")]\n"
+        "        if init_fullscreen && !window.is_fullscreen().unwrap_or(false) {\n"
+        "            let _ = window.set_fullscreen(true);\n"
+        "        }\n"
+        "    }\n"
+        "    #[cfg(not(target_os = \"linux\"))]\n"
+        "    let _ = init_fullscreen;\n"
+        "    if let Some(main) = windows.get(\"pake\") {\n"
+        "        let _ = main.set_focus();\n"
+        "    } else if let Some(any) = windows.values().next() {\n"
+        "        let _ = any.set_focus();\n"
+        "    }\n"
+        "}\n\n"
+        "pub fn toggle_all_app_windows(app: &AppHandle, init_fullscreen: bool) {\n"
+        "    if any_app_window_visible(app) {\n"
+        "        hide_all_app_windows(app);\n"
+        "    } else {\n"
+        "        show_all_app_windows(app, init_fullscreen);\n"
+        "    }\n"
+        "}\n"
+    )
+
+    def test_excludes_only_popup_from_show_and_fallback_focus(self):
+        actual = PATCHER.exclude_popup_from_window_reveal(self.SOURCE)
+        expected = self.SOURCE.replace(
+            "    for window in windows.values() {\n",
+            "    for window in windows.values() {\n"
+            '        if window.label() == "pake-popup" {\n'
+            "            continue;\n"
+            "        }\n", 1,
+        ).replace(
+            "    } else if let Some(any) = windows.values().next() {",
+            "    } else if let Some(any) = windows\n"
+            "        .values()\n"
+            '        .find(|window| window.label() != "pake-popup")\n'
+            "    {", 1,
+        )
+        self.assertEqual(actual, expected)
+        self.assertEqual(actual.count('window.label() == "pake-popup"'), 1)
+        self.assertEqual(actual.count('window.label() != "pake-popup"'), 1)
+        self.assertEqual(PATCHER.exclude_popup_from_window_reveal(actual), actual)
+
+    def test_preserves_crlf_and_does_not_touch_other_reveal_loops(self):
+        unrelated = (
+            "pub fn show_unrelated_windows() {\n"
+            "    for window in windows.values() {\n"
+            "        let _ = window.show();\n"
+            "    }\n"
+            "}\n\n"
+        )
+        source = (unrelated + self.SOURCE).replace("\n", "\r\n")
+        actual = PATCHER.exclude_popup_from_window_reveal(source)
+        self.assertTrue(actual.startswith(unrelated.replace("\n", "\r\n")))
+        self.assertNotIn("\n", actual.replace("\r\n", ""))
+        self.assertEqual(PATCHER.exclude_popup_from_window_reveal(actual), actual)
+
+    def test_missing_or_ambiguous_reveal_function_fails(self):
+        for source in ("pub fn unrelated() {}\n", self.SOURCE + self.SOURCE):
+            with self.subTest(source=source), self.assertRaises(RuntimeError):
+                PATCHER.exclude_popup_from_window_reveal(source)
+
+    def test_changed_or_incomplete_reveal_body_fails_before_returning(self):
+        for source in (
+            self.SOURCE.replace("for window in windows.values()", "for window in other.values()"),
+            self.SOURCE.replace("windows.values().next()", "fallback_window()"),
+            "pub fn show_all_app_windows(app: &AppHandle, init_fullscreen: bool) {\n",
+        ):
+            with self.subTest(source=source), self.assertRaises(RuntimeError):
+                PATCHER.exclude_popup_from_window_reveal(source)
 
 
 if __name__ == "__main__":

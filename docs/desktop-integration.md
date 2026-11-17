@@ -1,5 +1,60 @@
 # 桌面窗口与设置集成
 
+## 当前：划词时先显示悬浮窗（2026-11-17）
+
+悬浮窗模式改为先展示等待态，再异步取词和接收译文。旧流程在显示窗口前等待复制选区，
+Windows 还包含固定等待、修饰键释放和剪贴板变化轮询；macOS 等待系统脚本复制完成。
+这段显示前等待会让人感觉窗口在翻译返回后才出现，实际网络响应并非原来的显示门槛。
+
+Windows 和 macOS 均预热隐藏的本地悬浮窗，不在预热或空闲时读取选区与剪贴板。
+快捷键触发后先定位并显示等待态，取词期间不激活窗口，原应用保有焦点。
+Windows 使用 `SW_SHOWNOACTIVATE` 和取词期的 `WS_EX_NOACTIVATE`；
+取词后清除该样式并以 `SetWindowPos(...SWP_FRAMECHANGED)` 刷新，成功后才聚焦。
+macOS 使用 `showInactive()`，取词完成后恢复可聚焦状态。
+已打开的 macOS 浮窗会先清理旧失焦回调再复用，避免关闭尚未完成时重用失效窗口。
+
+共用数据协议为 `{id, phase, text, notice, target}`，阶段为 `pending`、`ready` 或 `notice`。
+同一请求从等待态推进一次，不为等待态提交空翻译；正式文本在原窗口内开始流式翻译，
+不重播整个窗口入场。实际显示时通过 `__popupPresent()` 启动原有 `popup-arrive` 动画，
+流式文字继续使用 `stream-arrive`，减少动态效果与关闭动画偏好继续生效。
+重复投递、旧 ID、过期网络片段和复制反馈不得替换较新的状态。
+关闭会撤销当前请求，较晚的取词、重试或网络返回不能重新显示窗口。
+macOS 保留取词串行保护，取词未结束时重复快捷键不会启动重叠的系统复制。
+“在主窗口显示结果”的偏好继续保留原目的窗口行为。
+
+本轮定向证据：
+
+| 检查 | 结果 | 范围 |
+| --- | ---: | --- |
+| `tests/verify-popup-latency.mjs` | 22/22 | 在真实 Chromium 渲染中延迟响应，检查等待态先绘制、实际入场与流式淡入、单次请求、取消和旧结果隔离。 |
+| `tests/verify-windows-popup-lifecycle.mjs` | 12/12 | 提取生产 Rust 函数，使用合成 Win32/Tauri 边界验证先显示后取词、窗口样式刷新、焦点交接、取消、失败及真实 watchdog 的过期关闭。 |
+| `tests/verify-macos-popup-lifecycle.mjs` | 20/20 | 执行生产生命周期函数，使用合成 Electron 窗口和延迟选区验证无激活等待、同窗更新、连续触发、关闭与重试。 |
+
+报告分别为 `.build/popup-latency.json`、`.build/windows-popup-lifecycle.json`、
+`.build/macos-popup-lifecycle.json`；等待态截图为 `.build/popup-pending.png`，已实际查看。
+全部内容、网络、剪贴板和窗口边界均为合成数据或替身，不读取真实用户数据。
+这些检查不等于真实 Windows HWND / WebView2 焦点、macOS 权限与系统复制验收；
+Windows 目标 `cargo check --target x86_64-pc-windows-msvc --offline` 已通过；
+最终 EXE/MSI Release 构建成功，名称“笺”和应用标识 `ink.jian.translate` 保持原样，
+EXE 的 FileVersion / ProductVersion 均为 `2.3.0`。交付如下：
+
+| 文件 | 字节数 | SHA-256 |
+| --- | ---: | --- |
+| `output/笺-2.3.0.exe` | 9,485,824 | `127e72c260d66553a80309c08f71c018d55128bade4cc775dc4d6e280f7562fd` |
+| `output/笺-2.3.0.msi` | 4,329,472 | `b70c3adbe93f917e5067a16e2acadf3a311f2285afc34dc900bcce33b1436edc` |
+
+构建目录为 `.build/popup-release-stage-20261117/`，来源哈希与资产清单为
+`.build/popup-release-artifacts.json`，既有历史包保留。
+窗口补丁另以四项定向检查验证：
+主窗口显示与回退聚焦排除预热浮窗、重复应用、CRLF 和变化锚点失败，
+入口为 `python tests/verify-desktop-patch.py DesktopPopupRevealTests`。
+watchdog 的破坏性关闭在 UI 线程再次校验代次，避免旧失焦确认关闭后来复用的窗口。
+
+本轮界面任务的唯一一次完整回归保留为 **15/16 组**，设置测试夹具修正后的相关场景为
+**53/53**；后加的划词提前显示仅做上述定向检查，没有重新运行整套或改写历史统计。
+Android 交付继续保持名称“笺”和 `ink.jian.translate`，采用 Release；
+原签名使用仍待明确授权，当前不以未签名文件声称完成 APK 交付。
+
 ## 首次发布候选的版本元数据（2026-11-16）
 
 首发准备修复了下文历史包中的 PE 版本不一致：补丁器从 `app/macos/package.json`

@@ -70,7 +70,7 @@ impl Default for DesktopSettings {
 static SETTINGS: Mutex<Option<DesktopSettings>> = Mutex::new(None);
 static HOTKEYS_ENABLED: AtomicBool = AtomicBool::new(true);
 static CLIPBOARD_TRANSACTION: Mutex<()> = Mutex::new(());
-// 每次唤起悬浮窗换一个 id，JS 用它给重复投递的脚本去重
+// 每次划词请求使用递增 ID，同一请求从等待阶段推进到结果阶段
 static POPUP_SEQ: AtomicU64 = AtomicU64::new(0);
 // watchdog 代次：新翻译顶掉旧 watchdog，避免多个线程同时盯一个窗口
 static POPUP_GENERATION: AtomicU64 = AtomicU64::new(0);
@@ -763,8 +763,9 @@ fn cursor_position() -> (i32, i32) {
 
 fn popup_payload_script(payload: &str) -> String {
     format!(
-        "(function(){{var p={payload};window.__itPopupPayload=p;\
-         if(window.__popupApply)window.__popupApply(p);}})();"
+        "(function(){{var p={payload};\
+         if(window.__popupApply)window.__popupApply(p);\
+         else window.__itPopupPayload=p;}})();"
     )
 }
 
@@ -777,43 +778,214 @@ fn deliver_popup(window: &WebviewWindow, payload: &str, appearance: &serde_json:
     let _ = window.eval(&popup_payload_script(payload));
 }
 
-/// notice 非空时只显示提示，不发翻译请求。
-fn show_popup(app: &AppHandle, text: &str, notice: &str) {
-    let settings = current_settings();
-    let appearance = popup_appearance(&settings);
-    let id = POPUP_SEQ.fetch_add(1, Ordering::Relaxed) + 1;
-    let payload = serde_json::json!({
-        "id": id,
-        "text": text,
-        "notice": notice,
-        "target": settings.target_lang,
-    })
-    .to_string();
-    let generation = POPUP_GENERATION.fetch_add(1, Ordering::Relaxed) + 1;
+fn popup_request_is_current(generation: u64) -> bool {
+    POPUP_GENERATION.load(Ordering::Acquire) == generation
+}
 
-    // 建窗口 / show / eval 全部放主线程：从后台线程 build 只是排队，
-    // 紧接着的 eval 很容易打在还没创建出来的 WebView 上，表现是「窗口空白不翻译」。
+fn next_popup_generation() -> u64 {
+    POPUP_GENERATION.fetch_add(1, Ordering::AcqRel) + 1
+}
+
+fn cancel_popup_request(generation: u64) {
+    let _ = POPUP_GENERATION.compare_exchange(
+        generation,
+        generation + 1,
+        Ordering::AcqRel,
+        Ordering::Acquire,
+    );
+}
+
+fn popup_payload(id: u64, phase: &str, text: &str, notice: &str, target: &str) -> String {
+    serde_json::json!({
+        "id": id, "phase": phase, "text": text, "notice": notice, "target": target,
+    })
+    .to_string()
+}
+
+#[cfg(target_os = "windows")]
+fn set_popup_capture_mode(window: &WebviewWindow, capturing: bool) -> Result<(), String> {
+    use windows_sys::Win32::Foundation::{GetLastError, SetLastError};
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        GetWindowLongPtrW, SetWindowLongPtrW, SetWindowPos, GWL_EXSTYLE, SWP_FRAMECHANGED,
+        SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOOWNERZORDER, SWP_NOSIZE, SWP_NOZORDER, WS_EX_NOACTIVATE,
+    };
+    let hwnd = window
+        .hwnd()
+        .map_err(|error| format!("无法获取划词悬浮窗句柄：{error}"))?;
+    // SAFETY: the HWND belongs to this live popup and is only used synchronously.
+    let current = unsafe {
+        SetLastError(0);
+        let style = GetWindowLongPtrW(hwnd.0, GWL_EXSTYLE);
+        let error = GetLastError();
+        if style == 0 && error != 0 {
+            return Err(format!("无法读取划词悬浮窗激活样式：Windows 错误 {error}"));
+        }
+        style
+    };
+    let next = popup_extended_style(current, WS_EX_NOACTIVATE as isize, capturing);
+
+    // SAFETY: the HWND is live. A cleared last-error distinguishes a valid zero
+    // previous style from a failed SetWindowLongPtrW call.
+    if next != current {
+        unsafe {
+            SetLastError(0);
+            let previous = SetWindowLongPtrW(hwnd.0, GWL_EXSTYLE, next);
+            let error = GetLastError();
+            if previous == 0 && error != 0 {
+                return Err(format!("无法设置划词悬浮窗激活样式：Windows 错误 {error}"));
+            }
+        }
+    }
+
+    // SetWindowLongPtrW updates the style value, but Windows can cache the
+    // non-client style until SetWindowPos receives SWP_FRAMECHANGED. Keep the
+    // popup's geometry and Z order and never activate it during this refresh.
+    // SAFETY: null insert-after is ignored with SWP_NOZORDER; all geometry is preserved.
+    let refreshed = unsafe {
+        SetWindowPos(
+            hwnd.0,
+            std::ptr::null_mut(),
+            0,
+            0,
+            0,
+            0,
+            SWP_FRAMECHANGED
+                | SWP_NOMOVE
+                | SWP_NOSIZE
+                | SWP_NOZORDER
+                | SWP_NOOWNERZORDER
+                | SWP_NOACTIVATE,
+        )
+    };
+    if refreshed == 0 {
+        let error = unsafe { GetLastError() };
+        return Err(format!("无法刷新划词悬浮窗激活样式：Windows 错误 {error}"));
+    }
+    Ok(())
+}
+
+#[cfg(not(target_os = "windows"))]
+fn set_popup_capture_mode(_window: &WebviewWindow, _capturing: bool) -> Result<(), String> {
+    Ok(())
+}
+
+#[cfg(any(test, target_os = "windows"))]
+fn popup_extended_style(current: isize, no_activate: isize, capturing: bool) -> isize {
+    if capturing {
+        current | no_activate
+    } else {
+        current & !no_activate
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn show_popup_without_focus(window: &WebviewWindow) {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{ShowWindow, SW_SHOWNOACTIVATE};
+    if let Ok(hwnd) = window.hwnd() {
+        // SAFETY: the HWND belongs to this live popup. This never activates it.
+        unsafe { ShowWindow(hwnd.0, SW_SHOWNOACTIVATE) };
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn show_popup_without_focus(window: &WebviewWindow) {
+    let _ = window.show();
+}
+
+fn retry_popup_delivery(window: &WebviewWindow, payload: &str, generation: u64) {
+    for delay in [150u64, 450, 1000, 2000] {
+        let window = window.clone();
+        let payload = payload.to_string();
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(delay));
+            if !popup_request_is_current(generation) || !window.is_visible().unwrap_or(false) {
+                return;
+            }
+            let appearance = popup_appearance(&current_settings());
+            deliver_popup(&window, &payload, &appearance);
+        });
+    }
+}
+
+fn complete_popup(
+    app: &AppHandle,
+    id: u64,
+    generation: u64,
+    text: &str,
+    notice: &str,
+    target: &str,
+) {
+    let payload = popup_payload(
+        id,
+        if notice.is_empty() { "ready" } else { "notice" },
+        text,
+        notice,
+        target,
+    );
     let handle = app.clone();
     let main_thread_app = handle.clone();
     let _ = handle.run_on_main_thread(move || {
+        if !popup_request_is_current(generation) {
+            return;
+        }
+        // Completion never creates, shows or repositions a dismissed popup.
+        let Some(window) = main_thread_app.get_webview_window(POPUP_LABEL) else {
+            return;
+        };
+        if !window.is_visible().unwrap_or(false) {
+            cancel_popup_request(generation);
+            return;
+        }
+        let focus_ready = match set_popup_capture_mode(&window, false) {
+            Ok(()) => true,
+            Err(error) => {
+                eprintln!("[IT] {error}");
+                false
+            }
+        };
+        let appearance = popup_appearance(&current_settings());
+        deliver_popup(&window, &payload, &appearance);
+        if focus_ready {
+            if let Err(error) = window.set_focus() {
+                eprintln!("[IT] 聚焦划词悬浮窗失败：{error}");
+            }
+        }
+        retry_popup_delivery(&window, &payload, generation);
+    });
+}
+
+fn present_popup(
+    app: &AppHandle,
+    id: u64,
+    generation: u64,
+    target: &str,
+    after_present: impl FnOnce() + Send + 'static,
+) {
+    let payload = popup_payload(id, "pending", "", "", target);
+    let handle = app.clone();
+    let main_thread_app = handle.clone();
+    let _ = handle.run_on_main_thread(move || {
+        if !popup_request_is_current(generation) {
+            return;
+        }
         let Some(window) = ensure_popup(&main_thread_app) else {
             return;
         };
+        if let Err(error) = set_popup_capture_mode(&window, true) {
+            // SW_SHOWNOACTIVATE still protects the source application on first
+            // show; report that pointer activation may be less restricted.
+            eprintln!("[IT] {error}");
+        }
+        let appearance = popup_appearance(&current_settings());
         deliver_popup(&window, &payload, &appearance);
         position_popup(&main_thread_app, &window);
-        let _ = window.show();
-        let _ = window.set_focus();
-
-        for delay in [150u64, 450, 1000, 2000] {
-            let window = window.clone();
-            let payload = payload.clone();
-            std::thread::spawn(move || {
-                std::thread::sleep(Duration::from_millis(delay));
-                let appearance = popup_appearance(&current_settings());
-                deliver_popup(&window, &payload, &appearance);
-            });
-        }
+        show_popup_without_focus(&window);
+        let _ = window.eval(
+            "window.__itPopupPresentRequested=true;window.__popupPresent&&window.__popupPresent()",
+        );
+        retry_popup_delivery(&window, &payload, generation);
         watch_popup(main_thread_app.clone(), window, generation);
+        after_present();
     });
 }
 
@@ -843,9 +1015,19 @@ fn ensure_popup(app: &AppHandle) -> Option<WebviewWindow> {
 
     builder.build().ok().map(|window| {
         // about:blank 不一定触发 PageLoadEvent，创建后立即注入模板；
-        // show_popup 还会带数据重复投递几次，模板内部有幂等判断。
+        // 载入阶段会补投同一 payload，模板按请求与阶段幂等处理。
         let _ = window.eval(LIQUID_GLASS_ENGINE);
         let _ = window.eval(POPUP_BOOTSTRAP);
+        let popup_handle = app.clone();
+        window.on_window_event(move |event| {
+            if matches!(event, tauri::WindowEvent::CloseRequested { .. }) {
+                let generation = POPUP_GENERATION.load(Ordering::Acquire);
+                cancel_popup_request(generation);
+                if let Some(popup) = popup_handle.get_webview_window(POPUP_LABEL) {
+                    let _ = popup.eval("window.__popupDismiss&&window.__popupDismiss()");
+                }
+            }
+        });
         window
     })
 }
@@ -886,9 +1068,34 @@ fn position_popup(app: &AppHandle, window: &WebviewWindow) {
     let _ = window.set_position(PhysicalPosition::new(x.round() as i32, y.round() as i32));
 }
 
+fn dismiss_popup_if_current(app: &AppHandle, window: &WebviewWindow, generation: u64) {
+    let window = window.clone();
+    if let Err(error) = app.run_on_main_thread(move || {
+        // Showing and closing are serialized on the UI thread. Claim only this
+        // request immediately before destructive work; a queued old watchdog
+        // must not close a window already reused by a newer shortcut.
+        if POPUP_GENERATION
+            .compare_exchange(
+                generation,
+                generation + 1,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
+            .is_err()
+        {
+            return;
+        }
+        let _ = window.eval("window.__popupDismiss&&window.__popupDismiss()");
+        if let Err(error) = window.destroy() {
+            eprintln!("[IT] 关闭划词悬浮窗失败：{error}");
+        }
+    }) {
+        eprintln!("[IT] 调度划词悬浮窗关闭失败：{error}");
+    }
+}
+
 fn watch_popup(app: AppHandle, window: WebviewWindow, generation: u64) {
     std::thread::spawn(move || {
-        let _ = &app; // 只有非 Windows 分支用得到，避免告警
         let mut seen_foreground = false;
         let mut ticks = 0u32;
         loop {
@@ -900,11 +1107,12 @@ fn watch_popup(app: AppHandle, window: WebviewWindow, generation: u64) {
                 break;
             }
             if !window.is_visible().unwrap_or(false) {
+                cancel_popup_request(generation);
                 break;
             }
             // 长时间没被聚焦（系统限制了后台抢焦点）就自动收起，避免一直挂着
             if !seen_foreground && ticks > 90 {
-                let _ = window.destroy();
+                dismiss_popup_if_current(&app, &window, generation);
                 break;
             }
 
@@ -921,9 +1129,12 @@ fn watch_popup(app: AppHandle, window: WebviewWindow, generation: u64) {
                 } else if seen_foreground && ticks % 2 == 0 {
                     // 再确认一次，避免焦点切换瞬间误关
                     std::thread::sleep(Duration::from_millis(120));
+                    if !popup_request_is_current(generation) {
+                        break;
+                    }
                     let again = unsafe { GetForegroundWindow() };
                     if again as isize != mine {
-                        let _ = window.destroy();
+                        dismiss_popup_if_current(&app, &window, generation);
                         break;
                     }
                 }
@@ -931,7 +1142,7 @@ fn watch_popup(app: AppHandle, window: WebviewWindow, generation: u64) {
                 // 低位表示「上次查询后按下过」，能捕获很快的 Esc 轻点
                 let esc = unsafe { GetAsyncKeyState(0x1B) } as u16 & 0x8001 != 0;
                 if esc {
-                    let _ = window.destroy();
+                    dismiss_popup_if_current(&app, &window, generation);
                     break;
                 }
             }
@@ -957,6 +1168,7 @@ if (window.__popupBooted && window.__popupApply && document.getElementById('out'
     window.__popupApplyPreferences(window.__itPopupAppearance);
   }
   if (window.__itPopupPayload) window.__popupApply(window.__itPopupPayload);
+  if (window.__itPopupPresentRequested && window.__popupPresent) window.__popupPresent();
   return;
 }
 document.documentElement.innerHTML = `
@@ -986,7 +1198,9 @@ document.documentElement.innerHTML = `
   body{box-sizing:border-box;padding:22px;position:relative;isolation:isolate;}
   #card-frame{height:100%;position:relative;isolation:isolate;border-radius:var(--lg-r-lg);
     box-shadow:var(--lg-shadow-strong);
-    transform-origin:center;animation:popup-arrive var(--lg-duration-panel) var(--lg-ease-enter) both;}
+    transform-origin:center;}
+  html[data-popup-present="true"] #card-frame{
+    animation:popup-arrive var(--lg-duration-panel) var(--lg-ease-enter) both;}
   #popup-background{position:absolute;z-index:0;inset:0;overflow:hidden;border-radius:inherit;pointer-events:none;}
   #popup-background::before{content:"";position:absolute;inset:var(--it-popup-bg-inset);
     background-image:var(--it-popup-background-image,none);background-position:center;background-repeat:no-repeat;
@@ -1073,6 +1287,10 @@ window.ItLiquidGlass.attach(document.getElementById('copy'), 'button');
   var popupBackground = document.getElementById('popup-background');
   var copyFeedbackTimer = 0;
   var lastId = 0;
+  var lastPhase = -1;
+  var requestRevision = 0;
+  var dismissedId = 0;
+  var dismissed = false;
   var controller = null;
   var paintQueue = '';
   var paintFrame = 0;
@@ -1083,9 +1301,9 @@ window.ItLiquidGlass.attach(document.getElementById('copy'), 'button');
     paintQueue = '';
   }
 
-  function flushOutputQueue(final) {
+  function flushOutputQueue(final, revision) {
     paintFrame = 0;
-    if (!paintQueue) return;
+    if (!paintQueue || revision !== requestRevision || dismissed) return;
     var count = final ? paintQueue.length : Math.max(4, Math.min(70, Math.ceil(paintQueue.length / 5)));
     var chunk = paintQueue.slice(0, count);
     paintQueue = paintQueue.slice(count);
@@ -1103,17 +1321,19 @@ window.ItLiquidGlass.attach(document.getElementById('copy'), 'button');
       }, 260);
       output.appendChild(segment);
     }
-    if (paintQueue) paintFrame = requestAnimationFrame(function () { flushOutputQueue(false); });
+    if (paintQueue) paintFrame = requestAnimationFrame(function () { flushOutputQueue(false, revision); });
   }
 
-  function queueOutput(text) {
+  function queueOutput(text, revision) {
+    if (revision !== requestRevision || dismissed) return;
     if (output.querySelector('.ph')) output.textContent = '';
+    copy.disabled = false;
     if (popupMotionDisabled()) {
       output.appendChild(document.createTextNode(text));
       return;
     }
     paintQueue += text;
-    if (!paintFrame) paintFrame = requestAnimationFrame(function () { flushOutputQueue(false); });
+    if (!paintFrame) paintFrame = requestAnimationFrame(function () { flushOutputQueue(false, revision); });
   }
 
   function pickTarget(text, wanted) {
@@ -1121,26 +1341,81 @@ window.ItLiquidGlass.attach(document.getElementById('copy'), 'button');
     return /[\u4e00-\u9fa5]/.test(text) ? 'en' : 'zh';
   }
 
-  window.__popupApply = function (p) {
-    if (!p || p.id === lastId) return;   // 重复投递不去重就会重复发请求
-    lastId = p.id;
+  window.__popupPresent = function () {
+    if (dismissed || !lastId || lastId <= dismissedId) return;
+    window.__itPopupPresentRequested = false;
+    var root = document.documentElement;
+    root.removeAttribute('data-popup-present');
+    void document.getElementById('card-frame').offsetWidth;
+    root.setAttribute('data-popup-present', 'true');
+  };
+
+  window.__popupDismiss = function () {
+    window.__itPopupPresentRequested = false;
+    dismissed = true;
+    dismissedId = Math.max(dismissedId, lastId);
+    requestRevision++;
     cancelOutputQueue();
     if (controller) { try { controller.abort(); } catch (e) {} controller = null; }
+    clearTimeout(copyFeedbackTimer);
+    copy.disabled = true;
+    document.documentElement.removeAttribute('data-popup-present');
+    document.documentElement.dataset.popupPhase = 'dismissed';
+  };
 
-    var notice = (p && p.notice) || '';
-    copy.textContent = '复制';
-    if (notice) {
-      meta.textContent = '提示';
+  window.__popupApply = function (p) {
+    if (!p || !Number.isSafeInteger(Number(p.id)) || Number(p.id) < 1) return;
+    var id = Number(p.id);
+    var notice = typeof p.notice === 'string' ? p.notice : '';
+    var text = typeof p.text === 'string' ? p.text : '';
+    var phase = p.phase || (notice ? 'notice' : text ? 'ready' : 'pending');
+    var phaseRank = phase === 'pending' ? 0 : (phase === 'ready' || phase === 'notice' ? 1 : -1);
+    if (phaseRank < 0 || id < lastId || (id === lastId && id <= dismissedId) ||
+        (id === lastId && phaseRank <= lastPhase)) return;
+
+    var isNewRequest = id > lastId;
+    if (isNewRequest) {
+      if (controller) { try { controller.abort(); } catch (e) {} }
+      controller = null;
+      cancelOutputQueue();
+      clearTimeout(copyFeedbackTimer);
+      copy.title = '';
+      copy.textContent = '复制';
+      copy.disabled = true;
+      requestRevision++;
+      dismissed = false;
+      lastId = id;
+      lastPhase = -1;
+      document.documentElement.removeAttribute('data-popup-present');
+    }
+    lastPhase = phaseRank;
+    document.documentElement.dataset.popupPhase = phase;
+
+    if (phase === 'pending') {
+      meta.textContent = '翻译中';
       badge.textContent = '';
-      output.textContent = notice;
+      output.innerHTML = '<span class="ph">正在翻译…</span>';
+      copy.disabled = true;
       return;
     }
 
-    var text = (p && p.text) || '';
-    var target = pickTarget(text, p && p.target);
+    var revision = requestRevision;
+    cancelOutputQueue();
+    if (controller) { try { controller.abort(); } catch (e) {} controller = null; }
+    if (phase === 'notice') {
+      meta.textContent = '提示';
+      badge.textContent = '';
+      output.textContent = notice;
+      copy.disabled = true;
+      return;
+    }
+
+    var target = pickTarget(text, p.target);
     meta.textContent = text.length > 42 ? text.slice(0, 42) + '…' : text;
     badge.textContent = target === 'en' ? '→ EN' : '→ 中文';
     output.innerHTML = '<span class="ph">正在翻译…</span>';
+    copy.disabled = true;
+    if (!text.trim()) return;
 
     var accumulated = '';
     controller = typeof AbortController === 'function' ? new AbortController() : null;
@@ -1165,12 +1440,17 @@ window.ItLiquidGlass.attach(document.getElementById('copy'), 'button');
 
     fetch('https://index-translate.bilibili.com/v1/chat/completions', options)
       .then(async function (response) {
+        if (revision !== requestRevision || dismissed) return;
         if (!response.ok) throw new Error('HTTP ' + response.status);
         var reader = response.body.getReader();
         var decoder = new TextDecoder();
         var buffer = '';
         while (true) {
           var read = await reader.read();
+          if (revision !== requestRevision || dismissed) {
+            try { await reader.cancel(); } catch (error) {}
+            return;
+          }
           if (read.done) break;
           buffer += decoder.decode(read.value, { stream: true });
           var parts = buffer.split('\n\n');
@@ -1183,30 +1463,37 @@ window.ItLiquidGlass.attach(document.getElementById('copy'), 'button');
             try {
               var json = JSON.parse(data);
               var delta = json.choices && json.choices[0] && json.choices[0].delta;
-              if (delta && delta.content) {
+              if (revision === requestRevision && !dismissed && delta && delta.content) {
                 accumulated += delta.content;
-                queueOutput(delta.content);
+                queueOutput(delta.content, revision);
               }
             } catch (e) {}
           }
         }
+        if (revision !== requestRevision || dismissed) return;
         if (paintFrame) cancelAnimationFrame(paintFrame);
         paintFrame = 0;
-        flushOutputQueue(true);
+        flushOutputQueue(true, revision);
         if (!accumulated) output.innerHTML = '<span class="ph">没有拿到译文</span>';
+        if (!accumulated) copy.disabled = true;
       }).catch(function (error) {
-        if (error && error.name === 'AbortError') return;
+        if (revision !== requestRevision || dismissed || error && error.name === 'AbortError') return;
         cancelOutputQueue();
+        copy.disabled = true;
         output.innerHTML = '<span class="err">翻译失败：' + error.message + '</span>';
       });
   };
 
   copy.addEventListener('click', async function () {
+    if (copy.disabled || dismissed) return;
+    var revision = requestRevision;
     var value = output.innerText || '';
-    if (!value.trim()) {
+    if (!value.trim() || output.querySelector('.ph, .err')) {
       copy.textContent = '没有可复制内容';
       clearTimeout(copyFeedbackTimer);
-      copyFeedbackTimer = setTimeout(function () { copy.textContent = '复制'; }, 1600);
+      copyFeedbackTimer = setTimeout(function () {
+        if (revision === requestRevision && !dismissed) copy.textContent = '复制';
+      }, 1600);
       return;
     }
     copy.disabled = true;
@@ -1223,14 +1510,18 @@ window.ItLiquidGlass.attach(document.getElementById('copy'), 'button');
       } else {
         throw new Error('剪贴板接口不可用');
       }
+      if (revision !== requestRevision || dismissed) return;
       copy.textContent = '已复制';
     } catch (error) {
+      if (revision !== requestRevision || dismissed) return;
       copy.textContent = '复制失败';
       copy.title = String(error && error.message || error || '无法写入系统剪贴板');
     } finally {
+      if (revision !== requestRevision || dismissed) return;
       copy.disabled = false;
       clearTimeout(copyFeedbackTimer);
       copyFeedbackTimer = setTimeout(function () {
+        if (revision !== requestRevision || dismissed) return;
         copy.textContent = '复制';
         copy.title = '';
       }, 1800);
@@ -1350,6 +1641,7 @@ window.ItLiquidGlass.attach(document.getElementById('copy'), 'button');
   }
   window.__popupBooted = true;
   if (window.__itPopupPayload) window.__popupApply(window.__itPopupPayload);
+  if (window.__itPopupPresentRequested) window.__popupPresent();
 })();
 })();
 "#;
@@ -1654,17 +1946,23 @@ fn send_copy_shortcut() {
 /// 只有剪贴板序号/内容真的变了才算取到，绝不拿旧剪贴板内容去误翻译。
 /// 全程纯 Win32，不起子进程（外部命令会被安全策略拦截）。
 #[cfg(target_os = "windows")]
-fn capture_selection() -> String {
+fn capture_selection(generation: u64) -> String {
     wait_hotkey_release();
     let Ok(_transaction) = CLIPBOARD_TRANSACTION.lock() else {
         return String::new();
     };
+    if !popup_request_is_current(generation) {
+        return String::new();
+    }
     let before = read_clipboard_text();
     let sequence = clipboard_sequence();
     send_copy_shortcut();
 
     for _ in 0..24 {
         std::thread::sleep(Duration::from_millis(50));
+        if !popup_request_is_current(generation) {
+            return String::new();
+        }
         let current = read_clipboard_text();
         if current.trim().is_empty() {
             continue;
@@ -1677,14 +1975,29 @@ fn capture_selection() -> String {
 }
 
 #[cfg(not(target_os = "windows"))]
-fn capture_selection() -> String {
+fn capture_selection(_generation: u64) -> String {
     String::new()
 }
 
 fn hide_popup(app: &AppHandle) {
     if let Some(popup) = app.get_webview_window(POPUP_LABEL) {
+        let _ = popup.eval("window.__popupDismiss&&window.__popupDismiss()");
         let _ = popup.hide();
     }
+}
+
+#[cfg(target_os = "windows")]
+fn popup_is_foreground(app: &AppHandle) -> bool {
+    use windows_sys::Win32::UI::WindowsAndMessaging::GetForegroundWindow;
+    app.get_webview_window(POPUP_LABEL)
+        .and_then(|window| window.hwnd().ok())
+        // SAFETY: GetForegroundWindow returns a borrowed handle; it is only compared.
+        .is_some_and(|hwnd| unsafe { GetForegroundWindow() } == hwnd.0)
+}
+
+#[cfg(not(target_os = "windows"))]
+fn popup_is_foreground(_app: &AppHandle) -> bool {
+    false
 }
 
 fn run_selection_translate(
@@ -1692,60 +2005,110 @@ fn run_selection_translate(
     init_fullscreen: bool,
     startup_revealed: Arc<AtomicBool>,
 ) {
-    std::thread::spawn(move || {
-        // 上一次的悬浮窗如果还开着，它可能正处在前台；先藏起来，
-        // 否则模拟的 Ctrl+C 会打进悬浮窗而不是用户正在看的窗口。
+    let settings = current_settings();
+    let open_main_window = settings.open_main_window;
+    let id = POPUP_SEQ.fetch_add(1, Ordering::Relaxed) + 1;
+    let generation = next_popup_generation();
+    let restore_source = popup_is_foreground(&app);
+    // Only a previously focused popup needs to yield focus back to the source.
+    // The new pending window is shown without activation before capture begins.
+    if restore_source || open_main_window {
         hide_popup(&app);
-        std::thread::sleep(Duration::from_millis(90));
+    }
 
-        let text = capture_selection();
-        let settings = current_settings();
+    let capture_app = app.clone();
+    let capture = move || {
+        std::thread::spawn(move || {
+            if restore_source {
+                std::thread::sleep(Duration::from_millis(90));
+            }
+            if !popup_request_is_current(generation) {
+                return;
+            }
+            let text = capture_selection(generation);
+            if !popup_request_is_current(generation) {
+                return;
+            }
 
-        if text.trim().is_empty() {
-            // 没取到选中文字：只给悬浮窗提示。
-            // 旧的兜底会 show_all_app_windows()，表现就是「按快捷键弹主窗口、不翻译」。
-            show_popup(
-                &app,
-                "",
-                "没有取到选中文字。请先选中文本再按快捷键；部分软件不支持自动复制。",
-            );
-            return;
-        }
+            if text.trim().is_empty() {
+                let notice = "没有取到选中文字。请先选中文本再按快捷键；部分软件不支持自动复制。";
+                if open_main_window {
+                    let notice_app = capture_app.clone();
+                    let target = settings.target_lang.clone();
+                    present_popup(
+                        &capture_app,
+                        id,
+                        generation,
+                        &settings.target_lang,
+                        move || {
+                            complete_popup(&notice_app, id, generation, "", notice, &target);
+                        },
+                    );
+                } else {
+                    complete_popup(
+                        &capture_app,
+                        id,
+                        generation,
+                        "",
+                        notice,
+                        &settings.target_lang,
+                    );
+                }
+                return;
+            }
 
-        if settings.open_main_window {
-            cancel_startup_reveal(&startup_revealed);
-            show_all_app_windows(&app, init_fullscreen);
-            // show_all_app_windows 会把所有 webview 都 show 出来（含悬浮窗），
-            // 稍后把悬浮窗重新藏好，避免主窗口模式冒出一个透明空窗。
-            let app_for_hide = app.clone();
-            std::thread::spawn(move || {
-                std::thread::sleep(Duration::from_millis(220));
-                hide_popup(&app_for_hide);
-            });
-            if let Some(window) = app.get_webview_window(APP_WINDOW_LABEL) {
-                let _ = window.set_focus();
-                let json = serde_json::to_string(&text).unwrap_or_else(|_| "\"\"".to_string());
-                let eval = format!(
-                    "(function(t){{ if (typeof window.__itTranslateSelection === 'function') \
+            if open_main_window {
+                cancel_startup_reveal(&startup_revealed);
+                show_all_app_windows(&capture_app, init_fullscreen);
+                // show_all_app_windows 会把所有 webview 都 show 出来（含悬浮窗），
+                // 稍后把悬浮窗重新藏好，避免主窗口模式冒出一个透明空窗。
+                let app_for_hide = capture_app.clone();
+                std::thread::spawn(move || {
+                    std::thread::sleep(Duration::from_millis(220));
+                    if popup_request_is_current(generation) {
+                        hide_popup(&app_for_hide);
+                    }
+                });
+                if let Some(window) = capture_app.get_webview_window(APP_WINDOW_LABEL) {
+                    let _ = window.set_focus();
+                    let json = serde_json::to_string(&text).unwrap_or_else(|_| "\"\"".to_string());
+                    let eval = format!(
+                        "(function(t){{ if (typeof window.__itTranslateSelection === 'function') \
                      {{ window.__itTranslateSelection(t); }} \
                      else {{ window.__itPendingSelection = t; }} }})({json})"
-                );
-                // 主窗口刚被唤起 / 页面还没加载完时，单次 eval 会丢，补投几次
-                for delay in [0u64, 250, 700, 1500] {
-                    let window = window.clone();
-                    let eval = eval.clone();
-                    std::thread::spawn(move || {
-                        if delay > 0 {
-                            std::thread::sleep(Duration::from_millis(delay));
-                        }
-                        let _ = window.eval(&eval);
-                    });
+                    );
+                    // 主窗口刚被唤起 / 页面还没加载完时，单次 eval 会丢，补投几次
+                    for delay in [0u64, 250, 700, 1500] {
+                        let window = window.clone();
+                        let eval = eval.clone();
+                        std::thread::spawn(move || {
+                            if delay > 0 {
+                                std::thread::sleep(Duration::from_millis(delay));
+                            }
+                            if popup_request_is_current(generation) {
+                                let _ = window.eval(&eval);
+                            }
+                        });
+                    }
                 }
+            } else {
+                complete_popup(
+                    &capture_app,
+                    id,
+                    generation,
+                    &text,
+                    "",
+                    &settings.target_lang,
+                );
             }
-        } else {
-            show_popup(&app, &text, "");
-        }
-    });
+        });
+    };
+    if open_main_window {
+        capture();
+    } else {
+        let target = current_settings().target_lang;
+        present_popup(&app, id, generation, &target, capture);
+    }
 }
 
 #[tauri::command]
@@ -1997,6 +2360,16 @@ pub fn set_global_shortcut(
 ) -> tauri::Result<()> {
     let enhanced = is_translate_app(app);
     if enhanced {
+        // Prepare the hidden document early; arrival animation starts only on
+        // __popupPresent, so warming does not consume its visible fade.
+        let warm_app = app.clone();
+        let _ = app.run_on_main_thread(move || {
+            if let Some(popup) = ensure_popup(&warm_app) {
+                let _ = popup.eval(&popup_appearance_script(&popup_appearance(
+                    &current_settings(),
+                )));
+            }
+        });
         // 隐藏系统边框，标题栏由页面自绘；窗口动作走 it_window_action 命令
         if let Some(window) = app.get_webview_window(APP_WINDOW_LABEL) {
             remove_main_window_top_frame_inset(&window);

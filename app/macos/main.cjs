@@ -32,6 +32,8 @@ let hotkeysEnabled = true;
 let saving = false;
 let captureRunning = false;
 let popupSequence = 0;
+let popupState = null;
+let popupRequest = null;
 let fontFamilies = null;
 let rendererReady = false;
 let pendingActions = [];
@@ -343,68 +345,192 @@ JSON.stringify(text);
   }
 }
 
-async function applyPopupAppearance() {
-  if (!popupWindow || popupWindow.isDestroyed()) return;
+async function applyPopupAppearance(window = popupWindow) {
+  if (!window || window.isDestroyed()) return;
   const preferences = JSON.stringify(settings.preferences || {});
-  await popupWindow.webContents.executeJavaScript(
+  await window.webContents.executeJavaScript(
     `window.__itPopupAppearance=${preferences};` +
     'if(window.__popupApplyPreferences)window.__popupApplyPreferences(window.__itPopupAppearance);'
   );
 }
 
-async function showPopup(text, notice) {
-  if (popupWindow && !popupWindow.isDestroyed()) popupWindow.close();
+function ensurePopup() {
+  if (popupState && !popupState.window.isDestroyed()) return popupState;
   const window = new BrowserWindow({
     title: '划词翻译', width: 436, height: 282, show: false,
     frame: false, transparent: true, backgroundColor: '#00000000',
     roundedCorners: true, hasShadow: false, resizable: false,
     skipTaskbar: true, alwaysOnTop: true, webPreferences: webPreferences()
   });
+  const state = { window, ready: null, failed: false };
+  popupState = state;
   popupWindow = window;
   configureWindowSecurity(window, POPUP_URL);
-  window.on('closed', () => { if (popupWindow === window) popupWindow = null; });
+  window.on('close', () => {
+    if (popupRequest && popupRequest.window === window) cancelPopupRequest(popupRequest);
+    if (popupWindow === window) {
+      popupWindow = null;
+      popupState = null;
+    }
+    void window.webContents.executeJavaScript(
+      'if(window.__popupDismiss)window.__popupDismiss();'
+    ).catch(() => { /* Destroying the WebContents also cancels its request. */ });
+  });
+  window.on('closed', () => {
+    if (popupRequest && popupRequest.window === window) popupRequest.canceled = true;
+    if (popupWindow === window) {
+      popupWindow = null;
+      popupState = null;
+    }
+    // Keep the next shortcut's local document ready without touching selection
+    // or clipboard data. A failed local load is retried only by a later action.
+    if (!quitting && !state.failed) queueMicrotask(prewarmPopup);
+  });
   window.webContents.on('before-input-event', (event, input) => {
     if (input.type === 'keyDown' && input.key === 'Escape') {
       event.preventDefault();
       window.close();
     }
   });
-  await window.loadURL(POPUP_URL);
-  if (window.isDestroyed() || popupWindow !== window) return;
-  await applyPopupAppearance();
-  const payload = JSON.stringify({
-    id: ++popupSequence, text, notice, target: settings.target_lang
+  state.ready = window.loadURL(POPUP_URL).then(async () => {
+    if (!window.isDestroyed() && popupWindow === window) await applyPopupAppearance(window);
+  }).catch(error => {
+    if (window.isDestroyed()) return;
+    state.failed = true;
+    window.destroy();
+    throw error;
   });
-  await window.webContents.executeJavaScript(
-    `window.__itPopupPayload=${payload};` +
-    'if(window.__popupApply)window.__popupApply(window.__itPopupPayload);'
-  );
+  return state;
+}
+
+function prewarmPopup() {
+  if (quitting) return;
+  void ensurePopup().ready.catch(() => {
+    // A shortcut reports a load failure. Do not repeatedly recreate a failed
+    // hidden document, and do not interrupt another app during idle prewarming.
+  });
+}
+
+function isCurrentPopup(request) {
+  return request && request === popupRequest && !request.canceled &&
+    popupWindow === request.window && !request.window.isDestroyed();
+}
+
+function cancelPopupRequest(request) {
+  if (!request) return;
+  request.canceled = true;
+  if (request.blurHandler) request.window.removeListener('blur', request.blurHandler);
+  if (popupRequest === request) popupRequest = null;
+}
+
+function closePopup(window) {
+  if (!window || window.isDestroyed()) return;
+  const request = popupRequest && popupRequest.window === window ? popupRequest : null;
+  cancelPopupRequest(request);
+  if (popupWindow === window) {
+    popupWindow = null;
+    popupState = null;
+  }
+  window.close();
+}
+
+function positionPopup(window) {
   const cursor = screen.getCursorScreenPoint();
   const work = screen.getDisplayNearestPoint(cursor).workArea;
   const x = Math.max(work.x, Math.min(cursor.x + 18 - 22, work.x + work.width - 436));
   const y = Math.max(work.y, Math.min(cursor.y + 22 - 22, work.y + work.height - 282));
   window.setPosition(Math.round(x), Math.round(y));
-  window.show();
-  window.focus();
-  window.once('blur', () => { if (!window.isDestroyed()) window.close(); });
+}
+
+async function beginPopup() {
+  const state = ensurePopup();
+  const previous = popupRequest && popupRequest.window === state.window ? popupRequest : null;
+  cancelPopupRequest(previous);
+  const request = {
+    id: ++popupSequence, window: state.window, state, canceled: false, target: settings.target_lang
+  };
+  popupRequest = request;
+  request.window.setFocusable(false);
+  if (request.window.isVisible()) request.window.hide();
+  try {
+    await state.ready;
+    if (!isCurrentPopup(request)) return null;
+    const payload = JSON.stringify({
+      id: request.id, phase: 'pending', text: '', notice: '', target: request.target
+    });
+    await request.window.webContents.executeJavaScript(
+      `window.__itPopupPayload=${payload};` +
+      'if(window.__popupApply)window.__popupApply(window.__itPopupPayload);'
+    );
+    if (!isCurrentPopup(request)) return null;
+    positionPopup(request.window);
+    // Showing must not activate this app: System Events still has to copy from
+    // the original application. Focus and blur dismissal begin after capture.
+    request.window.showInactive();
+    await request.window.webContents.executeJavaScript(
+      'window.__itPopupPresentRequested=true;' +
+      'if(window.__popupPresent)window.__popupPresent();'
+    );
+    return isCurrentPopup(request) ? request : null;
+  } catch (error) {
+    if (!state.failed && !isCurrentPopup(request)) return null;
+    throw error;
+  }
+}
+
+async function finishPopup(request, text, notice) {
+  if (!isCurrentPopup(request)) return;
+  const payload = JSON.stringify({
+    id: request.id, phase: notice ? 'notice' : 'ready', text, notice, target: request.target
+  });
+  await request.window.webContents.executeJavaScript(
+    `window.__itPopupPayload=${payload};` +
+    'if(window.__popupApply)window.__popupApply(window.__itPopupPayload);'
+  );
+  if (!isCurrentPopup(request)) return;
+  request.window.setFocusable(true);
+  request.window.focus();
+  request.blurHandler = () => { if (isCurrentPopup(request)) closePopup(request.window); };
+  request.window.once('blur', request.blurHandler);
+}
+
+async function showPopup(text, notice) {
+  const request = await beginPopup();
+  if (request) await finishPopup(request, text, notice);
 }
 
 async function translateSelection() {
   if (captureRunning) return;
   captureRunning = true;
+  let request = null;
   try {
-    if (popupWindow && !popupWindow.isDestroyed()) popupWindow.close();
+    const inMain = settings.open_main_window;
+    if (inMain) {
+      if (popupWindow && !popupWindow.isDestroyed() && popupWindow.isVisible()) closePopup(popupWindow);
+    } else {
+      request = await beginPopup();
+      if (!request) return;
+    }
     const text = await captureSelection();
+    if (request && !isCurrentPopup(request)) return;
     if (!text.trim()) {
-      await showPopup('', '没有取到选中文字。请先选中文本，再按划词快捷键；部分软件不支持自动复制。');
-    } else if (settings.open_main_window) {
+      const notice = '没有取到选中文字。请先选中文本，再按划词快捷键；部分软件不支持自动复制。';
+      if (request) await finishPopup(request, '', notice);
+      else await showPopup('', notice);
+    } else if (inMain) {
       showMain();
       notifyAction({ type: 'translate-selection', text });
     } else {
-      await showPopup(text, '');
+      await finishPopup(request, text, '');
     }
   } catch (error) {
-    dialog.showErrorBox('划词翻译不可用', error.message);
+    if (request && isCurrentPopup(request)) {
+      await finishPopup(request, '', error.message).catch(() => {
+        if (isCurrentPopup(request)) dialog.showErrorBox('划词翻译不可用', error.message);
+      });
+    } else if (!request || request.state.failed) {
+      dialog.showErrorBox('划词翻译不可用', error.message);
+    }
   } finally {
     captureRunning = false;
   }
@@ -527,6 +653,7 @@ if (process.platform !== 'darwin') {
     });
     createMain();
     createMenuAndTray();
+    prewarmPopup();
     try { registerShortcuts(settings); } catch (error) {
       dialog.showErrorBox('快捷键注册失败', `${error.message}。可从菜单栏打开设置后更改。`);
     }

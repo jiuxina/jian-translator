@@ -3,6 +3,7 @@
 """把桌面增强补丁应用到本机 pake-cli 模板（幂等）。
 
 - src/app/setup.rs + liquid-glass.js：替换桌面集成并注入共享液态玻璃滤镜
+- src/app/window.rs：主窗口唤起时不显示预热的划词浮窗
 - src/lib.rs：注册自定义命令 + 启动到托盘读取用户设置
 - build.rs：把命令写进应用 ACL 白名单
 - capabilities/default.json：允许新命令（远程页面也复制这份权限）
@@ -100,6 +101,48 @@ def set_package_version(cargo, version):
     return "".join(lines)
 
 
+def exclude_popup_from_window_reveal(source):
+    """Keep the warm auxiliary popup out of the main-window reveal path."""
+    headers = list(re.finditer(
+        r"(?m)^pub fn show_all_app_windows\([^\r\n]*\) \{\r?$", source,
+    ))
+    if len(headers) != 1:
+        raise RuntimeError("window.rs 必须包含且只能包含一个 show_all_app_windows 函数")
+    start = headers[0].start()
+    closing = re.search(r"(?m)^}\r?$", source[headers[0].end():])
+    if closing is None:
+        raise RuntimeError("window.rs 的 show_all_app_windows 函数缺少结束位置")
+    end = headers[0].end() + closing.end()
+    body = source[start:end]
+    newline = "\r\n" if "\r\n" in body else "\n"
+    loop = "    for window in windows.values() {" + newline
+    guarded_loop = (
+        loop
+        + '        if window.label() == "pake-popup" {' + newline
+        + "            continue;" + newline
+        + "        }" + newline
+    )
+    fallback = "    } else if let Some(any) = windows.values().next() {"
+    guarded_fallback = newline.join((
+        "    } else if let Some(any) = windows",
+        "        .values()",
+        '        .find(|window| window.label() != "pake-popup")',
+        "    {",
+    ))
+    for original, replacement, label in (
+        (loop, guarded_loop, "主窗口显示循环"),
+        (fallback, guarded_fallback, "主窗口回退焦点"),
+    ):
+        if replacement in body:
+            if body.count(replacement) != 1:
+                raise RuntimeError("window.rs 的%s补丁出现重复" % label)
+        elif body.count(original) == 1:
+            body = body.replace(original, replacement, 1)
+        else:
+            raise RuntimeError("window.rs 的%s找不到唯一插入锚点" % label)
+    return source[:start] + body + source[end:]
+
+
 def main():
     desktop = os.path.dirname(os.path.abspath(__file__))
     package_path = os.path.join(os.path.dirname(desktop), "app", "macos", "package.json")
@@ -133,6 +176,15 @@ def main():
             os.path.join(tauri, "src", "app", "liquid-glass.js"),
         )
         print("已更新 liquid-glass.js")
+
+        window_path = os.path.join(tauri, "src", "app", "window.rs")
+        window_source = read(window_path)
+        window_updated = exclude_popup_from_window_reveal(window_source)
+        if window_updated != window_source:
+            write(window_path, window_updated)
+            print("已排除主窗口唤起路径中的预热浮窗")
+        else:
+            print("主窗口唤起已排除预热浮窗")
 
         # 2. lib.rs：导入 + 注册命令
         lib_path = os.path.join(tauri, "src", "lib.rs")
