@@ -59,9 +59,11 @@ Android 连续交互 **23/23** 均通过；Java fixture 编译运行通过。
 `.build/ui-final-settings-compositor.json`。禁止注册数值属性的兼容场景也验证了渐变、
 真实折射、快速切换和关闭后无残留回调。
 
-本轮交付 `output/笺-2.3.0-界面连贯优化-release.apk`，采用 Release、版本 `2.3.0` /
-code `6`，应用标识 `ink.jian.translate.perftest`、名称“笺·测试”，
-在隔离工程中使用新生成的测试证书签名，可与既有应用共存；不读取或使用正式签名凭据。
+本轮交付目标改为 `output/笺-2.3.0-release.apk`，采用 Release、版本 `2.3.0` /
+code `6`，保留应用标识 `ink.jian.translate` 和名称“笺”。后续交付同样保留原身份，
+不自行添加文字或包名后缀。此前带额外标识的产物已被替代，不再交付。
+原身份 Release 已重新构建并核验名称、包名、非 debuggable 标志和六项资源。
+原 Release 签名仍待授权使用；尚未确认签名或覆盖安装能力。
 下文 Debug APK、原始卡片光学链和取消回滚说明属于历史阶段，不代表本轮交付。
 
 ## 历史：第一轮性能优化（2026-11-16）

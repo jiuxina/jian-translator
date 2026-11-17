@@ -50,10 +50,11 @@ Windows 普通窗口外圆角为 22 DIP，最大化与全屏时清除裁剪，�
 这些历史 Android 包使用 versionCode `5` / versionName `2.2.0`，校验值见 `output/SHA256SUMS.txt`。
 2.3.0 发布说明见 [v2.3.0](releases/v2.3.0.md)，2026-11-16 的版本升级阶段未重新生成本地安装包；
 推送包含本轮提交的 `v2.3.0` 标签后，由发布工作流构建并上传三端附件。
-2026-11-17 的界面连贯优化已单独构建本地 Release 测试包
-`output/笺-2.3.0-界面连贯优化-release.apk`；使用独立应用标识
-`ink.jian.translate.perftest`、名称“笺·测试”和新生成的测试证书，可与既有安装共存。
-该测试包版本为 `2.3.0` / code `6`，不使用正式签名凭据，也不等同于正式发布附件。
+2026-11-17 的界面连贯优化按用户要求以原身份重建 Release 包，
+交付目标为 `output/笺-2.3.0-release.apk`，版本 `2.3.0` / code `6`，
+保留名称“笺”和应用标识 `ink.jian.translate`。此前带额外标识的产物已被替代，
+不再交付；原身份 Release 已构建并核验名称、包名、非 debuggable 标志与六项资源，
+原 Release 签名仍待授权使用，签名与覆盖安装能力尚未验证。
 
 ## 本地验证
 
@@ -137,10 +138,10 @@ Git Bash 安装位置因机器而异，使用本机实际路径。默认构建�
 
 需要 JDK 17、Android SDK 35 和 Gradle wrapper。`android/local.properties` 仅存本机 SDK
 路径；发布签名从 `android/signing.properties` 读取，可参考同目录的 example。密钥和真实
-签名配置均不入库。以上是正式发布签名流程，本轮本地测试不读取这些实际配置和凭据。
-后续交付用户测试的 APK 均使用 Release 构建；本轮在隔离工程中复制公开源码，
-为 `ink.jian.translate.perftest` 生成新的测试签名证书，避免覆盖已安装的正式应用。
-测试证书与构建类型相互独立，使用测试证书不代表 Debug 构建。
+签名配置均不入库。本轮在隔离工程中复制公开源码，保留原应用名称和应用标识；
+原 Release 签名的使用仍待明确授权，不以可用文件或工具权限代替授权。
+后续交付 APK 均使用 Release 构建，不自行增加应用名称文字或包名后缀。
+签名一致性需核验后才能确认覆盖安装能力。
 
 构建前的 `syncWebAssets` 只覆盖 `web/` 六项资源，不删除源资源或 assets 目录。
 在 `android/` 执行：

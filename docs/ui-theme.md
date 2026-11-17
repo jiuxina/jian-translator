@@ -33,9 +33,10 @@ Android 键盘以覆盖方式出现，页面布局和底栏不因输入焦点或
 以及不同手机尺寸下的附件布局、原文选择、替换动画和 Android 安全区/IME 布局。
 本轮最终全量在源码、资源、文档和构建完成后仅执行一次；结果记录为 `.build/ui-polish-final-verification.log` 与
 `.build/ui-polish-final-results.json`，不能沿用历史套件的通过统计。
-本轮交付 Release 测试包 `output/笺-2.3.0-界面连贯优化-release.apk`，
-版本 `2.3.0` / code `6`，独立应用标识 `ink.jian.translate.perftest`、名称“笺·测试”，
-使用新生成的测试证书并与既有安装共存；不使用正式签名凭据。
+本轮交付目标为 Release 包 `output/笺-2.3.0-release.apk`，
+版本 `2.3.0` / code `6`，名称“笺”、应用标识 `ink.jian.translate` 均保持原值。
+后续交付也不自行增加文字或包名后缀；此前带额外标识的产物不再交付。
+原身份 Release 已重新构建并核验名称、包名与资源；原签名待授权使用，覆盖安装能力尚未验证。
 
 ## v16：首帧玻璃准备与界面文字选择（2026-11-17，历史实现）
 

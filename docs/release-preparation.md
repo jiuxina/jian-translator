@@ -2,17 +2,17 @@
 
 ## 当前版本：v2.3.0
 
-### 当前阶段：界面连贯优化的本地 Release 测试包（2026-11-17）
+### 当前阶段：界面连贯优化的本地 Release 包（2026-11-17）
 
 本轮包含设置打开和分类切换期间的真实玻璃合成修复、紧凑图片附件、Android 键盘覆盖，
 以及设置即时应用和自动持久化。玻璃折射、高光、透明度和已有动效保留；
 设置关闭不回滚，持续输入合并保存，失败可重试。
 
-已构建产物为 `output/笺-2.3.0-界面连贯优化-release.apk`，Android versionName `2.3.0` /
-versionCode `6`。该包使用 **Release** 构建，独立应用标识 `ink.jian.translate.perftest`，
-显示名称“笺·测试”，可与既有 `ink.jian.translate` 安装共存。隔离工程只使用公开源码和
-构建依赖声明，并使用本轮新生成的测试签名证书；不读取或使用正式签名凭据。
-正式应用的配置与数据不会迁入该测试应用。后续用于用户测试的交付同样采用 Release，
+交付目标为 `output/笺-2.3.0-release.apk`，Android versionName `2.3.0` /
+versionCode `6`。按用户要求使用 **Release** 构建，保留名称“笺”和原应用标识
+`ink.jian.translate`；后续交付也不自行增加文字、名称后缀或包名后缀。
+此前带额外标识的产物已被替代，不再交付。隔离工程继续只复制公开源码和构建依赖声明，
+已按原身份完成 Release 构建，原签名仍待明确授权使用；尚未确认签名与覆盖安装能力。
 本页保留的 Debug APK 名称仅是早期阶段记录。
 
 本轮最终全量在源码、共用资源、文档和构建完成后只执行一次，
@@ -24,12 +24,13 @@ versionCode `6`。该包使用 **Release** 构建，独立应用标识 `ink.jian
 - `tests/verify-android-ime.mjs`：生产安全区处理、键盘高度变化、旧系统、旋转与刘海的稳定视口。
 - `tests/verify-settings-preview.mjs` 及更新后的交互场景：即时保存、异步队列、失败重试、过期回调和保存期间重开。
 
-隔离工程的 `assembleRelease --offline --no-daemon` 成功，APK 为 3,616,371 字节，
-SHA-256 为 `3c2a414887870cc398f4b64519e5817c7c237fa38b3fac6279a2ce76f4ef3969`。
-已核验 APK 的版本、独立应用标识、名称和非 debuggable 标志；v2 / v3 签名验证通过，
-包内六项前端资源与 `web/` 逐字节一致。校验文件为同目录的
-`笺-2.3.0-界面连贯优化-release.sha256`，资产清单为 `.build/ui-release-artifact.json`。
-最终测试统计以本轮结果清单为准，不沿用历史或定向结果；该测试包未公开发布。
+此前独立身份产物的构建、大小、哈希和签名验证只适用于已被替代的文件，
+不能用于证明当前原身份 Release 包已完成。原身份 `assembleRelease --offline --no-daemon`
+已成功，重新核验名称“笺”、`ink.jian.translate`、版本 `2.3.0` / code `6`、
+非 debuggable 标志，以及包内六项前端资源与 `web/` 逐字节一致。
+签名前记录为 `.build/ui-original-release-pre-sign.json`；签名后的大小、SHA-256 和
+证书一致性需在原签名获授权使用后核验，当前不交付未签名 APK。
+最终测试统计以本轮结果清单为准，不沿用历史或定向结果；未公开发布。
 本轮完整回归 **15/16 组通过**，综合交互组 **134/136**；
 其两处测试状态依赖修正后，仅运行受影响的两个完整设置场景，**53/53 通过**。
 结果单独保存在 `.build/ui-polish-settings-targeted.json`，不覆盖完整日志或重跑全量。
