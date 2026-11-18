@@ -542,9 +542,9 @@ try {
         pageInline: [...document.querySelectorAll('[data-pref-section]')]
           .map((section) => section.style.getPropertyValue('--it-settings-page-reveal')) };
     })()`);
-    check('Closing cancels every compatibility reveal frame and leaves no stale paint writes',
+    check('Closing cancels every compatibility reveal frame, stops stale writes and keeps dialog transparent',
       cancelled.before > 2 && cancelled.after === cancelled.before && cancelled.frames === 0 &&
-      cancelled.dialogInline === '' && cancelled.pageInline.every((value) => value === ''), cancelled);
+      cancelled.dialogInline === '0' && cancelled.pageInline.every((value) => value === ''), cancelled);
     report.fallback = { dialog: fallbackDialog, section: fallbackSection,
       reopened: fallbackReopened, cancelled };
   }

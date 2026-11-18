@@ -10,7 +10,7 @@ use crate::app::window::{
 use crate::cancel_startup_reveal;
 use crate::util::UiLanguage;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -30,6 +30,25 @@ use tauri_runtime::ResizeDirection;
 const RUN_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";
 const RUN_VALUE: &str = "IndexTranslate";
 
+#[derive(Clone, Debug, serde::Serialize)]
+pub struct AutostartStatus {
+    pub enabled: bool,
+    pub target_path: Option<String>,
+    pub target_exists: bool,
+    pub target_is_current: bool,
+}
+
+impl Default for AutostartStatus {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            target_path: None,
+            target_exists: false,
+            target_is_current: false,
+        }
+    }
+}
+
 const DEFAULT_SELECTION_SHORTCUT: &str = "Ctrl+Alt+T";
 const APP_WINDOW_LABEL: &str = "pake";
 const POPUP_LABEL: &str = "pake-popup";
@@ -47,7 +66,7 @@ pub struct DesktopSettings {
     pub open_main_window: bool,
     pub target_lang: String,
     pub auto_start: bool,
-    /// 启动时直接藏进托盘、不弹主窗口。默认开启，可在设置面板关闭。
+    /// 启动时直接藏进托盘、不弹主窗口。默认关闭，可在设置面板启用。
     pub start_to_tray: bool,
     /// 前端偏好由前端校验；桌面只负责可靠持久化和投影外观到划词浮窗。
     pub preferences: serde_json::Value,
@@ -61,13 +80,14 @@ impl Default for DesktopSettings {
             open_main_window: false,
             target_lang: "auto".to_string(),
             auto_start: false,
-            start_to_tray: true,
+            start_to_tray: false,
             preferences: serde_json::Value::Null,
         }
     }
 }
 
 static SETTINGS: Mutex<Option<DesktopSettings>> = Mutex::new(None);
+static AUTOSTART_LOCK: Mutex<()> = Mutex::new(());
 static HOTKEYS_ENABLED: AtomicBool = AtomicBool::new(true);
 static CLIPBOARD_TRANSACTION: Mutex<()> = Mutex::new(());
 // 每次划词请求使用递增 ID，同一请求从等待阶段推进到结果阶段
@@ -437,18 +457,23 @@ unsafe extern "system" fn remove_top_frame_inset(
 ) -> windows_sys::Win32::Foundation::LRESULT {
     use windows_sys::Win32::UI::Shell::{DefSubclassProc, RemoveWindowSubclass};
     use windows_sys::Win32::UI::WindowsAndMessaging::{
-        NCCALCSIZE_PARAMS, WM_DISPLAYCHANGE, WM_DPICHANGED, WM_DWMCOMPOSITIONCHANGED,
+        IsZoomed, NCCALCSIZE_PARAMS, WM_DISPLAYCHANGE, WM_DPICHANGED, WM_DWMCOMPOSITIONCHANGED,
         WM_NCCALCSIZE, WM_NCDESTROY, WM_SIZE, WM_WINDOWPOSCHANGED,
     };
 
     if message == WM_NCCALCSIZE && wparam != 0 && lparam != 0 {
         // SAFETY: Windows supplies a live NCCALCSIZE_PARAMS for WM_NCCALCSIZE with wParam set.
         let params = unsafe { &mut *(lparam as *mut NCCALCSIZE_PARAMS) };
-        let proposed_top = params.rgrc[0].top;
+        let proposed = params.rgrc[0];
         let result = DefSubclassProc(hwnd, message, wparam, lparam);
-        let added_top_inset = proposed_top - params.rgrc[0].top;
-        if (1..=8).contains(&added_top_inset) {
-            params.rgrc[0].top = proposed_top;
+        // Tao's undecorated-shadow path reserves the resize shadow on all four
+        // sides. The page already paints the complete rounded window, so any
+        // such reservation becomes a visible white strip. Keep Tao's
+        // maximized work-area calculation, but restore the proposed outer
+        // rectangle for a normal window so the WebView client reaches every
+        // edge. The callback runs after DefSubclassProc by design.
+        if unsafe { IsZoomed(hwnd) } == 0 {
+            params.rgrc[0] = proposed;
         }
         return result;
     }
@@ -540,38 +565,66 @@ fn wide(value: &str) -> Vec<u16> {
 }
 
 #[cfg(target_os = "windows")]
-fn open_run_key() -> Option<windows_sys::Win32::System::Registry::HKEY> {
-    use windows_sys::Win32::System::Registry::{
-        RegOpenKeyExW, HKEY_CURRENT_USER, KEY_QUERY_VALUE, KEY_SET_VALUE,
-    };
-    let subkey = wide(RUN_KEY);
-    let mut key: windows_sys::Win32::System::Registry::HKEY = std::ptr::null_mut();
-    let result = unsafe {
-        RegOpenKeyExW(
-            HKEY_CURRENT_USER,
-            subkey.as_ptr(),
-            0,
-            KEY_QUERY_VALUE | KEY_SET_VALUE,
-            &mut key,
-        )
-    };
-    if result == 0 {
-        Some(key)
-    } else {
-        None
+struct RunKey(windows_sys::Win32::System::Registry::HKEY);
+
+#[cfg(target_os = "windows")]
+impl Drop for RunKey {
+    fn drop(&mut self) {
+        use windows_sys::Win32::System::Registry::RegCloseKey;
+        // SAFETY: RunKey can only be constructed from a successful registry
+        // open/create call and owns that handle until this single close.
+        unsafe { RegCloseKey(self.0) };
     }
 }
 
 #[cfg(target_os = "windows")]
-fn autostart_enabled() -> bool {
-    use windows_sys::Win32::System::Registry::{RegCloseKey, RegQueryValueExW};
-    let Some(key) = open_run_key() else {
-        return false;
+fn open_run_key(access: u32, create: bool) -> Result<Option<RunKey>, String> {
+    use windows_sys::Win32::System::Registry::{RegCreateKeyExW, RegOpenKeyExW, HKEY_CURRENT_USER};
+    let subkey = wide(RUN_KEY);
+    let mut key: windows_sys::Win32::System::Registry::HKEY = std::ptr::null_mut();
+    // SAFETY: subkey is NUL-terminated and remains alive for the call; key is
+    // a valid writable out pointer and optional outputs are allowed to be null.
+    let result = if create {
+        unsafe {
+            RegCreateKeyExW(
+                HKEY_CURRENT_USER,
+                subkey.as_ptr(),
+                0,
+                std::ptr::null(),
+                0,
+                access,
+                std::ptr::null(),
+                &mut key,
+                std::ptr::null_mut(),
+            )
+        }
+    } else {
+        unsafe { RegOpenKeyExW(HKEY_CURRENT_USER, subkey.as_ptr(), 0, access, &mut key) }
     };
+    if result == 0 {
+        Ok(Some(RunKey(key)))
+    } else if !create && result == 2 {
+        Ok(None)
+    } else {
+        Err(format!("无法打开启动项注册表键（Win32 错误 {result}）"))
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn read_autostart_target() -> Result<Option<String>, String> {
+    use windows_sys::Win32::System::Environment::ExpandEnvironmentStringsW;
+    use windows_sys::Win32::System::Registry::{RegQueryValueExW, REG_EXPAND_SZ, REG_SZ};
+    let Some(run_key) = open_run_key(windows_sys::Win32::System::Registry::KEY_QUERY_VALUE, false)?
+    else {
+        return Ok(None);
+    };
+    let key = run_key.0;
     let name = wide(RUN_VALUE);
     let mut size: u32 = 0;
     let mut kind: u32 = 0;
-    let result = unsafe {
+    // SAFETY: name is NUL-terminated; kind and size are writable outputs, and
+    // a null data pointer with zero size is the documented size query form.
+    let mut result = unsafe {
         RegQueryValueExW(
             key,
             name.as_ptr(),
@@ -581,30 +634,180 @@ fn autostart_enabled() -> bool {
             &mut size,
         )
     };
-    unsafe {
-        RegCloseKey(key);
+    if result == 2 {
+        return Ok(None);
     }
-    result == 0 && size > 0
+    if result != 0 {
+        return Err(format!("读取开机自启失败（Win32 错误 {result}）"));
+    }
+    if size > 32768 || (kind != REG_SZ && kind != REG_EXPAND_SZ) {
+        return Ok(Some(String::new()));
+    }
+    if size == 0 {
+        return Ok(Some(String::new()));
+    }
+    let mut data = vec![0u16; (size as usize).div_ceil(2)];
+    let mut attempts = 0;
+    loop {
+        attempts += 1;
+        let mut bytes = (data.len() * 2) as u32;
+        // SAFETY: data is aligned u16 storage with the advertised byte capacity;
+        // name and all out parameters remain valid for the registry call.
+        result = unsafe {
+            RegQueryValueExW(
+                key,
+                name.as_ptr(),
+                std::ptr::null(),
+                &mut kind,
+                data.as_mut_ptr().cast(),
+                &mut bytes,
+            )
+        };
+        if result != 234 {
+            size = bytes;
+            break;
+        }
+        if attempts >= 5 || bytes > 65536 || bytes as usize <= data.len() * 2 {
+            return Err("自启动目标路径超出读取上限".to_string());
+        }
+        data.resize((bytes as usize).div_ceil(2), 0);
+    }
+    if result != 0 {
+        return Err(format!("读取开机自启路径失败（Win32 错误 {result}）"));
+    }
+    if kind != REG_SZ && kind != REG_EXPAND_SZ {
+        return Ok(Some(String::new()));
+    }
+    let units = data[..(size as usize / 2).min(data.len())]
+        .iter()
+        .take_while(|unit| **unit != 0)
+        .copied()
+        .collect::<Vec<_>>();
+    let value = String::from_utf16_lossy(&units).trim().to_string();
+    if value.is_empty() {
+        return Ok(Some(String::new()));
+    }
+    let value = if kind == REG_EXPAND_SZ {
+        let input = wide(&value);
+        // SAFETY: input is NUL-terminated; null output with zero capacity asks
+        // for the required UTF-16 buffer size.
+        let required =
+            unsafe { ExpandEnvironmentStringsW(input.as_ptr(), std::ptr::null_mut(), 0) };
+        if required == 0 || required > 32768 {
+            return Err("无法展开自启动目标中的环境变量".to_string());
+        }
+        let mut expanded = vec![0u16; required as usize];
+        // SAFETY: expanded is writable UTF-16 storage sized by the preceding
+        // query and input remains alive and NUL-terminated.
+        let written =
+            unsafe { ExpandEnvironmentStringsW(input.as_ptr(), expanded.as_mut_ptr(), required) };
+        if written == 0 || written > required {
+            return Err("无法展开自启动目标中的环境变量".to_string());
+        }
+        String::from_utf16_lossy(&expanded[..written.saturating_sub(1) as usize])
+    } else {
+        value
+    };
+    let value = value.trim();
+    if let Some(stripped) = value.strip_prefix('"') {
+        let Some(end) = stripped.find('"') else {
+            return Ok(Some(String::new()));
+        };
+        let executable = &stripped[..end];
+        return Ok(Some(executable.to_string()));
+    }
+    let value = value.trim();
+    let Some(extension_start) = value.to_ascii_lowercase().find(".exe") else {
+        return Ok(Some(String::new()));
+    };
+    if value[..extension_start].contains(char::is_whitespace) {
+        return Ok(Some(String::new()));
+    }
+    let extension_end = extension_start + 4;
+    if !value[extension_end..].starts_with(char::is_whitespace)
+        && !value[extension_end..].is_empty()
+    {
+        return Ok(Some(String::new()));
+    }
+    let executable = value[..extension_end].trim();
+    if executable.is_empty() {
+        return Ok(Some(String::new()));
+    }
+    Ok(Some(executable.to_string()))
 }
 
 #[cfg(not(target_os = "windows"))]
-fn autostart_enabled() -> bool {
-    false
+fn read_autostart_target() -> Result<Option<String>, String> {
+    Ok(None)
+}
+
+fn same_executable_path(left: &Path, right: &Path) -> bool {
+    let left = fs::canonicalize(left).unwrap_or_else(|_| left.to_path_buf());
+    let right = fs::canonicalize(right).unwrap_or_else(|_| right.to_path_buf());
+    left.to_string_lossy()
+        .eq_ignore_ascii_case(&right.to_string_lossy())
+}
+
+fn autostart_status() -> Result<AutostartStatus, String> {
+    let _guard = AUTOSTART_LOCK
+        .lock()
+        .map_err(|_| "自启动状态锁已损坏".to_string())?;
+    let target_path = read_autostart_target()?;
+    let Some(target_path) = target_path else {
+        return Ok(AutostartStatus::default());
+    };
+    if target_path.is_empty() {
+        return Ok(AutostartStatus {
+            enabled: true,
+            target_path: None,
+            target_exists: false,
+            target_is_current: false,
+        });
+    }
+    let target = PathBuf::from(&target_path);
+    if !target.is_absolute() {
+        return Ok(AutostartStatus {
+            enabled: true,
+            target_path: None,
+            target_exists: false,
+            target_is_current: false,
+        });
+    }
+    let target_exists = target.exists();
+    let current =
+        std::env::current_exe().map_err(|error| format!("取不到当前程序路径：{error}"))?;
+    let target_is_current = same_executable_path(&target, &current);
+    Ok(AutostartStatus {
+        enabled: true,
+        target_path: Some(target_path),
+        target_exists,
+        target_is_current,
+    })
 }
 
 #[cfg(target_os = "windows")]
 fn apply_autostart(enabled: bool) -> Result<(), String> {
-    use windows_sys::Win32::System::Registry::{
-        RegCloseKey, RegDeleteValueW, RegSetValueExW, REG_SZ,
+    use windows_sys::Win32::System::Registry::{RegDeleteValueW, RegSetValueExW, REG_SZ};
+    let _guard = AUTOSTART_LOCK
+        .lock()
+        .map_err(|_| "自启动状态锁已损坏".to_string())?;
+    let executable = if enabled {
+        Some(std::env::current_exe().map_err(|error| format!("取不到程序路径：{error}"))?)
+    } else {
+        None
     };
-    let key = open_run_key().ok_or_else(|| "无法打开启动项注册表键".to_string())?;
+    let Some(run_key) = open_run_key(windows_sys::Win32::System::Registry::KEY_SET_VALUE, enabled)?
+    else {
+        return Ok(());
+    };
+    let key = run_key.0;
     let name = wide(RUN_VALUE);
 
-    let result = if enabled {
-        let executable =
-            std::env::current_exe().map_err(|error| format!("取不到程序路径：{error}"))?;
+    let result = if let Some(executable) = executable {
         let value = wide(&format!("\"{}\"", executable.display()));
         let data: Vec<u8> = value.iter().flat_map(|unit| unit.to_le_bytes()).collect();
+        // SAFETY: key is owned by run_key; name and data are NUL-terminated /
+        // initialized buffers that remain alive until RegSetValueExW returns.
         unsafe {
             RegSetValueExW(
                 key,
@@ -616,11 +819,9 @@ fn apply_autostart(enabled: bool) -> Result<(), String> {
             )
         }
     } else {
+        // SAFETY: key and name remain valid for the duration of this call.
         unsafe { RegDeleteValueW(key, name.as_ptr()) }
     };
-    unsafe {
-        RegCloseKey(key);
-    }
     // 2 = ERROR_FILE_NOT_FOUND，本来就没启用，视为成功
     if result == 0 || (!enabled && result == 2) {
         Ok(())
@@ -632,6 +833,17 @@ fn apply_autostart(enabled: bool) -> Result<(), String> {
 #[cfg(not(target_os = "windows"))]
 fn apply_autostart(_enabled: bool) -> Result<(), String> {
     Ok(())
+}
+
+#[tauri::command(async)]
+pub fn it_get_autostart_status() -> Result<AutostartStatus, String> {
+    autostart_status()
+}
+
+#[tauri::command(async)]
+pub fn it_set_autostart(enabled: bool) -> Result<AutostartStatus, String> {
+    apply_autostart(enabled)?;
+    autostart_status()
 }
 
 /// 自定义标题栏的窗口动作；无边框窗口还需要手动提供拖拽缩放入口。
@@ -2118,10 +2330,7 @@ fn run_selection_translate(
 
 #[tauri::command]
 pub fn it_get_settings() -> DesktopSettings {
-    let mut settings = current_settings();
-    // 注册表是唯一事实来源，避免设置文件与系统状态不一致
-    settings.auto_start = autostart_enabled();
-    settings
+    current_settings()
 }
 
 #[tauri::command]
@@ -2147,14 +2356,8 @@ fn rollback_settings_changes(
     previous: &DesktopSettings,
     attempted: &DesktopSettings,
     hotkeys_changed: bool,
-    auto_start_changed: bool,
 ) -> Vec<String> {
     let mut errors = Vec::new();
-    if auto_start_changed {
-        if let Err(error) = apply_autostart(previous.auto_start) {
-            errors.push(format!("恢复开机自启状态失败：{error}"));
-        }
-    }
     if hotkeys_changed {
         unregister_shortcuts(app, attempted);
         errors.extend(register_shortcuts(app, previous));
@@ -2187,20 +2390,20 @@ pub fn it_save_settings(app: AppHandle, settings: DesktopSettings) -> Result<Vec
         } else {
             settings.target_lang.clone()
         },
-        auto_start: settings.auto_start,
+        // The system startup target is managed by it_set_autostart. Keep the
+        // legacy JSON field unchanged for compatibility with older settings.
+        auto_start: previous.auto_start,
         start_to_tray: settings.start_to_tray,
         preferences: settings.preferences,
     };
 
     let hotkeys_changed = next.activation_shortcut != previous.activation_shortcut
         || next.selection_shortcut != previous.selection_shortcut;
-    let auto_start_changed = next.auto_start != previous.auto_start;
-
     if hotkeys_changed {
         unregister_shortcuts(&app, &previous);
         let errors = register_shortcuts(&app, &next);
         if !errors.is_empty() {
-            let rollback = rollback_settings_changes(&app, &previous, &next, true, false);
+            let rollback = rollback_settings_changes(&app, &previous, &next, true);
             let detail = if rollback.is_empty() {
                 String::new()
             } else {
@@ -2210,21 +2413,8 @@ pub fn it_save_settings(app: AppHandle, settings: DesktopSettings) -> Result<Vec
         }
     }
 
-    if auto_start_changed {
-        if let Err(error) = apply_autostart(next.auto_start) {
-            let rollback = rollback_settings_changes(&app, &previous, &next, hotkeys_changed, true);
-            let detail = if rollback.is_empty() {
-                String::new()
-            } else {
-                format!("；{}", rollback.join("；"))
-            };
-            return Err(format!("{error}{detail}"));
-        }
-    }
-
     if let Err(error) = persist_settings(&app, &next) {
-        let rollback =
-            rollback_settings_changes(&app, &previous, &next, hotkeys_changed, auto_start_changed);
+        let rollback = rollback_settings_changes(&app, &previous, &next, hotkeys_changed);
         let detail = if rollback.is_empty() {
             String::new()
         } else {

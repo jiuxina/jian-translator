@@ -1,8 +1,38 @@
 # Release 准备记录
 
-## 当前版本：v2.3.0
+## 当前版本：v2.4.1
 
-### 当前阶段：界面连贯优化的本地 Release 包（2026-11-17）
+### 当前阶段：待推送和打标签的本地 Release 准备（2026-11-18）
+
+本轮已完成源码、平台元数据和发布说明的版本统一：前端、Windows/macOS 构建版本为 `2.4.1`，
+Android versionName 为 `2.4.1`、versionCode 为 `8`，发布说明为 [v2.4.1](releases/v2.4.1.md)。
+Windows 自启动目标、无边框白边、设置关闭闪现和首次启动默认值均已包含在本轮源码变更中。
+
+提交完成后，由维护者推送该提交并创建 `v2.4.1` 标签。GitHub Actions 会按标签构建 Windows EXE/MSI、
+macOS universal DMG/ZIP 和 Android APK，并由发布准备脚本生成英文文件名、SHA-256 清单和 Release 文案。
+本地代理不会推送、打标签、上传附件或发布远程 Release。
+
+推送标签前须在仓库 Actions Secrets 中配置 `ANDROID_KEYSTORE_BASE64` 和
+`ANDROID_SIGNING_PROPERTIES_BASE64`，后者的 `storeFile` 应为 `keystore/release.keystore`。
+缺失或配置不完整会在发布构建前明确报错；不再声称回退到 debug 签名。本次未读取密钥或 Secrets，
+其是否已配置需由仓库维护者确认。普通分支推送不发布，标签对应的三端构建全部成功后才发布正式 Release。
+
+版本一致性检查入口为 `node tests/verify-version-consistency.mjs`；Windows 自启动、窗口边缘和设置动画的
+定向入口见 `tests/verify-windows-autostart.mjs`、`tests/verify-windows-frame.mjs` 和
+`tests/verify-settings-close.mjs`。发布附件及其哈希以标签构建结果为准；不把历史二进制重命名为
+2.4.1，也不提前生成校验值。
+
+本地收尾检查已完成：2.4.1 / Android code 8 与六项资源字节一致；发布准备器、标签触发与
+Android 签名缺失门槛检查通过。Windows `cargo fmt --check` 和 `cargo check --offline` 通过；
+自启动 UI 为 12/12，内存注册表探针为 9/9，隐藏窗口边缘探针为 4/4，设置关闭覆盖终态、
+快速重开和减少动态效果。原生测试均从本次源码重新编译执行，不接受旧结果文本旁路。
+运动交互复核为 148/148，日志为 `.build/version-2.4.1-motion-final.log`；此前全量中的玻璃
+准备边框采样失败已单独复核通过，结果为 `.build/version-2.4.1-glass-readiness.json`。
+已有完整回归结果保留，收尾只补跑受修改和失败影响的项目，没有重跑整套或将局部结果合并
+声称新一次全量全通过。按维护者最终要求，本轮止于代码检查和 Release Note，不在本地重建发布包。
+三端发布二进制、Windows WebView2 / macOS / Android 设备验收仍以标签构建及实机结果为准。
+
+### 历史：界面连贯优化的本地 Release 包（2026-11-17）
 
 本轮包含设置打开和分类切换期间的真实玻璃合成修复、紧凑图片附件、Android 键盘覆盖，
 以及设置即时应用和自动持久化。玻璃折射、高光、透明度和已有动效保留；

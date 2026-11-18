@@ -10,6 +10,9 @@ if (releaseSigningFile.exists()) {
 def hasReleaseSigning = ['storeFile', 'storePassword', 'keyAlias', 'keyPassword'].every {
     releaseSigning.getProperty(it)?.trim()
 }
+if (providers.gradleProperty('requireReleaseSigning').orNull == 'true' && !hasReleaseSigning) {
+    throw new GradleException('Release publishing requires a complete signing.properties configuration.')
+}
 
 android {
     namespace 'ink.jian.translate'
@@ -19,8 +22,8 @@ android {
         applicationId 'ink.jian.translate'
         minSdk 24
         targetSdk 35
-        versionCode 7
-        versionName '2.4.0'
+        versionCode 8
+        versionName '2.4.1'
     }
 
     signingConfigs {

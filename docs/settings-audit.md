@@ -5,7 +5,7 @@
 `syncWebAssets` 改为覆盖共用前端资源的 Gradle Copy 任务，不再删除 assets 目录。
 新增更新模块后共六项资源。
 
-复审日期：2026-11-17。依据当前 `web/app.js`、`web/theme.css`、`web/liquid-glass.js` 与
+复审日期：2026-11-18。依据当前 `web/app.js`、`web/theme.css`、`web/liquid-glass.js` 与
 `desktop/patch/setup.rs`，审查网页、Android、Windows 与 macOS 的偏好归一化及消费路径。
 这是代码关系审查；SVG `backdrop-filter` 的最终效果仍需在目标 Android WebView 和 Windows WebView2
 中验收，不能以 CSS 支持查询或离线浏览器模拟替代实机结果。
@@ -21,7 +21,7 @@
 | 动效 | `appearance.motion/ambientLight` | 界面动画和环境柔光，与液态玻璃光学参数互相独立。 |
 | 翻译偏好 | `translation.defaultTab/sourceLanguage/targetLanguage/defaultModels.{text,syllable,doc}/rememberLanguages/rememberModels` | 配置下次启动默认页面、语言和各页模型；已启用的记忆项可覆盖相应默认值。 |
 | 更新 | `updates.autoCheck` | 默认启用；修改后即时应用并自动保存，启动自动检查每 24 小时最多一次。手动检查独立于开关；只比较正式发布并链接到仓库发布页。 |
-| 电脑功能 | `selection_shortcut/activation_shortcut/open_main_window/target_lang/auto_start/start_to_tray`；`popup.backgroundData` | Windows/macOS 原生快捷键、划词结果显示、启动选项、浮窗目标语言和独立背景。Mac 默认使用 Cmd+Alt，Windows 使用 Ctrl+Alt。液态玻璃仍为共用顶层对象。 |
+| 电脑功能 | `selection_shortcut/activation_shortcut/open_main_window/target_lang/start_to_tray`；`popup.backgroundData` | Windows/macOS 原生快捷键、划词结果显示、启动到托盘、浮窗目标语言和独立背景。首次启动默认显示主窗口且不开机自启；两项都可由用户打开。Windows 自启动是独立系统状态，不进入普通偏好快照；macOS 登录项仍由桌面设置保存。 |
 
 偏好版本为 `3`。`appearance.material`、`appearance.glassStrength`、`appearance.cardReveal` 与
 `popup.cardReveal` 不再参与归一化或渲染；旧配置中的这些键会被丢弃，液态玻璃使用新默认参数，
@@ -56,7 +56,10 @@ Tab 滑块使用透明材质，保留原有静止外观。该材质选择由组�
 - `popup.backgroundData` 非空时替换浮窗的背景图片；清空后浮窗继续跟随 `background.data`。主背景图片未选择时，浮窗独立图片仍可使用共享壁纸淡化、模糊和填充值。
 - `rememberLanguages` 和 `rememberModels` 分别使最近一次有效语言或模型覆盖对应默认项；`defaultTab=last` 单独决定页面恢复行为。
 - `open_main_window` 决定划词结果出现位置。浮窗路径使用 `target_lang` 并固定调用轻量模型；主窗口路径沿用主界面的语言与文本模型，因此两类语言/模型选项并非重复。
-- `auto_start` 与 `start_to_tray` 独立；快捷键冲突由原生注册失败返回并尝试回滚，不应静默保存为成功。
+- Windows 自启动使用共用的 HKCU Run 值。界面显示系统中登记的完整目标路径；只有明确执行“设为当前版本”才写入当前 exe，任一版本关闭开关都会删除全局启动项。普通设置保存、默认值恢复及旧设置缓存都不改变注册表。多版本切换需退出现有实例后再启动目标版本。
+- `auto_start` 与 `start_to_tray` 的新安装默认均为关闭；安装包不会注入 `--start-to-tray`。已有设置文件中的显式 `true` 仍优先于默认值。
+- macOS 的 `auto_start` 仍由登录项服务处理；Windows 不再把旧 `desktop-settings.json` 中的 `auto_start` 当成系统状态。
+- 快捷键冲突由原生注册失败返回并尝试回滚，不应静默保存为成功。
 - `updates.autoCheck` 不改变操作系统启动项；关闭自动检查后，手动检查仍可用。检查结果与频率时间戳不属于外观草稿，检查失败不声称“已是最新版本”。更新分组重置只恢复此开关。
 
 ## 即时应用、持久化与重置
@@ -68,6 +71,8 @@ Tab 滑块使用透明材质，保留原有静止外观。该材质选择由组�
 - 浮窗图片设置立即更新内嵌预览，并随自动保存同步真实 Windows 悬浮窗。玻璃配置作为同一份顶层对象同时传给主窗口与悬浮窗。网页与 Android 使用本地偏好，Android 同步提交原生色板缓存。
 - “恢复本组默认”即时应用并自动保存；液态玻璃页仅重置当前调整对象，外观页仅重置主题、配色和卡片圆角，不影响其它组。
 - 桌面首开先载入原生配置与系统字体，再按最终布局准备玻璃并打开窗口。准备期间返回可取消；较晚的配置、字体和光学回调不能重新打开已取消窗口或抢走焦点。
+- Windows 自启动的状态读取只申请注册表查询权限；键缺失表示关闭，权限和读取错误显示为未知。无效或已移动的目标保持“已启用”并可修复，不会误报为关闭。注册表操作使用专用串行原生命令。
+- 桌面设置面板关闭动画结束后保留透明终态并立即隐藏遮罩；关闭过程中重开会使旧完成回调失效，减少动态效果时也直接应用正确的隐藏状态。
 - 液态玻璃引擎只为交互组件生成 SVG displacement、specular 与 Gaussian primitives。若运行时不支持该特性，交互玻璃明确标记 unsupported 并报告错误；面板静态磨砂独立绘制，不依赖滤镜支持情况。
 - 底部 Tab 轨道与右侧齿轮共用透明按钮预设，齿轮无可见文字但保留可访问名称；语言列表打开、刷新及选择后不主动聚焦搜索框，搜索只在用户主动进入时唤起输入法。
 

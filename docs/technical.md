@@ -26,7 +26,7 @@
 Windows、macOS、Android 与网页共用的翻译界面。`web/` 是界面、主题和交互的源码；
 Windows 通过 Pake/Tauri 加载本地页面，macOS 使用 Chromium 桌面壳，Android 使用 WebView。
 
-当前源码版本为 `2.3.0`；既有发布包 `output/笺-2.1.0.exe`、`output/笺-2.1.0.msi`、
+当前源码版本为 `2.4.1`；既有发布包 `output/笺-2.1.0.exe`、`output/笺-2.1.0.msi`、
 `output/笺-2.1.0.apk` 保留不覆盖。新发布包使用版本化文件名，校验值见 `output/SHA256SUMS.txt`。
 电脑点击左上角“笺”、手机点击底栏右侧齿轮打开菜单，再进入“设置”即可调整外观与翻译偏好。
 模式和模型滑块支持按住横向拖动，越过相邻项阈值时立即切换；文本滚动条随主题显示为透明轨道与细圆角滑块。
@@ -60,6 +60,13 @@ IME 高度不压缩 WebView；输入焦点不再隐藏底栏或挤压卡片。
 大胶囊不再让折射区域覆盖控件大部分内部，原高光、透明度与动画参数保留。
 旧注入脚本与主题资源也已从源码和后续 Android 资源输入中移除；历史安装包继续保留。
 Windows 普通窗口外圆角为 22 DIP，最大化与全屏时清除裁剪，卡片圆角仍可单独设置。
+Tao 无边框阴影预留区曾在页面四边露出原生白边；当前普通窗口在 `WM_NCCALCSIZE` 后
+扩展完整客户区，最大化仍服从任务栏工作区。自启动目标读取自共用的 HKCU Run 项，
+界面显示真实路径与有效性；切换目标需先退出旧单实例，再从目标版本执行明确切换。
+普通偏好保存不会写入 Windows 自启动项，macOS 登录项保持独立实现。设置对话框关闭后
+保留透明终态并立即隐藏遮罩，关闭期间重新打开不会被旧回调隐藏。
+新安装默认不启用开机自启动，也不默认隐藏到托盘；构建脚本不再传入 `--start-to-tray`，
+保存后的 `start_to_tray` 值仍会覆盖构建默认值。
 参考实现说明与当前运行时验收状态见 [界面主题记录](ui-theme.md) 和
 [桌面集成说明](desktop-integration.md)。关于页移除渐变图标，保留名称、版本与仓库链接。
 “设置 → 更新”可开关启动自动检查，也可立即检查；自动检查每 24 小时最多一次，
@@ -72,8 +79,9 @@ Windows 普通窗口外圆角为 22 DIP，最大化与全屏时清除裁剪，�
 全量替换液态玻璃后的包为 `output/笺-2.2.0-液态玻璃.exe`、
 `output/笺-2.2.0-液态玻璃.msi`、`output/笺-2.2.0-液态玻璃.apk`；
 这些历史 Android 包使用 versionCode `5` / versionName `2.2.0`，校验值见 `output/SHA256SUMS.txt`。
-2.3.0 发布说明见 [v2.3.0](releases/v2.3.0.md)，2026-11-16 的版本升级阶段未重新生成本地安装包；
-推送包含本轮提交的 `v2.3.0` 标签后，由发布工作流构建并上传三端附件。
+历史 2.3.0 发布说明见 [v2.3.0](releases/v2.3.0.md)，2026-11-16 的版本升级阶段未重新生成本地安装包。
+本轮 2.4.1 发布说明见 [v2.4.1](releases/v2.4.1.md)；维护者推送最终提交及 `v2.4.1` 标签后，
+发布工作流构建三端附件并创建正式 Release。
 2026-11-17 的界面连贯优化按用户要求以原身份重建 Release 包，
 交付目标为 `output/笺-2.3.0-release.apk`，版本 `2.3.0` / code `6`，
 保留名称“笺”和应用标识 `ink.jian.translate`。此前带额外标识的产物已被替代，
@@ -107,6 +115,11 @@ node tests/verify-android-ime.mjs
 node tests/verify-updates.mjs
 node app/macos/build.mjs --prepare-only
 node tests/verify-macos.mjs
+python -X utf8 tests/verify-desktop-patch.py
+node tests/verify-autostart-ui.mjs
+node tests/verify-settings-close.mjs
+node tests/verify-windows-autostart.mjs
+node tests/verify-windows-frame.mjs
 ```
 
 桌面划词提前显示的最小定向检查为：
@@ -200,7 +213,7 @@ Git Bash 安装位置因机器而异，使用本机实际路径。默认构建�
 .\gradlew.bat -g ..\.build\gradle-home :app:assembleRelease --offline --console=plain
 ```
 
-当前版本为 Android versionCode `6` / versionName `2.3.0`，Windows 与 macOS 构建版本均为 `2.3.0`。
+当前版本为 Android versionCode `8` / versionName `2.4.1`，Windows 与 macOS 构建版本均为 `2.4.1`。
 
 ## 自动发布
 
@@ -213,7 +226,8 @@ Git Bash 安装位置因机器而异，使用本机实际路径。默认构建�
 Android Release 优先读取 `ANDROID_KEYSTORE_BASE64` 和
 `ANDROID_SIGNING_PROPERTIES_BASE64` 两个仓库 Secrets，并在构建前还原到
 Gradle 已配置的 `android/keystore/release.keystore` 与 `android/signing.properties`。
-Secrets 缺失时自动退回 debug 签名。macOS 包未做 Developer ID 公证，
+发布前必须配置这两个 Secrets；缺失或配置不完整时工作流明确失败，不会上传无签名或临时签名 APK。
+本次未读取本机密钥或仓库 Secrets。macOS 包未做 Developer ID 公证，
 首次打开仍需按系统提示确认。发布说明模板在 `docs/releases/v<版本>.md`，
 新增版本前应先补充对应文案。
 

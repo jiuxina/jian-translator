@@ -21,7 +21,7 @@
   var API_BASE = 'https://index-translate.bilibili.com/v1';
   var CHAT_URL = API_BASE + '/chat/completions';
   var MAX_SRC = 8000;
-  var APP_VERSION = '2.4.0';
+  var APP_VERSION = '2.4.1';
   var LANGS = window.IT_LANGS || {};
   var COMMON = window.IT_COMMON_LANGS || [];
 
@@ -257,7 +257,9 @@
     }
     surface.style.setProperty('--it-settings-reveal', String(reveal));
     playMotion(surface, [from, to], DIALOG_DURATION, function () {
-      surface.style.removeProperty('--it-settings-reveal');
+      // Keep the terminal paint state after cancelling the animation. Removing
+      // this property would restore its default (1) for a closing surface.
+      surface.style.setProperty('--it-settings-reveal', opening ? '1' : '0');
       surface.classList.remove('it-surface-leave');
       if (done) done();
     }, 'surface');
@@ -2886,7 +2888,7 @@
   var DEFAULT_SETTINGS = {
     selection_shortcut: Bridge.isMac ? 'Cmd+Alt+T' : 'Ctrl+Alt+T',
     activation_shortcut: Bridge.isMac ? 'Cmd+Alt+I' : 'Ctrl+Alt+I',
-    open_main_window: false, target_lang: 'auto', auto_start: false, start_to_tray: true,
+    open_main_window: false, target_lang: 'auto', auto_start: false, start_to_tray: false,
     preferences: copyObject(DEFAULT_PREFERENCES)
   };
 
@@ -3116,8 +3118,13 @@
               <label class="it-set-row"><span>划词结果显示</span><select id="it-set-mode"><option value="popup">鼠标旁悬浮窗</option><option value="main">打开主窗口</option></select></label>
               <label class="it-set-row"><span>悬浮窗目标语言</span><select id="it-set-lang"><option value="auto">自动判断</option><option value="zh">中文</option><option value="en">英文</option></select></label>
               <label class="it-set-row"><span>开机自动启动</span><input type="checkbox" class="it-set-check" id="it-set-autostart"></label>
+              <div class="it-set-note" id="it-set-autostart-status" role="status" aria-live="polite"></div>
+              <div class="it-set-actions">
+                <button type="button" class="ghost" id="it-set-autostart-current" hidden>设为当前版本</button>
+                <button type="button" class="ghost" id="it-set-autostart-retry" hidden>重新读取自启动状态</button>
+              </div>
               <label class="it-set-row"><span>启动后最小化到托盘</span><input type="checkbox" class="it-set-check" id="it-set-starttotray"></label>
-              <div class="it-set-note">自启动和启动到托盘设置下次启动时生效。</div>
+              <div class="it-set-note" id="it-set-autostart-help">启动到托盘设置下次启动时生效。</div>
               <div id="it-popup-settings">
                 <div class="it-set-divider"></div>
                 <h3>划词悬浮窗</h3>
@@ -3158,6 +3165,11 @@
     var systemFonts = [];
     var systemFontsReady = false;
     var settingsLoaded = false;
+    var autostartStatus = null;
+    var autostartError = '';
+    var autostartBusy = false;
+    var autostartSequence = 0;
+    var autostartPending = null;
     var popupPreviewData = null;
     var settingsSaving = false;
     var settingsDirty = false;
@@ -3598,6 +3610,125 @@
       }
     }
 
+    function renderAutostartStatus() {
+      var checkbox = $('it-set-autostart');
+      var status = $('it-set-autostart-status');
+      var switchButton = $('it-set-autostart-current');
+      var retryButton = $('it-set-autostart-retry');
+      var help = $('it-set-autostart-help');
+      if (!checkbox || !status || !switchButton || !retryButton || !settingsState) return;
+      if (!Bridge.isDesktop || Bridge.isMac) {
+        checkbox.checked = !!settingsState.auto_start;
+        checkbox.indeterminate = false;
+        status.textContent = Bridge.isMac ? '由 macOS 登录项管理。' : '';
+        status.classList.remove('warn');
+        switchButton.hidden = true;
+        retryButton.hidden = true;
+        if (help) help.textContent = '启动到托盘设置下次启动时生效。';
+        return;
+      }
+      if (help) help.textContent = '各版本共用一个自启动开关；关闭会停用全局自启动。' +
+        '切换版本前，请从托盘退出已运行的版本，再打开目标版本并选择“设为当前版本”。' +
+        '移动或重命名文件后需重新设置目标。启动到托盘设置下次启动时生效。';
+      checkbox.checked = !!(autostartStatus && autostartStatus.enabled);
+      checkbox.indeterminate = !autostartStatus;
+      checkbox.disabled = !settingsLoaded || autostartBusy || !autostartStatus;
+      switchButton.disabled = checkbox.disabled;
+      switchButton.hidden = !autostartStatus || !autostartStatus.enabled ||
+        (autostartStatus.target_is_current && autostartStatus.target_exists);
+      retryButton.hidden = !autostartError;
+      retryButton.disabled = !settingsLoaded || autostartBusy;
+      var message;
+      if (!autostartStatus) {
+        message = autostartBusy ? '正在读取自启动状态…' : '自启动状态未知。';
+      } else if (!autostartStatus.enabled) {
+        message = '当前未启用开机自启动。';
+      } else if (!autostartStatus.target_path) {
+        message = '自启动已登记，但目标格式无效，请设为当前版本。';
+      } else if (!autostartStatus.target_exists) {
+        message = '启动目标不存在：' + autostartStatus.target_path;
+      } else if (!autostartStatus.target_is_current) {
+        message = '当前目标：' + autostartStatus.target_path + '（其他版本或位置）';
+      } else {
+        message = '当前目标：' + autostartStatus.target_path + '（当前版本）';
+      }
+      status.textContent = autostartError ? autostartError + '；' + message : message;
+      status.classList.toggle('warn', !!autostartError || !!(autostartStatus && autostartStatus.enabled &&
+        (!autostartStatus.target_exists || !autostartStatus.target_is_current)));
+    }
+
+    function validateAutostartStatus(status) {
+      if (!status || typeof status.enabled !== 'boolean' ||
+          !(status.target_path === null || typeof status.target_path === 'string') ||
+          typeof status.target_exists !== 'boolean' || typeof status.target_is_current !== 'boolean') {
+        throw new Error('未能读取有效的自启动状态');
+      }
+      return status;
+    }
+
+    function requestAutostartStatus(enabled) {
+      if (!Bridge.isDesktop || Bridge.isMac) return Promise.resolve();
+      var writing = typeof enabled === 'boolean';
+      if (writing && (autostartBusy || !autostartStatus || !settingsLoaded)) {
+        renderAutostartStatus();
+        return Promise.resolve();
+      }
+      var sequence = ++autostartSequence;
+      var session = settingsSeq;
+      function isCurrent() { return sequence === autostartSequence && session === settingsSeq; }
+      if (!writing) autostartStatus = null;
+      autostartError = '';
+      autostartBusy = true;
+      renderAutostartStatus();
+      // Reopening queues its read behind the previous session's write. Only
+      // the newest visible session may publish the resulting status.
+      var operation = (autostartPending || Promise.resolve()).then(function () {
+        if (!writing && !isCurrent()) return null;
+        return Bridge.invoke(writing ? 'it_set_autostart' : 'it_get_autostart_status',
+          writing ? { enabled: enabled } : undefined);
+      }).then(function (result) {
+        if (!isCurrent()) return;
+        var status = validateAutostartStatus(result);
+        if (writing && (status.enabled !== enabled || (enabled &&
+            (!status.target_is_current || !status.target_exists)))) {
+          throw new Error('系统登记结果与本次操作不一致');
+        }
+        autostartStatus = status;
+        if (writing) toast(enabled ? '已将当前版本设为自启动目标' : '已关闭全局自启动');
+      }).catch(function (error) {
+        if (!isCurrent()) return;
+        autostartError = (writing ? '自启动设置失败：' : '自启动读取失败：') +
+          (error.message || String(error));
+        autostartStatus = null;
+        if (!writing) return;
+        toast(autostartError, true);
+        // A write can succeed before its verification fails. Re-read instead
+        // of restoring a cached checkbox that may no longer match Windows.
+        return Promise.resolve().then(function () {
+          return Bridge.invoke('it_get_autostart_status');
+        }).then(function (status) {
+          if (isCurrent()) autostartStatus = validateAutostartStatus(status);
+        }).catch(function (readError) {
+          if (!isCurrent()) return;
+          autostartStatus = null;
+          autostartError += '；状态读取失败：' + (readError.message || String(readError));
+        });
+      }).then(function () {
+        if (autostartPending === operation) autostartPending = null;
+        if (!isCurrent()) return;
+        autostartBusy = false;
+        renderAutostartStatus();
+      });
+      autostartPending = operation;
+      return operation;
+    }
+
+    function settingsPersistenceSnapshot() {
+      var submission = copyObject(settingsState);
+      if (Bridge.isDesktop && !Bridge.isMac) delete submission.auto_start;
+      return submission;
+    }
+
     function queueSettingsPersistence(immediate) {
       if (!settingsState) return;
       settingsDirty = true;
@@ -3614,7 +3745,7 @@
     function persistSettings() {
       if (settingsSaving || !settingsDirty || !settingsState) return;
       flushPreferencePreview();
-      var submission = copyObject(settingsState);
+      var submission = settingsPersistenceSnapshot();
       var revision = persistenceRevision;
       var serialized = JSON.stringify(submission);
       if (serialized === persistedSettingsJson && !persistenceFailure) {
@@ -3645,7 +3776,7 @@
         try {
           // A newer edit remains the live source of truth while an older
           // desktop write completes. Never copy old values back into the UI.
-          if (revision === persistenceRevision || serialized === JSON.stringify(settingsState)) {
+          if (revision === persistenceRevision || serialized === JSON.stringify(settingsPersistenceSnapshot())) {
             localStorage.setItem(PREFERENCES_KEY, JSON.stringify(submission.preferences));
           }
           if (Bridge.isAndroid && window.NativeBridge &&
@@ -3675,6 +3806,7 @@
       $('it-set-lang').value = settingsState.target_lang || 'auto';
       $('it-set-autostart').checked = !!settingsState.auto_start;
       $('it-set-starttotray').checked = settingsState.start_to_tray !== false;
+      renderAutostartStatus();
       $('it-pref-background-status').textContent = settingsState.preferences.background.data ?
         '已选择背景图片。' : '未选择背景图片。';
       if (fontFamilySelect) {
@@ -3776,6 +3908,7 @@
       if (fontFamilySelect) fontFamilySelect.disabled = !controlsEnabled || !systemFontsReady;
       refreshSelectButtons(false);
       renderUpdateStatus();
+      renderAutostartStatus();
     }
 
     function close() {
@@ -3828,6 +3961,7 @@
       if (!keepLiveSettings) committedSettings = copyObject(settingsState);
       if (resetBackgroundOnOpen) settingsState.preferences.background.data = '';
       var controller = new AbortController();
+      requestAutostartStatus();
       function prepareAndReveal() {
         if (seq !== settingsSeq || controller.signal.aborted) return;
         settingsLoaded = true;
@@ -3871,7 +4005,7 @@
           if (seq !== settingsSeq || controller.signal.aborted) return;
           settingsState = settingsFromSaved(results[0], readSavedPreferences());
           committedSettings = copyObject(settingsState);
-          persistedSettingsJson = JSON.stringify(settingsState);
+          persistedSettingsJson = JSON.stringify(settingsPersistenceSnapshot());
           if (resetBackgroundOnOpen) settingsState.preferences.background.data = '';
           prepareAndReveal();
         }).catch(function (error) {
@@ -3880,7 +4014,7 @@
           toast('设置读取失败：' + error, true);
         });
       } else {
-        if (!persistedSettingsJson && !keepLiveSettings) persistedSettingsJson = JSON.stringify(settingsState);
+        if (!persistedSettingsJson && !keepLiveSettings) persistedSettingsJson = JSON.stringify(settingsPersistenceSnapshot());
         prepareAndReveal();
       }
     };
@@ -4034,7 +4168,18 @@
       settingsState.target_lang = this.value; queueSettingsPersistence(true);
     });
     on($('it-set-autostart'), 'change', function () {
-      settingsState.auto_start = this.checked; queueSettingsPersistence(true);
+      if (!Bridge.isDesktop || Bridge.isMac) {
+        settingsState.auto_start = this.checked;
+        queueSettingsPersistence(true);
+        return;
+      }
+      requestAutostartStatus(this.checked);
+    });
+    on($('it-set-autostart-current'), 'click', function () {
+      requestAutostartStatus(true);
+    });
+    on($('it-set-autostart-retry'), 'click', function () {
+      if (!autostartBusy) requestAutostartStatus();
     });
     on($('it-set-starttotray'), 'change', function () {
       settingsState.start_to_tray = this.checked; queueSettingsPersistence(true);

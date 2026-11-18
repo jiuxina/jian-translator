@@ -1253,7 +1253,8 @@ textarea.src::placeholder { color: var(--lg-ink-faint); }
   opacity: 1;
   visibility: hidden;
   pointer-events: none;
-  transition: visibility 0s linear var(--lg-duration-dialog);
+  /* The leave class keeps this visible until the exit callback completes. */
+  transition: none;
 }
 .it-set-mask::before {
   content: "";
@@ -1428,6 +1429,7 @@ textarea.src::placeholder { color: var(--lg-ink-faint); }
   line-height: 1.6;
   color: var(--lg-ink-faint);
 }
+.it-set-note#it-set-autostart-status { overflow-wrap: anywhere; user-select: text; }
 .it-set-note.warn { color: var(--lg-accent-deep); }
 
 .it-pref-preview { margin: 0 0 12px; padding: 10px; border-radius: var(--lg-r-md);

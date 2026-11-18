@@ -1,6 +1,11 @@
 """Targeted patch checks; does not invoke builds or native APIs."""
+import contextlib
 import importlib.util
+import io
+import json
+import os
 from pathlib import Path
+import re
 import unittest
 from unittest import mock
 
@@ -190,6 +195,200 @@ class DesktopAutostartContractTests(unittest.TestCase):
                 self.assertIn(command, patcher)
                 self.assertIn('"%s"' % command, patcher)
                 self.assertIn('"allow-%s"' % command.replace("_", "-"), patcher)
+
+
+class DesktopStartupDefaultsTests(unittest.TestCase):
+    ROOT = Path(__file__).resolve().parents[1]
+
+    def test_startup_toggles_default_to_off_and_build_does_not_force_tray_start(self):
+        rust = (self.ROOT / "desktop" / "patch" / "setup.rs").read_text(encoding="utf-8")
+        frontend = (self.ROOT / "web" / "app.js").read_text(encoding="utf-8")
+        macos = (self.ROOT / "app" / "macos" / "core.cjs").read_text(encoding="utf-8")
+        build = (self.ROOT / "app" / "rebuild.sh").read_text(encoding="utf-8")
+        self.assertIn("auto_start: false", rust)
+        self.assertIn("start_to_tray: false", rust)
+        self.assertIn("auto_start: false, start_to_tray: false", frontend)
+        self.assertIn("start_to_tray: false", macos)
+        self.assertNotIn("--start-to-tray", build)
+
+    def test_saved_start_to_tray_setting_still_overrides_new_default(self):
+        source = (self.ROOT / "desktop" / "patch" / "setup.rs").read_text(encoding="utf-8")
+        self.assertIn('value.get("start_to_tray").and_then(|flag| flag.as_bool())', source)
+        self.assertIn('unwrap_or(cli_default)', source)
+
+
+class DesktopAutostartPatchTests(unittest.TestCase):
+    COMMANDS = ("it_get_autostart_status", "it_set_autostart")
+    HANDLER_PATTERN = r"(?ms)tauri::generate_handler!\[.*?^        \]\)"
+    LIB = (
+        "use app::{\n"
+        "    setup::{set_global_shortcut, set_system_tray},\n"
+        "    window::{set_window},\n"
+        "};\n"
+        "fn run() {\n"
+        "    let start_to_tray = pake_config.windows[0].start_to_tray && show_system_tray; // Only valid when tray is enabled\n"
+        "    builder.invoke_handler(tauri::generate_handler![\n"
+        "            set_title_bar_color,\n"
+        "        ])\n"
+        "        .setup(move |app| { Ok(()) });\n"
+        "}\n"
+    )
+    BUILD = (
+        "fn main() {\n"
+        "    tauri_build::AppManifest::new().commands(&[\n"
+        '            "set_title_bar_color",\n'
+        "        ]);\n"
+        "}\n"
+    )
+
+    def run_patch(self, lib=None, build=None, capability=None):
+        desktop = str(PATCHER_PATH.parent)
+        tauri = os.path.join(desktop, "synthetic-npm", "pake-cli", "src-tauri")
+        paths = {
+            name: os.path.normpath(os.path.join(tauri, relative))
+            for name, relative in {
+                "lib": "src/lib.rs", "build": "build.rs",
+                "capability": "capabilities/default.json", "cargo": "Cargo.toml",
+            }.items()
+        }
+        files = {
+            paths["lib"]: self.LIB if lib is None else lib,
+            paths["build"]: self.BUILD if build is None else build,
+            paths["capability"]: capability if capability is not None else json.dumps({
+                "identifier": "fixture", "webviews": ["pake", "pake-*"],
+                "permissions": ["allow-set-title-bar-color", "shell:allow-open"],
+            }, indent=2),
+            paths["cargo"]: (
+                '[package]\nname = "synthetic"\nversion = "3.18.0"\n'
+                '[dependencies]\nserde_json = "1.0.149"\n'
+                'features = [\n  "Win32_UI_WindowsAndMessaging",\n]\n'
+            ),
+            os.path.normpath(os.path.join(tauri, "src/app/window.rs")): DesktopPopupRevealTests.SOURCE,
+            os.path.normpath(os.path.join(desktop, "patch/setup.rs")): "\n".join(
+                "pub fn %s() {}" % command for command in self.COMMANDS + (
+                    "it_list_system_fonts", "it_write_clipboard_text",
+                )),
+            os.path.normpath(os.path.join(desktop, "../app/macos/package.json")): '{"version":"2.3.0"}',
+        }
+
+        def read(path):
+            return files[os.path.normpath(path)].replace("\r\n", "\n")
+
+        def write(path, text):
+            files[os.path.normpath(path)] = text
+
+        stream = io.StringIO()
+        with mock.patch.object(PATCHER, "read", side_effect=read), \
+                mock.patch.object(PATCHER, "write", side_effect=write), \
+                mock.patch.object(PATCHER.shutil, "copyfile"), \
+                mock.patch.object(PATCHER.os.path, "isdir", return_value=True), \
+                mock.patch.object(PATCHER.subprocess, "check_output",
+                                  return_value=os.path.dirname(os.path.dirname(tauri))), \
+                contextlib.redirect_stdout(stream), contextlib.redirect_stderr(stream):
+            result = PATCHER.main()
+        return result, {name: files[path] for name, path in paths.items()}, stream.getvalue()
+
+    def assert_registered_once(self, output):
+        for command in self.COMMANDS:
+            self.assertEqual(len(re.findall(r"\b%s\b" % command, output["lib"])), 2)
+            self.assertEqual(output["build"].count('"%s"' % command), 1)
+            permission = "allow-" + command.replace("_", "-")
+            self.assertEqual(json.loads(output["capability"])["permissions"].count(permission), 1)
+
+    def test_fresh_template_then_repeated_application_register_once(self):
+        status, output, report = self.run_patch()
+        self.assertEqual(status, 0, report)
+        self.assert_registered_once(output)
+        status, repeated, report = self.run_patch(output["lib"], output["build"], output["capability"])
+        self.assertEqual(status, 0, report)
+        self.assertEqual(repeated, output)
+
+    def test_pre_autostart_and_crlf_templates_upgrade_without_duplicate_commands(self):
+        status, output, report = self.run_patch()
+        self.assertEqual(status, 0, report)
+        for command in self.COMMANDS:
+            output["lib"] = re.sub(r"(?m)^ +%s,\n" % command, "", output["lib"])
+            output["build"] = re.sub(r'(?m)^ +"%s",\n' % command, "", output["build"])
+        capability = json.loads(output["capability"])
+        capability["permissions"] = [
+            name for name in capability["permissions"]
+            if name not in ("allow-it-get-autostart-status", "allow-it-set-autostart")
+        ]
+        output["capability"] = json.dumps(capability, indent=2)
+        for newline in ("\n", "\r\n"):
+            with self.subTest(newline=newline):
+                status, repaired, report = self.run_patch(
+                    *(output[name].replace("\n", newline) for name in ("lib", "build", "capability")),
+                )
+                self.assertEqual(status, 0, report)
+                self.assert_registered_once(repaired)
+
+    def test_partial_registration_is_completed_without_duplicates(self):
+        status, output, report = self.run_patch()
+        self.assertEqual(status, 0, report)
+        for command in self.COMMANDS:
+            partial = dict(output)
+            partial["lib"] = re.sub(r"(?m)^ +%s,\n" % command, "", partial["lib"])
+            partial["build"] = re.sub(r'(?m)^ +"%s",\n' % command, "", partial["build"])
+            capability = json.loads(partial["capability"])
+            capability["permissions"].remove("allow-" + command.replace("_", "-"))
+            partial["capability"] = json.dumps(capability, indent=2)
+            status, repaired, report = self.run_patch(partial["lib"], partial["build"], partial["capability"])
+            self.assertEqual(status, 0, report)
+            self.assert_registered_once(repaired)
+
+    def test_command_insertion_preserves_indentation_crlf_and_exact_names(self):
+        source = (
+            "builder.invoke_handler(tauri::generate_handler![\r\n"
+            "            it_set_autostart_debug,\r\n"
+            "            // it_get_autostart_status is registered below.\r\n"
+            "        ])\r\n"
+        )
+        expected = source.replace(
+            "        ])",
+            "            it_get_autostart_status,\r\n"
+            "            it_set_autostart,\r\n        ])",
+        )
+        actual = PATCHER.ensure_command_names(source, self.HANDLER_PATTERN,
+                                             self.COMMANDS, "handler", quoted=False)
+        self.assertEqual(actual, expected)
+        self.assertEqual(PATCHER.ensure_command_names(actual, self.HANDLER_PATTERN,
+                                                    self.COMMANDS, "handler", quoted=False), actual)
+
+    def test_invalid_or_duplicate_list_fails_clearly(self):
+        for source in (
+            "missing handler", self.LIB + self.LIB,
+            self.LIB.replace("set_title_bar_color,", "it_set_autostart,\n            it_set_autostart,"),
+        ):
+            with self.subTest(source=source), self.assertRaises(RuntimeError):
+                PATCHER.ensure_command_names(source, self.HANDLER_PATTERN,
+                                             self.COMMANDS, "handler", quoted=False)
+
+    def test_single_line_setup_import_preserves_neighbors_and_crlf(self):
+        source = self.LIB.replace("\n", "\r\n")
+        actual = PATCHER.canonical_setup_import(source)
+        self.assertIn("    window::{set_window},\r\n", actual)
+        self.assertNotIn("\n", actual.replace("\r\n", ""))
+        self.assertEqual(PATCHER.canonical_setup_import(actual), actual)
+
+    def test_main_reports_changed_handler_or_acl_without_succeeding(self):
+        for lib, build in (
+            (self.LIB.replace("tauri::generate_handler![", "unknown_handler!["), None),
+            (None, self.BUILD.replace(".commands(&[", ".unknown_commands(&[")),
+        ):
+            with self.subTest(lib=lib, build=build):
+                status, _, report = self.run_patch(lib=lib, build=build)
+                self.assertEqual(status, 1)
+                self.assertIn("命令列表", report)
+
+    def test_setup_import_rejects_missing_duplicate_and_malformed_blocks(self):
+        for source in (
+            "use unrelated;\n", self.LIB + self.LIB,
+            self.LIB.replace("set_global_shortcut, set_system_tray", "set_global_shortcut, set_global_shortcut"),
+            self.LIB.replace("set_global_shortcut, set_system_tray", "set_global_shortcut as renamed"),
+        ):
+            with self.subTest(source=source), self.assertRaises(RuntimeError):
+                PATCHER.canonical_setup_import(source)
 
 
 if __name__ == "__main__":

@@ -58,13 +58,11 @@ fi
   --no-restore-last-url \
   --keep-binary \
   --installer-language zh-CN \
-  --app-version 2.4.0 \
+  --app-version 2.4.1 \
   --show-system-tray \
   --system-tray-icon "$APP_DIR/icon.png" \
   --hide-on-close true \
   --hide-window-decorations \
-  --activation-shortcut "Ctrl+Alt+I" \
-  --start-to-tray
+  --activation-shortcut "Ctrl+Alt+I"
 # 标题栏由 web/index.html 的 .titlebar 自绘（窗口内 40px），所以隐藏系统边框。
-# --start-to-tray：窗口初始保持隐藏，页面加载完也不自动弹出，只留托盘图标。
-# 用户可在「设置 → 启动后最小化到托盘」里关掉（下次启动生效）。
+# 首次启动显示主窗口；用户可在「设置 → 启动后最小化到托盘」中启用托盘启动。

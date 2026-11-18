@@ -357,11 +357,7 @@ await mkdir(output, { recursive: true });
 const rustSource = path.join(output, 'popup_lifecycle.rs');
 const executable = path.join(output, process.platform === 'win32' ? 'popup_lifecycle.exe' : 'popup_lifecycle');
 await writeFile(rustSource, fixture, 'utf8');
-execFileSync(rustc, ['--edition=2021', rustSource, '-o', executable], {
-  stdio: 'pipe', windowsHide: true, timeout: 120000,
-});
-let text = execFileSync(executable, [], { encoding: 'utf8', windowsHide: true, timeout: 15000 });
-text += 'PASS Native CloseRequested prevents WebView destruction and uses the reusable dismissal path\n';
+let text = '';
 const watcherFixture = String.raw`
 #![allow(non_snake_case, dead_code)]
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
@@ -554,6 +550,11 @@ fn main() {
 const watcherSource = path.join(output, 'popup_watchdog.rs');
 const watcherExecutable = path.join(output, process.platform === 'win32' ? 'popup_watchdog.exe' : 'popup_watchdog');
 await writeFile(watcherSource, watcherFixture, 'utf8');
+execFileSync(rustc, ['--edition=2021', rustSource, '-o', executable], {
+  stdio: 'pipe', windowsHide: true, timeout: 120000,
+});
+text = execFileSync(executable, [], { encoding: 'utf8', windowsHide: true, timeout: 15000 });
+text += 'PASS Native CloseRequested prevents WebView destruction and uses the reusable dismissal path\n';
 execFileSync(rustc, ['--edition=2021', watcherSource, '-o', watcherExecutable], {
   stdio: 'pipe', windowsHide: true, timeout: 120000,
 });

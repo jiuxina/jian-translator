@@ -17,7 +17,7 @@ function defaultSettings() {
     open_main_window: false,
     target_lang: 'auto',
     auto_start: false,
-    start_to_tray: true,
+    start_to_tray: false,
     preferences: null
   };
 }

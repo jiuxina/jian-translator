@@ -37,6 +37,66 @@ def replace_once(text, old, new, label, required=True):
     return text.replace(old, new, 1), True
 
 
+def ensure_command_names(source, pattern, commands, label, quoted=True):
+    """Append missing standalone list entries without changing existing entries."""
+    matches = list(re.finditer(pattern, source, re.DOTALL))
+    if len(matches) != 1:
+        raise RuntimeError("%s 必须且只能匹配一个命令列表" % label)
+    match = matches[0]
+    block = match.group(0)
+    missing = []
+    for command in commands:
+        token = '"%s"' % command if quoted else command
+        entries = re.findall(
+            r"(?m)^[ \t]*%s[ \t]*,?[ \t]*(?://[^\r\n]*)?\r?$" % re.escape(token),
+            block,
+        )
+        if len(entries) > 1:
+            raise RuntimeError("%s 出现重复命令：%s" % (label, command))
+        if not entries:
+            missing.append(token)
+    if not missing:
+        return source
+    closing = re.search(r"(?m)^([ \t]*)\]", block)
+    if closing is None:
+        raise RuntimeError("%s 缺少独立结束行" % label)
+    newline = "\r\n" if "\r\n" in block else "\n"
+    indent = closing.group(1) + "    "
+    insertion = "".join(indent + token + "," + newline for token in missing)
+    updated = block[:closing.start()] + insertion + block[closing.start():]
+    return source[:match.start()] + updated + source[match.end():]
+
+
+def canonical_setup_import(source):
+    pattern = r"(?m)^[ \t]+setup::\{([^{}]*)\},"
+    matches = list(re.finditer(pattern, source))
+    if len(matches) != 1:
+        raise RuntimeError("lib.rs 必须且只能包含一个 setup 导入块")
+    match = matches[0]
+    names = [name.strip() for name in match.group(1).split(",") if name.strip()]
+    if any(not re.fullmatch(r"[A-Za-z_]\w*", name) for name in names):
+        raise RuntimeError("lib.rs setup 导入块包含无法识别的条目")
+    if len(names) != len(set(names)):
+        raise RuntimeError("lib.rs setup 导入块包含重复条目")
+    for name in (
+        "it_debug_log", "it_get_autostart_status", "it_get_settings", "it_list_system_fonts",
+        "it_save_settings", "it_set_autostart", "it_set_hotkeys_enabled", "it_window_action",
+        "it_write_clipboard_text", "set_global_shortcut", "set_system_tray",
+    ):
+        if name not in names:
+            names.append(name)
+    names.sort()
+    newline = "\r\n" if "\r\n" in source else "\n"
+    grouped = []
+    for name in names:
+        if not grouped or len(grouped[-1]) >= 4:
+            grouped.append([])
+        grouped[-1].append(name)
+    body = ["        " + " ".join(name + "," for name in group) for group in grouped]
+    block = newline.join(("    setup::{", *body, "    },"))
+    return source[:match.start()] + block + source[match.end():]
+
+
 _RELEASE_VERSION = re.compile(
     r"^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$"
 )
@@ -269,17 +329,18 @@ def main():
                 "lib.rs 原生命令注册",
                 required=False,
             )
-        setup_start = lib.find("    setup::{")
-        setup_end = lib.find("\n    },", setup_start)
-        if setup_start >= 0 and setup_end >= 0:
-            canonical_setup_import = (
-                "    setup::{\n"
-                "        it_debug_log, it_get_settings, it_list_system_fonts, it_save_settings,\n"
-                "        it_set_hotkeys_enabled, it_window_action, it_write_clipboard_text, set_global_shortcut,\n"
-                "        set_system_tray,\n"
-                "    },"
-            )
-            lib = lib[:setup_start] + canonical_setup_import + lib[setup_end + len("\n    },") :]
+        lib = canonical_setup_import(lib)
+        lib = ensure_command_names(
+            lib,
+            r"(?ms)tauri::generate_handler!\[.*?^        \]\)",
+            (
+                "it_get_autostart_status", "it_get_settings", "it_save_settings",
+                "it_set_autostart", "it_set_hotkeys_enabled", "it_window_action",
+                "it_debug_log", "it_list_system_fonts", "it_write_clipboard_text",
+            ),
+            "lib.rs 命令列表",
+            quoted=False,
+        )
         if lib != original:
             write(lib_path, lib)
             print("已注册系统字体与剪贴板命令")
@@ -305,59 +366,21 @@ def main():
         build_path = os.path.join(tauri, "build.rs")
         build = read(build_path)
         original = build
-        if '"it_get_settings"' not in build:
-            build, _ = replace_once(
-                build,
-                '            "set_title_bar_color",\n        ]),',
-                '            "set_title_bar_color",\n            "it_get_settings",\n'
-                '            "it_save_settings",\n            "it_set_hotkeys_enabled",\n'
-                '            "it_window_action",\n        ]),',
-                "build.rs",
-            )
-        elif '"it_window_action"' not in build:
-            build, _ = replace_once(
-                build,
-                '            "it_set_hotkeys_enabled",\n        ]),',
-                '            "it_set_hotkeys_enabled",\n'
-                '            "it_window_action",\n        ]),',
-                "build.rs",
-                required=False,
-            )
+        build = ensure_command_names(
+            build,
+            r"(?ms)AppManifest::new\(\)\.commands\(&\[.*?^        \]\)",
+            (
+                "it_get_autostart_status", "it_get_settings", "it_save_settings",
+                "it_set_autostart", "it_set_hotkeys_enabled", "it_window_action",
+                "it_debug_log", "it_list_system_fonts", "it_write_clipboard_text",
+            ),
+            "build.rs 命令列表",
+        )
         if build != original:
             write(build_path, build)
             print("已更新 build.rs")
         else:
             print("build.rs 已包含新命令")
-
-        # 3b. build.rs 增加调试命令
-        build = read(build_path)
-        original = build
-        build, _ = replace_once(
-            build,
-            '            "it_window_action",\n        ]),',
-            '            "it_window_action",\n            "it_debug_log",\n        ]),',
-            "build.rs debug",
-            required=False,
-        )
-        if build != original:
-            write(build_path, build)
-            print("build.rs 已加入 it_debug_log")
-
-        # 3c. ACL 白名单增加系统字体枚举和剪贴板写入命令
-        build = read(build_path)
-        original = build
-        build, _ = replace_once(
-            build,
-            '            "it_debug_log",\n        ]),',
-            '            "it_debug_log",\n'
-            '            "it_list_system_fonts",\n'
-            '            "it_write_clipboard_text",\n        ]),',
-            "build.rs 原生命令 ACL",
-            required=False,
-        )
-        if build != original:
-            write(build_path, build)
-            print("build.rs 已加入系统字体与剪贴板命令 ACL")
 
         # 4. capabilities/default.json
         capability_path = os.path.join(tauri, "capabilities", "default.json")
@@ -419,6 +442,28 @@ def main():
             write(capability_path, capability)
             print("capabilities 已加入系统字体与剪贴板命令权限")
 
+        # Autostart permissions may already be present independently in an older
+        # partially patched template. Add each missing entry exactly once.
+        try:
+            manifest = json.loads(capability)
+            permissions = manifest["permissions"]
+        except (ValueError, KeyError, TypeError) as error:
+            raise RuntimeError("capability 权限清单格式无效") from error
+        if not isinstance(permissions, list):
+            raise RuntimeError("capability permissions 必须为数组")
+        changed = False
+        for permission in ("allow-it-get-autostart-status", "allow-it-set-autostart"):
+            count = permissions.count(permission)
+            if count > 1:
+                raise RuntimeError("capability 出现重复权限：%s" % permission)
+            if count == 0:
+                permissions.append(permission)
+                changed = True
+        if changed:
+            capability = json.dumps(manifest, ensure_ascii=False, indent=2) + "\n"
+            write(capability_path, capability)
+            print("capabilities 已加入自启动命令权限")
+
         # 5. Cargo.toml
         cargo_path = os.path.join(tauri, "Cargo.toml")
         cargo = read(cargo_path)
@@ -454,10 +499,14 @@ def main():
             "Win32_Graphics_Gdi",
             "Win32_Storage_FileSystem",
             "Win32_System_DataExchange",
+            "Win32_System_Environment",
             "Win32_System_Memory",
             "Win32_System_Ole",
+            "Win32_Security",
             "Win32_UI_Controls",
             "Win32_UI_HiDpi",
+            "Win32_UI_Shell",
+            "Win32_UI_WindowsAndMessaging",
         ):
             marker = '"%s"' % feature
             if marker not in cargo:
@@ -473,6 +522,8 @@ def main():
         build = read(build_path)
         capability = read(capability_path)
         command_permissions = {
+            "it_get_autostart_status": "allow-it-get-autostart-status",
+            "it_set_autostart": "allow-it-set-autostart",
             "it_list_system_fonts": "allow-it-list-system-fonts",
             "it_write_clipboard_text": "allow-it-write-clipboard-text",
         }
@@ -486,7 +537,7 @@ def main():
             if '"%s"' % permission not in capability:
                 raise RuntimeError("capability 缺少原生命令权限：%s" % permission)
 
-        print("系统字体与剪贴板命令的导入、ACL 和 capability 已验证")
+        print("自启动、系统字体与剪贴板命令的导入、ACL 和 capability 已验证")
 
         if cargo != original:
             write(cargo_path, cargo)
