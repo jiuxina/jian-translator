@@ -10,6 +10,7 @@
 不追加到 README。实现与验证分别记录在相应专题文档，构建和交付状态记录在
 [Release 准备记录](release-preparation.md)；桌面产物详情记录在
 [桌面集成说明](desktop-integration.md)。
+本次完整代码质量与用户体验审查见 [审查报告](code-quality-ux-audit-2026-11-18.md)。
 
 ## 编译后验证约定
 
