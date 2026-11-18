@@ -163,5 +163,34 @@ class DesktopPopupRevealTests(unittest.TestCase):
                 PATCHER.exclude_popup_from_window_reveal(source)
 
 
+class DesktopAutostartContractTests(unittest.TestCase):
+    ROOT = Path(__file__).resolve().parents[1]
+
+    def test_registry_reader_returns_path_and_checks_current_executable(self):
+        source = (self.ROOT / "desktop" / "patch" / "setup.rs").read_text(encoding="utf-8")
+        self.assertIn("pub struct AutostartStatus", source)
+        self.assertIn("pub fn it_get_autostart_status(", source)
+        self.assertIn("target_path", source)
+        self.assertIn("target_is_current", source)
+        self.assertIn("target_exists", source)
+
+    def test_autostart_writes_are_separate_from_general_settings_persistence(self):
+        source = (self.ROOT / "desktop" / "patch" / "setup.rs").read_text(encoding="utf-8")
+        start = source.index("pub fn it_save_settings(")
+        end = source.index("\npub fn set_system_tray(", start)
+        save = source[start:end]
+        self.assertNotIn("apply_autostart", save)
+        self.assertNotIn("auto_start_changed", save)
+        self.assertIn("pub fn it_set_autostart(", source)
+
+    def test_patch_registers_autostart_commands_in_lib_acl_and_capability(self):
+        patcher = (self.ROOT / "desktop" / "patch_apply.py").read_text(encoding="utf-8")
+        for command in ("it_get_autostart_status", "it_set_autostart"):
+            with self.subTest(command=command):
+                self.assertIn(command, patcher)
+                self.assertIn('"%s"' % command, patcher)
+                self.assertIn('"allow-%s"' % command.replace("_", "-"), patcher)
+
+
 if __name__ == "__main__":
     unittest.main()
