@@ -3137,8 +3137,7 @@
           </div>
         </div>
         <div class="it-set-foot"><button type="button" class="ghost" data-reset-section>恢复本组默认</button>
-          <span class="sp"></span><span class="it-set-note">修改即时生效</span>
-          <button type="button" class="ghost" id="it-set-retry" hidden>重试保存</button></div>
+          <span class="sp"></span><button type="button" class="ghost" id="it-set-retry" hidden>重试保存</button></div>
       </div>`;
     document.body.appendChild(modal);
     setupLiquidGlassSurfaces(modal);
