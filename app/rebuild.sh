@@ -58,7 +58,7 @@ fi
   --no-restore-last-url \
   --keep-binary \
   --installer-language zh-CN \
-  --app-version 2.3.0 \
+  --app-version 2.4.0 \
   --show-system-tray \
   --system-tray-icon "$APP_DIR/icon.png" \
   --hide-on-close true \
