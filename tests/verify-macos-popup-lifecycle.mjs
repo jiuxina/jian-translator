@@ -36,6 +36,8 @@ function fixture() {
   const events = [];
   const dialogs = [];
   const actions = [];
+  const shortcuts = new Map();
+  let foregroundPid = 42;
   class SyntheticWindow extends EventEmitter {
     constructor(options) {
       super();
@@ -110,8 +112,21 @@ function fixture() {
       getCursorScreenPoint: () => ({ x: 500, y: 300 }),
       getDisplayNearestPoint: () => ({ workArea: { x: 0, y: 0, width: 1200, height: 800 } })
     },
-    captureSelection: () => {
+    foregroundApplicationPid: async () => foregroundPid,
+    globalShortcut: {
+      isRegistered: key => shortcuts.has(key),
+      register(key, callback) {
+        if (shortcuts.has(key)) return false;
+        shortcuts.set(key, callback);
+        return true;
+      },
+      unregister: key => shortcuts.delete(key)
+    },
+    AbortController,
+    captureSelection: (expectedPid, signal) => {
       const operation = deferred();
+      operation.expectedPid = expectedPid;
+      operation.signal = signal;
       captures.push(operation);
       events.push('capture');
       return operation.promise;
@@ -132,7 +147,8 @@ function fixture() {
       setQuitting: () => { quitting = true; },
       isCapturing: () => captureRunning };
   `, context);
-  return { ...context.api, windows, captures, events, dialogs, actions };
+  return { ...context.api, windows, captures, events, dialogs, actions, shortcuts,
+    setForeground: pid => { foregroundPid = pid; } };
 }
 
 async function until(condition, description) {
@@ -309,6 +325,83 @@ async function readyWarmWindow(test) {
     test.events.includes('show-main') && test.actions[0]?.type === 'translate-selection' &&
     test.actions[0]?.text === 'Main selection' && !test.windows[0].visible);
 }
+
+{
+  const test = fixture();
+  const window = await readyWarmWindow(test);
+  const operation = test.translateSelection();
+  await captureStarted(test, 1);
+  check('Pending capture owns a temporary Escape shortcut without focusing the popup',
+    test.shortcuts.has('Escape') && !window.focusable && !test.events.includes('focus'));
+  test.shortcuts.get('Escape')();
+  check('Escape invalidates and aborts pending capture while the source retains focus',
+    window.destroyed && test.captures[0].signal?.aborted && !test.events.includes('focus'));
+  test.captures[0].resolve('Late selection after Escape');
+  await operation;
+  check('An Escape-canceled request cannot publish a late result or leak its shortcut',
+    window.payloads.length === 1 && !test.shortcuts.has('Escape') &&
+    test.dialogs.length === 0 && !test.isCapturing());
+}
+
+{
+  const test = fixture();
+  const window = await readyWarmWindow(test);
+  const operation = test.translateSelection();
+  await captureStarted(test, 1);
+  test.setForeground(99);
+  test.captures[0].resolve('Selection from the previous application');
+  await operation;
+  check('A foreground change during capture discards the result without activating a popup',
+    window.destroyed && !test.events.includes('focus') && window.payloads.length === 1 &&
+    test.dialogs.length === 0 && !test.shortcuts.has('Escape'));
+}
+
+{
+  const test = fixture();
+  await readyWarmWindow(test);
+  test.setMain(true);
+  const operation = test.translateSelection();
+  await captureStarted(test, 1);
+  test.setForeground(99);
+  test.captures[0].resolve('Old main-window selection');
+  await operation;
+  check('Main-window selection also refuses to steal focus from a newly active application',
+    !test.events.includes('show-main') && test.actions.length === 0);
+}
+
+{
+  const test = fixture();
+  await readyWarmWindow(test);
+  const existingEscape = () => {};
+  test.shortcuts.set('Escape', existingEscape);
+  const operation = test.translateSelection();
+  await captureStarted(test, 1);
+  test.captures[0].resolve('Selection with an existing Escape shortcut');
+  await operation;
+  check('Capture never replaces or unregisters an Escape shortcut it does not own',
+    test.shortcuts.get('Escape') === existingEscape);
+}
+
+const captureStart = source.indexOf('async function captureSelection(');
+const captureEnd = source.indexOf('\nasync function applyPopupAppearance(', captureStart);
+const scripts = [];
+const captureContext = vm.createContext({
+  systemPreferences: { isTrustedAccessibilityClient: () => true },
+  runFile: async (_file, args, options) => {
+    scripts.push({ script: args.at(-1), options });
+    return { stdout: '"Synthetic text"' };
+  },
+  JSON
+});
+const capture = vm.runInContext(`${source.slice(captureStart, captureEnd)}\ncaptureSelection;`, captureContext);
+const signal = new AbortController().signal;
+assert.equal(await capture(42, signal), 'Synthetic text');
+check('The native copy script checks the expected foreground PID immediately before Cmd+C',
+  scripts[0].script.indexOf('frontmostApplication') >= 0 &&
+  scripts[0].script.indexOf('expectedPid') >= 0 &&
+  scripts[0].script.indexOf('expectedPid', scripts[0].script.indexOf('delay(0.3)')) <
+    scripts[0].script.indexOf("keystroke('c'"));
+check('Canceling capture can terminate its pending helper process', scripts[0].options.signal === signal);
 
 report.passed = report.checks.length;
 await mkdir('.build', { recursive: true });

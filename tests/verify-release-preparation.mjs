@@ -37,9 +37,18 @@ const options = {
 assert.deepEqual(parseArguments(
   ['--windows-dir', 'win', '--macos-dir', 'mac', '--android', 'app.apk', '--out-dir', 'out']),
   { windowsDir: 'win', macosDir: 'mac', androidPath: 'app.apk', outDir: 'out' });
+assert.deepEqual(parseArguments(['--tag', 'v2.3.0']), { tag: 'v2.3.0' });
 for (const args of [['--unknown', 'x'], ['--android'], ['--android', 'a', '--android', 'b']]) {
   assert.throws(() => parseArguments(args));
 }
+for (const [index, tag] of ['v2.3.1', '2.3.0', 'v2.3.0-beta', 'v2.3.0\n', ''].entries()) {
+  const outDir = path.join(fixture, `tag-mismatch-${index}`);
+  await assert.rejects(prepareRelease({ ...options, tag, outDir }), /标签与发布版本不一致/);
+  assert.equal((await readdir(fixture)).includes(path.basename(outDir)), false,
+    'A mismatched trigger tag must fail before any release output is created');
+}
+const tagged = await prepareRelease({ ...options, tag: 'v2.3.0', outDir: path.join(fixture, 'tag-matched') });
+assert.equal(tagged.manifest.tag, 'v2.3.0', 'A matching trigger tag preserves the release manifest tag');
 const result = await prepareRelease(options);
 assert.equal(result.manifest.version, '2.3.0');
 assert.equal(result.manifest.tag, 'v2.3.0');
