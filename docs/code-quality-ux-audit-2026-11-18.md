@@ -42,6 +42,10 @@ Web 解析器 [app.js](../web/app.js#L1243) 和 Windows 浮窗解析器 [setup.r
 
 主页面源语言下拉只包含“自动检测”和常用语种（[app.js](../web/app.js#L398)），设置页允许选择完整语言列表（[app.js](../web/app.js#L3255)）。恢复一个不在常用列表中的源语言时，内部翻译状态会采用该值，但主页面下拉没有对应选项而继续显示自动检测（[app.js](../web/app.js#L2931)）。用户看到的源语言与实际翻译请求不同。应让主选择器支持全部源语言，或在加载时将当前少见语种明确添加到选项中。
 
+### Windows 安装版未在安装、升级和卸载时同步自启动注册表
+
+打包脚本只调用 Pake 生成 EXE/MSI，没有声明本项目的 MSI 自启动生命周期动作（[rebuild.sh](../app/rebuild.sh#L50)）。HKCU Run 项只由应用的 `it_set_autostart` 设置命令写入或删除（[setup.rs](../desktop/patch/setup.rs#L789)、[setup.rs](../desktop/patch/setup.rs#L844)）。因此，若用户已启用自启动后卸载，注册表可能留下指向已删除程序的路径；卸载旧版再改安装位置时，也可能继续启动旧路径。源码审查未检查打包器在工作区外生成的 MSI 内部动作。建议安装/升级时仅在旧启动项已启用的情况下更新到新程序路径，卸载时仅移除指向本次安装目录的项；全新安装仍遵循默认关闭，并保留其他版本或便携版的启动项。
+
 ### SSE 不兼容 CRLF 且丢失 EOF 末帧
 
 [app.js](../web/app.js#L1248) 和 [setup.rs](../desktop/patch/setup.rs#L1672) 只按 `\\n\\n` 分帧，EOF 不处理剩余 buffer。CRLF 可得到空译文，末帧文字可丢失；离线合成已确认。应按 SSE 规范处理换行并 flush 末帧。
