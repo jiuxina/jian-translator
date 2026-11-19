@@ -463,14 +463,24 @@
       if (node.tagName === 'OPTGROUP') {
         for (var j = 0; j < node.children.length; j++) {
           var opt = node.children[j];
-          out.push({ value: opt.value, label: opt.textContent, group: node.label,
+          var groupedLabel = opt.textContent;
+          out.push({ value: opt.value, label: groupedLabel,
+            searchLabel: groupedLabel.trim().toLowerCase(), group: node.label,
             disabled: opt.disabled || node.disabled });
         }
       } else if (node.tagName === 'OPTION') {
-        out.push({ value: node.value, label: node.textContent, group: '', disabled: node.disabled });
+        var label = node.textContent;
+        out.push({ value: node.value, label: label,
+          searchLabel: label.trim().toLowerCase(), group: '', disabled: node.disabled });
       }
     }
     return out;
+  }
+
+  function optionsSignature(items) {
+    return JSON.stringify(items.map(function (item) {
+      return [item.value, item.label, item.group, !!item.disabled];
+    }));
   }
 
   function closeSelect() {
@@ -535,6 +545,8 @@
     var searchEl = pop.querySelector('.sel-search');
     var activeIndex = -1;
     var visibleItems = [];
+    var itemsSignature = optionsSignature(items);
+    var renderedKey = '';
 
     /* 量字宽：轮盘条带取所有候选里最宽的一条，按钮随之平滑变宽 */
     var measure = document.createElement('span');
@@ -707,23 +719,26 @@
       }
     }
 
-    function render(filter) {
+    function render(filter, force) {
       var query = (filter || '').trim().toLowerCase();
-      listEl.innerHTML = '';
-      visibleItems = [];
-      activeIndex = -1;
+      var key = itemsSignature + '\u0000' + query + '\u0000' + select.value;
+      if (!force && key === renderedKey) return false;
+      renderedKey = key;
+      var fragment = document.createDocumentFragment();
+      var nextVisibleItems = [];
+      var nextActiveIndex = -1;
 
       var lastGroup = null;
       var matched = 0;
 
       items.forEach(function (item) {
-        if (query && item.label.toLowerCase().indexOf(query) === -1) return;
+        if (query && item.searchLabel.indexOf(query) === -1) return;
         if (item.group && item.group !== lastGroup) {
           lastGroup = item.group;
           var head = document.createElement('div');
           head.className = 'sel-group';
           head.textContent = item.group;
-          listEl.appendChild(head);
+          fragment.appendChild(head);
         }
         var row = document.createElement('button');
         row.type = 'button';
@@ -735,11 +750,10 @@
         row.setAttribute('aria-selected', item.value === select.value ? 'true' : 'false');
         if (item.value === select.value) {
           row.classList.add('on');
-          if (!item.disabled) activeIndex = visibleItems.length;
+          if (!item.disabled) nextActiveIndex = nextVisibleItems.length;
         }
-        row.addEventListener('click', function () { choose(item.value); });
-        listEl.appendChild(row);
-        if (!item.disabled) visibleItems.push(row);
+        fragment.appendChild(row);
+        if (!item.disabled) nextVisibleItems.push(row);
         matched++;
       });
 
@@ -747,15 +761,24 @@
         var empty = document.createElement('div');
         empty.className = 'sel-empty';
         empty.textContent = '没有匹配的项';
-        listEl.appendChild(empty);
+        fragment.appendChild(empty);
       }
+      listEl.innerHTML = '';
+      listEl.appendChild(fragment);
+      visibleItems = nextVisibleItems;
+      activeIndex = nextActiveIndex;
+      return true;
     }
 
     function refreshOptions() {
-      items = collectOptions(select);
+      var nextItems = collectOptions(select);
+      var nextSignature = optionsSignature(nextItems);
+      var changed = nextSignature !== itemsSignature || (nextItems.length > 12) !== searchable;
+      items = nextItems;
+      itemsSignature = nextSignature;
       searchable = items.length > 12;
       updateSearchControl();
-      render(searchEl ? searchEl.value : '');
+      render(searchEl ? searchEl.value : '', changed);
       syncButton(false);
       if (openSelect && openSelect.select === select) {
         position();
@@ -800,10 +823,10 @@
       pop.setAttribute('aria-hidden', 'false');
       button.setAttribute('aria-expanded', 'true');
       openSelect = { select: select, pop: pop, button: button, position: position };
+      if (searchEl) searchEl.value = '';
       render('');
       position();
       moveSurface(pop, button, true);
-      if (searchEl) searchEl.value = '';
       // Opening a language list must not enter an editable field and summon
       // the mobile keyboard. Search remains available when explicitly tapped.
       highlight(activeIndex < 0 ? 0 : activeIndex);
@@ -835,6 +858,11 @@
         e.preventDefault();
         open();
       }
+    });
+
+    listEl.addEventListener('click', function (event) {
+      var row = event.target && event.target.closest ? event.target.closest('.sel-item') : null;
+      if (row && listEl.contains(row)) choose(row.dataset.value);
     });
 
     if (searchEl) searchEl.addEventListener('input', function () { render(this.value); });
@@ -1459,6 +1487,65 @@
       'px) scale(' + (from.width / to.width) + ',' + (from.height / to.height) + ')';
   }
 
+  function dockButtonRole(button) {
+    var match = /^btn-(clear|cancel|go)(?:-(?:text|syllable|doc))?$/.exec(button && button.id || '');
+    return match ? match[1] : '';
+  }
+
+  function dockButtonSnapshot(dock) {
+    var snapshot = {};
+    if (!dock) return snapshot;
+    dock.querySelectorAll('button:not([hidden])').forEach(function (button) {
+      var role = dockButtonRole(button);
+      if (!role) return;
+      snapshot[role] = { button: button, rect: button.getBoundingClientRect() };
+    });
+    return snapshot;
+  }
+
+  function rectsOverlap(left, right) {
+    return left.left < right.right && left.right > right.left &&
+      left.top < right.bottom && left.bottom > right.top;
+  }
+
+  function animateDockHandoff(oldSnapshot, nextSnapshot) {
+    if (!oldSnapshot || !nextSnapshot || typeof CSS === 'undefined' ||
+        !CSS.supports || !CSS.supports('translate', '0 0')) return;
+    var roles = Object.keys(nextSnapshot).filter(function (role) {
+      return oldSnapshot[role] && nextSnapshot[role];
+    });
+    if (!roles.length) return;
+
+    var nextEntries = Object.keys(nextSnapshot).map(function (role) { return nextSnapshot[role]; });
+    var safe = roles.every(function (role) {
+      var oldRect = oldSnapshot[role].rect;
+      var nextRect = nextSnapshot[role].rect;
+      var pathRect = {
+        left: Math.min(oldRect.left, nextRect.left),
+        right: Math.max(oldRect.right, nextRect.right),
+        top: Math.min(oldRect.top, nextRect.top),
+        bottom: Math.max(oldRect.bottom, nextRect.bottom)
+      };
+      return !nextEntries.some(function (entry) {
+        if (entry === nextSnapshot[role]) return false;
+        return rectsOverlap(pathRect, entry.rect);
+      });
+    });
+    if (!safe) return;
+
+    roles.forEach(function (role) {
+      var oldRect = oldSnapshot[role].rect;
+      var next = nextSnapshot[role];
+      var dx = oldRect.left - next.rect.left;
+      var dy = oldRect.top - next.rect.top;
+      if (Math.abs(dx) < 0.5 && Math.abs(dy) < 0.5) return;
+      playMotion(next.button, [
+        { translate: dx + 'px ' + dy + 'px' },
+        { translate: 'none' }
+      ], PANEL_DURATION, null, 'dock', false);
+    });
+  }
+
   function switchTab(name) {
     if (!panes[name]) return;
     if (name === state.tab && !tabPreparation) return;
@@ -1526,19 +1613,30 @@
     var focusWasInOld = !!(oldEl && oldEl.contains(document.activeElement));
     var seq = ++tabSeq;
     var direction = Object.keys(panes).indexOf(name) > Object.keys(panes).indexOf(shownTab) ? 1 : -1;
-    var oldRects = oldEl ? tabSurfaces(oldEl).map(function (el) { return el.getBoundingClientRect(); }) : [];
+    var animate = !!(oldEl && newEl && !motionReduced() && newEl.animate);
     var samples = new Map();
     var visiblePanels = [];
+    var surfaceElements = new Map();
+    var contentElements = new Map();
     var surfaceRects = new Map();
+    var naturalRects = new Map();
+    var oldDock = document.querySelector('.dock.on');
+    var oldDockSnapshot = animate ? dockButtonSnapshot(oldDock) : null;
     /* 包括正在退场的页面，反向点回时可以从它尚未消失的位置接续。 */
-    Object.keys(panes).forEach(function (key) {
-      var panel = $(panes[key]);
-      if (!panel || (!panel.classList.contains('on') && !panel.classList.contains('it-tab-leave'))) return;
-      visiblePanels.push(panel);
-      surfaceRects.set(panel, tabSurfaces(panel).map(function (el) { return el.getBoundingClientRect(); }));
-      tabContents(panel).forEach(function (el) { samples.set(el, visualStyle(el)); });
-    });
+    if (animate) Object.keys(panes).forEach(function (key) {
+        var panel = $(panes[key]);
+        if (!panel || (!panel.classList.contains('on') && !panel.classList.contains('it-tab-leave'))) return;
+        var surfaces = tabSurfaces(panel);
+        var contents = tabContents(panel);
+        visiblePanels.push(panel);
+        surfaceElements.set(panel, surfaces);
+        contentElements.set(panel, contents);
+        surfaceRects.set(panel, surfaces.map(function (el) { return el.getBoundingClientRect(); }));
+        contents.forEach(function (el) { samples.set(el, visualStyle(el)); });
+      });
+    var oldRects = oldEl ? surfaceRects.get(oldEl) || [] : [];
     stopMotionGroup('tab');
+    stopMotionGroup('dock');
     settleTabs();
 
     state.tab = name;
@@ -1559,6 +1657,7 @@
       dock.inert = dock.getAttribute('data-pane') !== name;
       dock.classList.remove('it-glass-preparing');
     });
+    var nextDockSnapshot = animate ? dockButtonSnapshot(document.querySelector('.dock.on')) : null;
     if (focusWasInOld) {
       var selectedTab = document.querySelector('.tabs button[data-tab="' + name + '"]');
       if (selectedTab) selectedTab.focus();
@@ -1571,7 +1670,7 @@
       panel.setAttribute('aria-hidden', selected ? 'false' : 'true');
     });
 
-    if (!oldEl || !newEl || motionReduced() || !newEl.animate) {
+    if (!animate) {
       settleTabs();
       positionThumbs(false);
       return;
@@ -1584,12 +1683,20 @@
     });
     newEl.classList.remove('it-tab-leave');
     newEl.classList.add('on');
-    var nextRects = [];
-    tabSurfaces(newEl).forEach(function (el, index) {
+    var newSurfaces = surfaceElements.get(newEl) || tabSurfaces(newEl);
+    var newContents = contentElements.get(newEl) || tabContents(newEl);
+    var nextRects = newSurfaces.map(function (el) { return el.getBoundingClientRect(); });
+    visiblePanels.forEach(function (panel) {
+      if (panel === newEl) return;
+      var surfaces = surfaceElements.get(panel) || [];
+      naturalRects.set(panel, surfaces.map(function (el) { return el.getBoundingClientRect(); }));
+    });
+
+    animateDockHandoff(oldDockSnapshot, nextDockSnapshot);
+    newSurfaces.forEach(function (el, index) {
       var from = oldRects[index];
-      var to = el.getBoundingClientRect();
-      nextRects.push(to);
-      if (!from || !to.width || !to.height) return;
+      var to = nextRects[index];
+      if (!from || !to || !to.width || !to.height) return;
       playMotion(el, [{ transform: mapRect(from, to) }, { transform: 'none' }],
         PANEL_DURATION, null, 'tab', true);
     });
@@ -1597,13 +1704,16 @@
     visiblePanels.forEach(function (panel) {
       if (panel === newEl) return;
       var rects = surfaceRects.get(panel);
-      tabSurfaces(panel).forEach(function (el, index) {
-        var natural = el.getBoundingClientRect();
-        if (!rects[index] || !nextRects[index] || !natural.width || !natural.height) return;
-        playMotion(el, [{ transform: mapRect(rects[index], natural) },
-          { transform: mapRect(nextRects[index], natural) }], PANEL_DURATION, null, 'tab', true);
+      var surfaces = surfaceElements.get(panel) || [];
+      var natural = naturalRects.get(panel) || [];
+      surfaces.forEach(function (el, index) {
+        var naturalRect = natural[index];
+        if (!rects[index] || !nextRects[index] || !naturalRect ||
+            !naturalRect.width || !naturalRect.height) return;
+        playMotion(el, [{ transform: mapRect(rects[index], naturalRect) },
+          { transform: mapRect(nextRects[index], naturalRect) }], PANEL_DURATION, null, 'tab', true);
       });
-      tabContents(panel).forEach(function (el) {
+      (contentElements.get(panel) || []).forEach(function (el) {
         var from = samples.get(el) || visualStyle(el);
         var thumb = el.classList.contains('models-thumb');
         playMotion(el, [thumb ? { opacity: from.opacity } : from,
@@ -1611,8 +1721,9 @@
         PANEL_DURATION, null, 'tab', true);
       });
     });
-    tabContents(newEl).forEach(function (el) {
-      var from = samples.get(el) || { opacity: '0', transform: shiftX(direction * SCENE_DISTANCE) };
+    newContents.forEach(function (el) {
+      var from = samples.get(el) ||
+        { opacity: '0', transform: shiftX(direction * SCENE_DISTANCE) };
       var thumb = el.classList.contains('models-thumb');
       playMotion(el, [thumb ? { opacity: from.opacity } : from,
         thumb ? { opacity: '1' } : { opacity: '1', transform: 'none' }],
