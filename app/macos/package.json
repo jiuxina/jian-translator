@@ -1,6 +1,6 @@
 {
   "name": "jian-translator-macos",
-  "version": "2.4.2",
+  "version": "2.4.3",
   "private": true,
   "description": "笺 macOS 桌面客户端，共用 Chromium SVG 液态玻璃界面",
   "main": "main.cjs",

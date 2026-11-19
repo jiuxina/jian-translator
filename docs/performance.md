@@ -15,7 +15,7 @@
 现有选项 DOM；更新列表用 `DocumentFragment`、一次替换和委托事件，保留原有语言顺序、分组、
 禁用项、即时筛选、键盘操作、焦点与手机输入法策略。
 
-缓存资源版本递增：`app.js?v=19`、`theme.css?v=20`。`android/app/src/main/assets/` 的七份
+缓存资源版本为 `app.js?v=20`、`theme.css?v=20`（2.4.3 发布准备另将 `app.js` 从 `19` 递增到 `20`）。`android/app/src/main/assets/` 的七份
 网页共享资源与 `web/` 逐文件 SHA-256 一致。没有修改动画时长、玻璃参数、输出质量、翻译请求或偏好结构。
 
 | 定向入口 | 检查内容 |
