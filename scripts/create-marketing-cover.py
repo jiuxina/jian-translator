@@ -1,7 +1,8 @@
-"""Create a softly illustrated 16:9 Jian cover with its real icon and popup."""
+"""Create softly illustrated 16:9 or 4:3 Jian covers with a real popup."""
 
 from __future__ import annotations
 
+import argparse
 import json
 import sys
 from pathlib import Path
@@ -28,6 +29,22 @@ HEADLINE_LINES = (
     ("划词翻译软件", (135, 420), 110, (38, 35, 48)),
     ("附送轻快手机app", (146, 548), 62, (77, 80, 87)),
 )
+LAYOUTS = {
+    "16:9": {
+        "size": (WIDTH, HEIGHT),
+        "headline_points": tuple(point for _, point, _, _ in HEADLINE_LINES),
+        "icon": (145, 90), "brand": (265, 107), "category": (359, 133),
+        "popup": (142, 650), "popup_width": 600,
+        "portrait": (704, -40), "foreground_limit": 900,
+    },
+    "4:3": {
+        "size": (1600, 1200),
+        "headline_points": ((102, 250), (102, 345), (95, 440), (106, 568)),
+        "icon": (105, 90), "brand": (225, 107), "category": (319, 133),
+        "popup": (102, 735), "popup_width": 570,
+        "portrait": (400, 20), "foreground_limit": 800,
+    },
+}
 
 # Preserve the approved lettering with local alpha masks. Repositioning this
 # cover does not require reading a system font or rerendering the video.
@@ -65,7 +82,7 @@ def read_popup() -> Image.Image:
     return Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)).crop(CROP)
 
 
-def anime_background(canvas: Image.Image) -> Image.Image:
+def anime_background(canvas: Image.Image, portrait_position: tuple[int, int] = (704, -40)) -> Image.Image:
     """Keep the supplied character visible on the unobstructed right side."""
     icon = Image.open(ICON).convert("RGBA")
     portrait_size = units(1190)
@@ -78,7 +95,7 @@ def anime_background(canvas: Image.Image) -> Image.Image:
     portrait.putalpha(Image.fromarray(alpha.astype(np.uint8)))
     portrait = portrait.filter(ImageFilter.GaussianBlur(units(.5)))
     layer = Image.new("RGBA", canvas.size)
-    layer.alpha_composite(portrait, (units(704), units(-40)))
+    layer.alpha_composite(portrait, tuple(units(value) for value in portrait_position))
 
     # A softly varying white veil keeps the copy legible while leaving the
     # illustration visible in the top, right and lower background margins.
@@ -93,15 +110,18 @@ def anime_background(canvas: Image.Image) -> Image.Image:
     return result.convert("RGB")
 
 
-def brand_icon(canvas: Image.Image) -> None:
+def brand_icon(canvas: Image.Image, point: tuple[int, int] = (145, 90)) -> None:
     icon = Image.open(ICON).convert("RGBA")
     icon = icon.resize((units(86), units(86)), Image.Resampling.LANCZOS)
-    canvas.paste(icon, (units(145), units(90)), icon)
+    canvas.paste(icon, tuple(units(value) for value in point), icon)
 
 
-def create() -> None:
-    BUILD.mkdir(parents=True, exist_ok=True)
-    width, height = units(WIDTH), units(HEIGHT)
+def create(aspect: str = "16:9") -> None:
+    layout = LAYOUTS[aspect]
+    cover_width, cover_height = layout["size"]
+    build = BUILD / "4x3" if aspect == "4:3" else BUILD
+    build.mkdir(parents=True, exist_ok=True)
+    width, height = units(cover_width), units(cover_height)
     x = np.linspace(-1, 1, width, dtype=np.float32)[None, :]
     y = np.linspace(-1, 1, height, dtype=np.float32)[:, None]
     light = np.clip(248.0 - 3.6 * (x * x + y * y) - 1.0 * y, 0, 255).astype(np.uint8)
@@ -109,18 +129,18 @@ def create() -> None:
     lavender = np.exp(-((x-.65)**2/.8 + (y-.45)**2/1.0))
     rgb = np.stack((light+pink*5, light-pink*2, light+lavender*5), axis=-1)
     canvas = Image.fromarray(np.clip(rgb, 0, 255).astype(np.uint8))
-    canvas = anime_background(canvas)
-    brand_icon(canvas)
+    canvas = anime_background(canvas, layout["portrait"])
+    brand_icon(canvas, layout["icon"])
     bounds = []
-    bounds.append(label(canvas, "笺", (265, 107), 58, (40, 43, 49)))
-    bounds.append(label(canvas, "翻译工具", (359, 133), 25, (125, 128, 134)))
+    bounds.append(label(canvas, "笺", layout["brand"], 58, (40, 43, 49)))
+    bounds.append(label(canvas, "翻译工具", layout["category"], 25, (125, 128, 134)))
     if "".join(line for line, _, _, _ in HEADLINE_LINES) != HEADLINE:
         raise RuntimeError("Cover line wrapping must preserve the exact requested wording")
-    for line, point, size, color in HEADLINE_LINES:
+    for (line, _, size, color), point in zip(HEADLINE_LINES, layout["headline_points"], strict=True):
         bounds.append(label(canvas, line, point, size, color))
 
     popup = read_popup()
-    panel_width = units(600)
+    panel_width = units(layout["popup_width"])
     panel_height = round(panel_width * popup.height / popup.width)
     popup = popup.resize((panel_width, panel_height), Image.Resampling.LANCZOS)
     pad = units(64)
@@ -151,7 +171,7 @@ def create() -> None:
         radius=radius + inset - units(1), outline=(255, 255, 255, 210), width=units(1),
     )
     # Put the smaller real popup below the copy; leave the character's face clear.
-    panel_x, panel_y = units(142), units(650)
+    panel_x, panel_y = (units(value) for value in layout["popup"])
     canvas.paste(layer, (panel_x-pad, panel_y-pad), layer)
 
     for bbox in bounds:
@@ -162,42 +182,55 @@ def create() -> None:
         raise RuntimeError("Product popup exceeds the cover safe area")
     if any(bbox[3] + units(24) > panel_bounds[1] for bbox in bounds):
         raise RuntimeError("Cover copy leaves insufficient space above the product popup")
-    if any(bbox[2] > units(900) for bbox in [*bounds, panel_bounds]):
+    if any(bbox[2] > units(layout["foreground_limit"]) for bbox in [*bounds, panel_bounds]):
         raise RuntimeError("Foreground content obstructs the character's right-side area")
 
-    high = VIDEO / "笺-宣传片封面-4K.png"
-    normal = VIDEO / "笺-宣传片封面.png"
-    jpeg = VIDEO / "笺-宣传片封面.jpg"
+    stem = "笺-宣传片封面-4比3" if aspect == "4:3" else "笺-宣传片封面"
+    high_suffix = "-高清.png" if aspect == "4:3" else "-4K.png"
+    high = VIDEO / f"{stem}{high_suffix}"
+    normal = VIDEO / f"{stem}.png"
+    jpeg = VIDEO / f"{stem}.jpg"
     canvas.save(high, optimize=True)
-    full_hd = canvas.resize((WIDTH, HEIGHT), Image.Resampling.LANCZOS)
+    full_hd = canvas.resize((cover_width, cover_height), Image.Resampling.LANCZOS)
     full_hd.save(normal, optimize=True)
-    anime_cover = VIDEO / "笺-宣传片封面-二次元版.png"
-    full_hd.save(anime_cover, optimize=True)
+    output_files = [normal.name, high.name, jpeg.name]
+    if aspect == "16:9":
+        anime_cover = VIDEO / "笺-宣传片封面-二次元版.png"
+        full_hd.save(anime_cover, optimize=True)
+        output_files.append(anime_cover.name)
     full_hd.save(jpeg, quality=96, subsampling=0)
-    thumbnail = full_hd.resize((320, 180), Image.Resampling.LANCZOS)
-    thumbnail.save(BUILD / "thumbnail-320.jpg", quality=95, subsampling=0)
-    thumbnail.resize((960, 540), Image.Resampling.NEAREST).save(BUILD / "thumbnail-readability.png")
+    thumbnail_height = round(320*cover_height/cover_width)
+    thumbnail = full_hd.resize((320, thumbnail_height), Image.Resampling.LANCZOS)
+    thumbnail.save(build / "thumbnail-320.jpg", quality=95, subsampling=0)
+    thumbnail.resize((960, thumbnail_height*3), Image.Resampling.NEAREST).save(build / "thumbnail-readability.png")
     metadata = {
         "source_recording": SOURCE.name, "source_time_seconds": TIME,
-        "popup_crop": list(CROP), "cover_size": [WIDTH, HEIGHT], "high_resolution_size": [width, height],
+        "popup_crop": list(CROP), "aspect_ratio": aspect,
+        "cover_size": [cover_width, cover_height], "high_resolution_size": [width, height],
         "headline": HEADLINE, "headline_lines": [line for line, _, _, _ in HEADLINE_LINES],
         "headline_sizes_at_1080p": [size for _, _, size, _ in HEADLINE_LINES],
         "brand": "笺", "category": "翻译工具",
         "style": "pastel pink/lavender, clear anime character on right, raised exact headline, smaller real popup at bottom left",
         "icon_source": str(ICON.relative_to(ROOT)), "background_icon_opacity": .72,
         "background_blur_at_1080p": .5, "left_readability_veil": True,
-        "popup_bounds_at_1080p": [142, 650, 742, 650+panel_height/SCALE],
-        "right_foreground_free_from_x": 900,
+        "popup_bounds_at_layout_size": [panel_x/SCALE, panel_y/SCALE, (panel_x+panel_width)/SCALE, (panel_y+panel_height)/SCALE],
+        "right_foreground_free_from_x": layout["foreground_limit"],
+        "portrait_position_at_layout_size": list(layout["portrait"]),
         "type_assets": str(TYPE_ASSETS.relative_to(ROOT)),
-        "type_bounds_at_4k": bounds,
-        "output_files": [normal.name, high.name, jpeg.name, anime_cover.name],
+        "type_bounds_at_master_size": bounds,
+        "output_files": output_files,
     }
-    (BUILD / "cover-layout.json").write_text(json.dumps(metadata, ensure_ascii=False, indent=2), encoding="utf-8")
-    print("Wrote 1920x1080 PNG/JPEG cover and 3840x2160 PNG master", flush=True)
+    if aspect == "16:9":
+        metadata["popup_bounds_at_1080p"] = metadata["popup_bounds_at_layout_size"]
+        metadata["type_bounds_at_4k"] = bounds
+    (build / "cover-layout.json").write_text(json.dumps(metadata, ensure_ascii=False, indent=2), encoding="utf-8")
+    print(f"Wrote {cover_width}x{cover_height} PNG/JPEG cover and {width}x{height} PNG master ({aspect})", flush=True)
     print("PASS: title and single product popup remain within cover safe areas", flush=True)
 
 
 if __name__ == "__main__":
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8")
-    create()
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--aspect", choices=tuple(LAYOUTS), default="16:9")
+    create(parser.parse_args().aspect)
