@@ -128,7 +128,7 @@ function delta(before, after) {
 }
 
 const instrument = `
-  window.__performanceProbe = { computedStyles: 0, boundingRects: 0 };
+  window.__performanceProbe = { computedStyles: 0, boundingRects: 0, selectorListRebuilds: 0 };
   const originalStyle = window.getComputedStyle;
   window.getComputedStyle = function (...args) {
     window.__performanceProbe.computedStyles++;
@@ -139,6 +139,37 @@ const instrument = `
     window.__performanceProbe.boundingRects++;
     return originalRect.apply(this, args);
   };
+  if (Element.prototype.replaceChildren) {
+    const originalReplaceChildren = Element.prototype.replaceChildren;
+    Element.prototype.replaceChildren = function (...children) {
+      if (this.classList && this.classList.contains('sel-list')) {
+        window.__performanceProbe.selectorListRebuilds++;
+      }
+      return originalReplaceChildren.apply(this, children);
+    };
+  }
+  const innerHTMLDescriptor = Object.getOwnPropertyDescriptor(Element.prototype, 'innerHTML');
+  if (innerHTMLDescriptor && innerHTMLDescriptor.configurable && innerHTMLDescriptor.set) {
+    Object.defineProperty(Element.prototype, 'innerHTML', { ...innerHTMLDescriptor,
+      set(value) {
+        if (this.classList && this.classList.contains('sel-list')) {
+          window.__performanceProbe.selectorListRebuilds++;
+        }
+        return innerHTMLDescriptor.set.call(this, value);
+      }
+    });
+  }
+  const textContentDescriptor = Object.getOwnPropertyDescriptor(Node.prototype, 'textContent');
+  if (textContentDescriptor && textContentDescriptor.configurable && textContentDescriptor.set) {
+    Object.defineProperty(Node.prototype, 'textContent', { ...textContentDescriptor,
+      set(value) {
+        if (this.classList && this.classList.contains('sel-list')) {
+          window.__performanceProbe.selectorListRebuilds++;
+        }
+        return textContentDescriptor.set.call(this, value);
+      }
+    });
+  }
   const originalFetch = window.fetch.bind(window);
   window.fetch = (url, options) => {
     const target = new URL(String(url), location.href);
@@ -213,6 +244,49 @@ try {
       style.backdropFilter === 'none' &&
       (style.backgroundColor !== 'rgba(0, 0, 0, 0)' || style.backgroundImage !== 'none');
   })()`));
+
+  const dropdownCache = await page.evaluate(`(() => {
+    const select = document.getElementById('src-lang');
+    const button = document.querySelector('#langbar .sel-btn');
+    const probe = window.__performanceProbe;
+    button.click();
+    const popup = document.getElementById(button.getAttribute('aria-controls'));
+    const list = popup.querySelector('.sel-list');
+    const beforeOpen = probe.selectorListRebuilds;
+    const selected = select.value;
+    popup.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }));
+    const moved = document.activeElement && document.activeElement.dataset.value;
+    popup.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    button.click();
+    const reopened = document.activeElement && document.activeElement.dataset.value;
+    return { openRebuilds: beforeOpen, moved, selected, reopened,
+      sameQueryRebuilds: probe.selectorListRebuilds - beforeOpen,
+      rowCount: list.querySelectorAll('.sel-item').length };
+  })()`);
+  report.measurements.dropdownCache = dropdownCache;
+  check('Reopening a language list returns to its selected row',
+    dropdownCache.rowCount > 12 && dropdownCache.moved !== dropdownCache.selected &&
+      dropdownCache.reopened === dropdownCache.selected &&
+      (BASELINE ? dropdownCache.sameQueryRebuilds > 0 : dropdownCache.sameQueryRebuilds === 0),
+    JSON.stringify(dropdownCache));
+  await page.evaluate(`window.__itHandleBack()`);
+
+  const tabStart = await page.evaluate('({...window.__performanceProbe})');
+  const tabNames = ['syllable', 'doc', 'text'];
+  for (const name of tabNames) {
+    await page.evaluate(`document.querySelector('[data-tab="${name}"]').click()`);
+    await page.until(`window.__itDebug.state.tab === '${name}' &&
+      document.getElementById('pane-${name}').classList.contains('on') &&
+      document.querySelectorAll('.pane.it-tab-leave').length === 0 &&
+      [...document.querySelector('.pane-stack').getAnimations({subtree:true})]
+        .every(animation => animation.playState !== 'running')`, 12000);
+  }
+  const tabEnd = await page.evaluate('({...window.__performanceProbe})');
+  report.measurements.warmTabHandoff = delta(tabStart, tabEnd);
+  check('Warm mode handoffs settle on each requested page',
+    page.errors.length === 0 && (BASELINE ||
+      (tabEnd.boundingRects - tabStart.boundingRects) <= 36),
+    JSON.stringify(report.measurements.warmTabHandoff));
 
   const maps = await page.evaluate(`(() => {
     const buffers = new Set();

@@ -1519,7 +1519,7 @@ try {
         !!document.getElementById('it-popup-follow-background');
     })()`));
     await desktop.evaluate(`document.querySelector('[data-pref-tab="background"]').click()`);
-    const sectionTransitionStarted = await desktop.evaluate(`(() => {
+    await desktop.until(`(() => {
       const leaving = document.querySelector('[data-pref-section="appearance"]');
       const activeTab = document.querySelector('[data-pref-tab="background"]');
       const thumb = document.querySelector('.it-set-nav-thumb');
@@ -1527,7 +1527,20 @@ try {
         leaving.classList.contains('is-leaving') &&
         leaving.getAnimations().some((animation) => animation.playState === 'running');
     })()`);
-    check('设置导航滑块移动且右侧旧页面淡出', sectionTransitionStarted);
+    check('设置目标玻璃准备后导航滑块与旧页面开始同步交接', await desktop.evaluate(`(() => {
+      const current = document.querySelector('[data-pref-section="appearance"]');
+      const target = document.querySelector('[data-pref-section="background"]');
+      return document.querySelector('[data-pref-tab="background"]').classList.contains('on') &&
+        current.classList.contains('is-leaving') && target.classList.contains('is-entering') &&
+        !current.hidden && !target.hidden && ItLiquidGlass.isReady(current) && ItLiquidGlass.isReady(target);
+    })()`));
+    check('设置页面共享固定视口且各分类保持独立滚动', await desktop.evaluate(`(() => {
+      const body = document.querySelector('.it-set-body');
+      const page = document.querySelector('[data-pref-section="background"]');
+      return getComputedStyle(body).overflow === 'hidden' &&
+        getComputedStyle(page).overflowY === 'auto' &&
+        getComputedStyle(page).gridArea === '1 / 1 / auto / auto';
+    })()`));
     await desktop.until(`(() => {
       const visible = [...document.querySelectorAll('[data-pref-section]')]
         .filter((section) => !section.hidden && !section.inert);
@@ -1653,11 +1666,19 @@ try {
       document.querySelector('[data-pref-tab="reading"]').click();
       const after = getComputedStyle(document.querySelector('[data-pref-section="appearance"]'))
         .getPropertyValue('--it-settings-page-reveal');
-      return { before, after, skipped: document.querySelector('[data-pref-section="background"]').hidden };
+      const background = document.querySelector('[data-pref-section="background"]');
+      const reading = document.querySelector('[data-pref-section="reading"]');
+      const visible = [...document.querySelectorAll('[data-pref-section]')].filter((section) => !section.hidden);
+      return { before, after, backgroundVisible: !background.hidden && background.inert,
+        readingHidden: reading.hidden, oldLeaving: document.querySelector('[data-pref-section="appearance"]')
+          .classList.contains('is-leaving'), visible: visible.map((section) => section.dataset.prefSection) };
     })()`);
-    check('设置连续切换保留当前淡出状态并跳过中间页',
-      Number(rapidSettings.before) > 0 && Number(rapidSettings.before) < 1 &&
-      Math.abs(Number(rapidSettings.before) - Number(rapidSettings.after)) < .05 && rapidSettings.skipped);
+    check('设置快速改选期间保留当前页面并跳过未采用的中间分类',
+      Number(rapidSettings.before) === 1 && Number(rapidSettings.after) === 1 &&
+      rapidSettings.backgroundVisible && rapidSettings.readingHidden &&
+      !rapidSettings.oldLeaving &&
+      rapidSettings.visible.includes('appearance') && rapidSettings.visible.includes('background'),
+      JSON.stringify(rapidSettings));
     await desktop.until(`!document.querySelector('[data-pref-section="reading"]').hidden &&
       !document.querySelector('[data-pref-section="reading"]').inert`);
     await desktop.evaluate(`document.querySelector('[data-pref="appearance.systemFontFamily"]').parentElement.querySelector('.sel-btn').click()`);

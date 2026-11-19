@@ -166,7 +166,9 @@
   }
 
   function finishMotions() {
-    Array.from(motions.values()).forEach(function (track) { track.finish(); });
+    Array.from(motions.values()).forEach(function (track) {
+      if (track.group !== 'settings-page') track.finish();
+    });
     settleTabs();
     if (settleSettingsSection) settleSettingsSection();
   }
@@ -463,14 +465,26 @@
       if (node.tagName === 'OPTGROUP') {
         for (var j = 0; j < node.children.length; j++) {
           var opt = node.children[j];
-          out.push({ value: opt.value, label: opt.textContent, group: node.label,
+          var groupedLabel = opt.textContent;
+          out.push({ value: opt.value, label: groupedLabel,
+            searchLabel: groupedLabel.trim().toLowerCase(), group: node.label,
             disabled: opt.disabled || node.disabled });
         }
       } else if (node.tagName === 'OPTION') {
-        out.push({ value: node.value, label: node.textContent, group: '', disabled: node.disabled });
+        var label = node.textContent;
+        out.push({ value: node.value, label: label,
+          searchLabel: label.trim().toLowerCase(), group: '', disabled: node.disabled });
       }
     }
     return out;
+  }
+
+  function sameOptions(items, next) {
+    return items.length === next.length && items.every(function (item, index) {
+      var option = next[index];
+      return item.value === option.value && item.label === option.label &&
+        item.group === option.group && item.disabled === option.disabled;
+    });
   }
 
   function closeSelect() {
@@ -534,7 +548,11 @@
     var listEl = pop.querySelector('.sel-list');
     var searchEl = pop.querySelector('.sel-search');
     var activeIndex = -1;
+    var selectedItemIndex = -1;
     var visibleItems = [];
+    var renderedItems;
+    var renderedQuery;
+    var renderedValue;
 
     /* 量字宽：轮盘条带取所有候选里最宽的一条，按钮随之平滑变宽 */
     var measure = document.createElement('span');
@@ -700,7 +718,6 @@
         searchEl.placeholder = '搜索…';
         searchEl.setAttribute('aria-label', '搜索');
         pop.insertBefore(searchEl, listEl);
-        searchEl.addEventListener('input', function () { render(this.value); });
       } else if (!searchable && searchEl) {
         searchEl.remove();
         searchEl = null;
@@ -709,21 +726,23 @@
 
     function render(filter) {
       var query = (filter || '').trim().toLowerCase();
-      listEl.innerHTML = '';
-      visibleItems = [];
-      activeIndex = -1;
+      var value = select.value;
+      if (items === renderedItems && query === renderedQuery && value === renderedValue) return false;
+      var fragment = document.createDocumentFragment();
+      var nextVisibleItems = [];
+      var nextSelectedIndex = -1;
 
       var lastGroup = null;
       var matched = 0;
 
       items.forEach(function (item) {
-        if (query && item.label.toLowerCase().indexOf(query) === -1) return;
+        if (query && item.searchLabel.indexOf(query) === -1) return;
         if (item.group && item.group !== lastGroup) {
           lastGroup = item.group;
           var head = document.createElement('div');
           head.className = 'sel-group';
           head.textContent = item.group;
-          listEl.appendChild(head);
+          fragment.appendChild(head);
         }
         var row = document.createElement('button');
         row.type = 'button';
@@ -732,14 +751,13 @@
         row.dataset.value = item.value;
         row.disabled = !!item.disabled;
         row.setAttribute('role', 'option');
-        row.setAttribute('aria-selected', item.value === select.value ? 'true' : 'false');
-        if (item.value === select.value) {
+        row.setAttribute('aria-selected', item.value === value ? 'true' : 'false');
+        if (item.value === value) {
           row.classList.add('on');
-          if (!item.disabled) activeIndex = visibleItems.length;
+          if (!item.disabled) nextSelectedIndex = nextVisibleItems.length;
         }
-        row.addEventListener('click', function () { choose(item.value); });
-        listEl.appendChild(row);
-        if (!item.disabled) visibleItems.push(row);
+        fragment.appendChild(row);
+        if (!item.disabled) nextVisibleItems.push(row);
         matched++;
       });
 
@@ -747,17 +765,31 @@
         var empty = document.createElement('div');
         empty.className = 'sel-empty';
         empty.textContent = '没有匹配的项';
-        listEl.appendChild(empty);
+        fragment.appendChild(empty);
       }
+      if (listEl.replaceChildren) listEl.replaceChildren(fragment);
+      else {
+        listEl.textContent = '';
+        listEl.appendChild(fragment);
+      }
+      visibleItems = nextVisibleItems;
+      activeIndex = selectedItemIndex = nextSelectedIndex;
+      renderedItems = items;
+      renderedQuery = query;
+      renderedValue = value;
+      return true;
     }
 
     function refreshOptions() {
-      items = collectOptions(select);
-      searchable = items.length > 12;
-      updateSearchControl();
-      render(searchEl ? searchEl.value : '');
+      var nextItems = collectOptions(select);
+      if (!sameOptions(items, nextItems)) {
+        items = nextItems;
+        searchable = items.length > 12;
+        updateSearchControl();
+      }
+      var changed = render(searchEl ? searchEl.value : '');
       syncButton(false);
-      if (openSelect && openSelect.select === select) {
+      if (changed && openSelect && openSelect.select === select) {
         position();
         highlight(activeIndex < 0 ? 0 : activeIndex);
       }
@@ -800,13 +832,13 @@
       pop.setAttribute('aria-hidden', 'false');
       button.setAttribute('aria-expanded', 'true');
       openSelect = { select: select, pop: pop, button: button, position: position };
+      if (searchEl) searchEl.value = '';
       render('');
       position();
       moveSurface(pop, button, true);
-      if (searchEl) searchEl.value = '';
       // Opening a language list must not enter an editable field and summon
       // the mobile keyboard. Search remains available when explicitly tapped.
-      highlight(activeIndex < 0 ? 0 : activeIndex);
+      highlight(selectedItemIndex < 0 ? 0 : selectedItemIndex);
       if (!visibleItems.length) {
         listEl.tabIndex = -1;
         listEl.focus({ preventScroll: true });
@@ -837,7 +869,14 @@
       }
     });
 
-    if (searchEl) searchEl.addEventListener('input', function () { render(this.value); });
+    listEl.addEventListener('click', function (event) {
+      var row = event.target && event.target.closest ? event.target.closest('.sel-item') : null;
+      if (row && !row.disabled && listEl.contains(row)) choose(row.dataset.value);
+    });
+
+    pop.addEventListener('input', function (e) {
+      if (e.target === searchEl) render(searchEl.value);
+    });
 
     pop.addEventListener('keydown', function (e) {
       if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); closeSelect(); return; }
@@ -1459,6 +1498,70 @@
       'px) scale(' + (from.width / to.width) + ',' + (from.height / to.height) + ')';
   }
 
+  function visibleDockButtons(dock) {
+    var buttons = {};
+    if (!dock) return buttons;
+    dock.querySelectorAll('button:not([hidden])').forEach(function (button) {
+      var match = /^btn-(clear|cancel|go)(?:-(?:text|syllable|doc))?$/.exec(button.id);
+      if (match) buttons[match[1]] = button;
+    });
+    return buttons;
+  }
+
+  function dockGeometryChanged(previous, next) {
+    var roles = Object.keys(next);
+    return Object.keys(previous).length !== roles.length || roles.some(function (role) {
+      var from = previous[role];
+      var to = next[role];
+      var track = motions.get(from);
+      return !from || (track && track.group === 'dock') || from.className !== to.className ||
+        from.disabled !== to.disabled || from.textContent !== to.textContent;
+    });
+  }
+
+  function dockButtonRects(buttons) {
+    var rects = {};
+    Object.keys(buttons).forEach(function (role) {
+      rects[role] = buttons[role].getBoundingClientRect();
+    });
+    return rects;
+  }
+
+  function animateDockHandoff(previous, buttons, next) {
+    var paths = Object.keys(next).map(function (role) {
+      var from = previous[role];
+      var to = next[role];
+      var dx = from && from.width ? (from.left + from.right - to.left - to.right) / 2 : 0;
+      if (Math.abs(dx) < 0.5) dx = 0;
+      return { button: buttons[role], dx: dx,
+        left: to.left + Math.min(dx, 0), right: to.right + Math.max(dx, 0),
+        top: to.top, bottom: to.bottom };
+    });
+    // Check every swept border box against every other button, including a stationary Cancel.
+    if (paths.some(function (path, index) {
+      return path.left < 0 || path.right > window.innerWidth || paths.some(function (other, i) {
+        return i !== index && path.left < other.right && path.right > other.left &&
+          path.top < other.bottom && path.bottom > other.top;
+      });
+    })) return;
+    paths.forEach(function (path) {
+      if (!path.dx) return;
+      playMotion(path.button, [
+        { translate: path.dx + 'px 0px' },
+        { translate: '0px 0px' }
+      ], PANEL_DURATION, null, 'dock', false);
+    });
+  }
+
+  function stopTaskDockMotion(button) {
+    var dock = button && button.closest('.dock.on');
+    if (!dock) return;
+    Array.prototype.forEach.call(dock.children, function (element) {
+      var track = motions.get(element);
+      if (track && track.group === 'dock') stopMotion(element);
+    });
+  }
+
   function switchTab(name) {
     if (!panes[name]) return;
     if (name === state.tab && !tabPreparation) return;
@@ -1525,94 +1628,107 @@
     if (openSelect && oldEl && oldEl.contains(openSelect.button)) closeSelect();
     var focusWasInOld = !!(oldEl && oldEl.contains(document.activeElement));
     var seq = ++tabSeq;
-    var direction = Object.keys(panes).indexOf(name) > Object.keys(panes).indexOf(shownTab) ? 1 : -1;
-    var oldRects = oldEl ? tabSurfaces(oldEl).map(function (el) { return el.getBoundingClientRect(); }) : [];
+    var names = Object.keys(panes);
+    var direction = names.indexOf(name) > names.indexOf(shownTab) ? 1 : -1;
+    var animate = !!(oldEl && newEl && !motionReduced() && newEl.animate);
+    var docks = document.querySelectorAll('.dock');
+    var oldDockButtons;
+    var newDockButtons;
+    var oldDockRects;
+    if (animate && typeof CSS !== 'undefined' && CSS.supports && CSS.supports('translate', '0 0')) {
+      docks.forEach(function (dock) {
+        var pane = dock.getAttribute('data-pane');
+        if (pane === shownTab) oldDockButtons = visibleDockButtons(dock);
+        if (pane === name) newDockButtons = visibleDockButtons(dock);
+      });
+      if (oldDockButtons && newDockButtons && dockGeometryChanged(oldDockButtons, newDockButtons)) {
+        oldDockRects = dockButtonRects(oldDockButtons);
+      }
+    }
     var samples = new Map();
-    var visiblePanels = [];
-    var surfaceRects = new Map();
+    var scenes = new Map();
+    var panels = names.map(function (key) { return $(panes[key]); });
     /* 包括正在退场的页面，反向点回时可以从它尚未消失的位置接续。 */
-    Object.keys(panes).forEach(function (key) {
-      var panel = $(panes[key]);
-      if (!panel || (!panel.classList.contains('on') && !panel.classList.contains('it-tab-leave'))) return;
-      visiblePanels.push(panel);
-      surfaceRects.set(panel, tabSurfaces(panel).map(function (el) { return el.getBoundingClientRect(); }));
-      tabContents(panel).forEach(function (el) { samples.set(el, visualStyle(el)); });
-    });
+    if (animate) {
+      panels.forEach(function (panel) {
+        if (!panel || (!panel.classList.contains('on') && !panel.classList.contains('it-tab-leave'))) return;
+        var surfaces = tabSurfaces(panel);
+        var contents = tabContents(panel);
+        scenes.set(panel, { surfaces: surfaces, contents: contents,
+          rects: surfaces.map(function (el) { return el.getBoundingClientRect(); }) });
+        contents.forEach(function (el) { samples.set(el, visualStyle(el)); });
+      });
+    }
     stopMotionGroup('tab');
-    settleTabs();
+    stopMotionGroup('dock');
 
-    state.tab = name;
     try {
       var remembered = JSON.parse(localStorage.getItem('it-state') || '{}');
       remembered.tab = name;
       localStorage.setItem('it-state', JSON.stringify(remembered));
     } catch (e) {}
     shownTab = name;
-    document.querySelectorAll('.tabs button[data-tab]').forEach(function (button) {
-      var selected = button.getAttribute('data-tab') === name;
-      button.classList.toggle('on', selected);
-      button.setAttribute('aria-selected', selected ? 'true' : 'false');
-      button.tabIndex = selected ? 0 : -1;
-    });
-    document.querySelectorAll('.dock').forEach(function (dock) {
-      dock.classList.toggle('on', dock.getAttribute('data-pane') === name);
-      dock.inert = dock.getAttribute('data-pane') !== name;
+    docks.forEach(function (dock) {
+      var selected = dock.getAttribute('data-pane') === name;
+      dock.classList.toggle('on', selected);
+      dock.inert = !selected;
       dock.classList.remove('it-glass-preparing');
     });
-    if (focusWasInOld) {
-      var selectedTab = document.querySelector('.tabs button[data-tab="' + name + '"]');
-      if (selectedTab) selectedTab.focus();
-    }
-    Object.keys(panes).forEach(function (key) {
-      var panel = $(panes[key]);
+    panels.forEach(function (panel) {
       if (!panel) return;
-      var selected = key === name;
+      var selected = panel === newEl;
       panel.inert = !selected;
       panel.setAttribute('aria-hidden', selected ? 'false' : 'true');
+      panel.classList.toggle('it-tab-leave', !selected && scenes.has(panel));
+      panel.classList.toggle('on', selected);
     });
 
-    if (!oldEl || !newEl || motionReduced() || !newEl.animate) {
-      settleTabs();
+    if (!animate) {
+      if (focusWasInOld) focusModeTab(name);
       positionThumbs(false);
       return;
     }
 
-    visiblePanels.forEach(function (panel) {
+    var nextDockRects = oldDockRects && dockButtonRects(newDockButtons);
+    var outgoing = scenes.get(oldEl);
+    var incoming = scenes.get(newEl);
+    var oldRects = outgoing ? outgoing.rects : [];
+    var newSurfaces = incoming ? incoming.surfaces : tabSurfaces(newEl);
+    var newContents = incoming ? incoming.contents : tabContents(newEl);
+    var nextRects = newSurfaces.map(function (el) { return el.getBoundingClientRect(); });
+    scenes.forEach(function (scene, panel) {
       if (panel === newEl) return;
-      panel.classList.remove('on');
-      panel.classList.add('it-tab-leave');
+      scene.natural = scene.surfaces.map(function (el) { return el.getBoundingClientRect(); });
     });
-    newEl.classList.remove('it-tab-leave');
-    newEl.classList.add('on');
-    var nextRects = [];
-    tabSurfaces(newEl).forEach(function (el, index) {
+
+    if (oldDockRects) animateDockHandoff(oldDockRects, newDockButtons, nextDockRects);
+    newSurfaces.forEach(function (el, index) {
       var from = oldRects[index];
-      var to = el.getBoundingClientRect();
-      nextRects.push(to);
-      if (!from || !to.width || !to.height) return;
+      var to = nextRects[index];
+      if (!from || !to || !to.width || !to.height) return;
       playMotion(el, [{ transform: mapRect(from, to) }, { transform: 'none' }],
         PANEL_DURATION, null, 'tab', true);
     });
     /* 三连切时保留每一层尚未淡完的内容，避免丢掉上一段的剩余透明度。 */
-    visiblePanels.forEach(function (panel) {
+    scenes.forEach(function (scene, panel) {
       if (panel === newEl) return;
-      var rects = surfaceRects.get(panel);
-      tabSurfaces(panel).forEach(function (el, index) {
-        var natural = el.getBoundingClientRect();
-        if (!rects[index] || !nextRects[index] || !natural.width || !natural.height) return;
-        playMotion(el, [{ transform: mapRect(rects[index], natural) },
+      scene.surfaces.forEach(function (el, index) {
+        var natural = scene.natural[index];
+        if (!nextRects[index] || !natural.width || !natural.height) return;
+        playMotion(el, [{ transform: mapRect(scene.rects[index], natural) },
           { transform: mapRect(nextRects[index], natural) }], PANEL_DURATION, null, 'tab', true);
       });
-      tabContents(panel).forEach(function (el) {
-        var from = samples.get(el) || visualStyle(el);
+      scene.contents.forEach(function (el) {
+        var from = samples.get(el);
         var thumb = el.classList.contains('models-thumb');
         playMotion(el, [thumb ? { opacity: from.opacity } : from,
           thumb ? { opacity: '0' } : { opacity: '0', transform: shiftX(-direction * SCENE_DISTANCE) }],
         PANEL_DURATION, null, 'tab', true);
       });
     });
-    tabContents(newEl).forEach(function (el) {
-      var from = samples.get(el) || { opacity: '0', transform: shiftX(direction * SCENE_DISTANCE) };
+    newContents.forEach(function (el) {
+      var from = samples.get(el) ||
+        { opacity: '0', transform: shiftX(direction * SCENE_DISTANCE) };
       var thumb = el.classList.contains('models-thumb');
       playMotion(el, [thumb ? { opacity: from.opacity } : from,
         thumb ? { opacity: '1' } : { opacity: '1', transform: 'none' }],
@@ -1623,7 +1739,13 @@
       if (seq === tabSeq) settleTabs();
     }, 'tab');
 
+    if (focusWasInOld) focusModeTab(name);
     positionThumbs(true);
+  }
+
+  function focusModeTab(name) {
+    var button = document.querySelector('.tabs button[data-tab="' + name + '"]');
+    if (button) button.focus({ preventScroll: true });
   }
 
   function initTabs() {
@@ -2121,6 +2243,7 @@
   function beginTask(mode, button, out) {
     var state = taskFor(mode);
     if (state.current) { toast('当前模式正在翻译，请先取消'); return null; }
+    stopTaskDockMotion(button);
     state.result = '';
     resultButtons(mode);
     var task = { mode: mode, id: ++state.sequence, controller: new AbortController(),
@@ -2133,6 +2256,7 @@
   function finishTask(task) {
     if (!taskCurrent(task)) return;
     taskFor(task.mode).current = null;
+    stopTaskDockMotion(task.button);
     setBusy(task.button, false);
     var cancel = $('btn-cancel-' + task.mode);
     if (cancel) cancel.hidden = true;
@@ -2141,6 +2265,7 @@
   function cancelTask(mode, clear) {
     var state = taskFor(mode), task = state.current;
     if (task) {
+      stopTaskDockMotion(task.button);
       state.current = null;
       task.cancelled = true;
       task.writer.stop();
@@ -3375,7 +3500,11 @@
     var glassTarget = 'card';
     var activeSection = 'appearance';
     var shownSection = 'appearance';
+    var sectionIntent = 'appearance';
     var sectionTransitionTarget = '';
+    var sectionPaintTarget = '';
+    var sectionTransitionFrom = '';
+    var sectionTransitionSources = [];
     var sectionTransitionPhase = '';
     var sectionTransitionSeq = 0;
     var sectionTransitionTimer = 0;
@@ -3524,9 +3653,10 @@
     function updateSettingsNavigation(animate) {
       var nav = modal.querySelector('.it-set-nav');
       var thumb = nav && nav.querySelector('.it-set-nav-thumb');
-      var activeTab = nav && nav.querySelector('[data-pref-tab="' + activeSection + '"]');
+      var visualSection = sectionTransitionPhase === 'handoff' ? sectionPaintTarget : shownSection;
+      var activeTab = nav && nav.querySelector('[data-pref-tab="' + visualSection + '"]');
       modal.querySelectorAll('[data-pref-tab]').forEach(function (tab) {
-        var selected = tab.getAttribute('data-pref-tab') === activeSection;
+        var selected = tab.getAttribute('data-pref-tab') === visualSection;
         tab.classList.toggle('on', selected);
         tab.setAttribute('aria-current', selected ? 'page' : 'false');
       });
@@ -3543,18 +3673,34 @@
     }
 
     function setSettingsSection(section) {
+      stopMotionGroup('settings-page');
+      var current = modal.querySelector('[data-pref-section="' + shownSection + '"]');
+      if (current && current.contains(document.activeElement)) {
+        var nextTab = modal.querySelector('[data-pref-tab="' + section + '"]');
+        if (nextTab) nextTab.focus({ preventScroll: true });
+      }
       modal.querySelectorAll('[data-pref-section]').forEach(function (page) {
         stopMotion(page);
         page.style.removeProperty('--it-settings-page-reveal');
+        page.style.removeProperty('z-index');
+        page.style.removeProperty('transform');
         var selected = page.getAttribute('data-pref-section') === section;
         page.hidden = !selected;
         page.inert = !selected;
         page.setAttribute('aria-hidden', selected ? 'false' : 'true');
         page.classList.remove('is-leaving', 'is-entering', 'is-entered');
+        page.classList.remove('it-glass-section-preparing');
       });
       shownSection = section;
+      activeSection = section;
+      sectionIntent = section;
       sectionTransitionTarget = '';
+      sectionPaintTarget = '';
+      sectionTransitionFrom = '';
+      sectionTransitionSources = [];
       sectionTransitionPhase = '';
+      var reset = modal.querySelector('[data-reset-section]');
+      if (reset) reset.disabled = !settingsLoaded;
       var body = modal.querySelector('.it-set-body');
       if (body) body.removeAttribute('aria-busy');
     }
@@ -3570,9 +3716,30 @@
       setSettingsSection(section || sectionTransitionTarget || shownSection);
     }
 
+    function freezeSettingsSectionHandoff() {
+      modal.querySelectorAll('[data-pref-section]:not([hidden])').forEach(function (page) {
+        var style = getComputedStyle(page);
+        var reveal = parseFloat(style.getPropertyValue('--it-settings-page-reveal'));
+        if (!Number.isFinite(reveal)) reveal = 1;
+        var transform = style.transform;
+        // Freeze the exact sampled paint before canceling the WAAPI transform
+        // and CSS custom-property transition for the dialog's own exit.
+        page.style.transition = 'none';
+        page.style.setProperty('--it-settings-page-reveal', String(reveal));
+        page.style.transform = transform;
+        void page.offsetWidth;
+        stopMotion(page);
+        page.style.transition = '';
+      });
+    }
+
     function revealPreparedSettingsSection(section) {
       var target = modal.querySelector('[data-pref-section="' + section + '"]');
-      if (!target) return;
+      if (!target || !modal.classList.contains('on')) return;
+      if (sectionPreparation) {
+        sectionPreparation.abort();
+        sectionPreparation = null;
+      }
       var controller = new AbortController();
       // A display:none section cannot be measured. Stage it over its normal
       // content box, fully hidden and inert, until its exact maps are decoded.
@@ -3589,153 +3756,261 @@
         target.classList.remove('it-glass-section-preparing');
       }
       var preparation = preparePageGlass(target, controller.signal);
-      function reveal() {
+      function ready() {
         cleanup();
-        if (controller.signal.aborted || activeSection !== section ||
+        if (controller.signal.aborted || section !== sectionIntent ||
             !modal.classList.contains('on')) return;
-        sectionPreparation = null;
-        cancelSettingsSectionTransition(section);
-        var body = modal.querySelector('.it-set-body');
-        if (body) body.scrollTop = 0;
+        if (sectionPreparation === controller) sectionPreparation = null;
+        if (!window.ItLiquidGlass.isReady(target)) {
+          revealPreparedSettingsSection(section);
+          return;
+        }
+        if (sectionTransitionPhase === 'handoff') {
+          if (sectionPaintTarget !== section) startSettingsSectionHandoff(section, sectionPaintTarget);
+        } else {
+          startSettingsSectionHandoff(section);
+        }
       }
-      if (!preparation) { reveal(); return; }
-      sectionTransitionTarget = section;
+      if (!preparation) { ready(); return; }
       sectionPreparation = controller;
-      preparation.then(reveal).catch(function (error) {
+      if (sectionTransitionPhase !== 'handoff') {
+        sectionTransitionTarget = section;
+        sectionTransitionPhase = 'prepare';
+      }
+      preparation.then(ready).catch(function (error) {
         cleanup();
         if (error.name !== 'AbortError' && sectionPreparation === controller) {
           sectionPreparation = null;
-          activeSection = shownSection;
-          cancelSettingsSectionTransition(shownSection);
+          var wasHandoff = sectionTransitionPhase === 'handoff';
+          var stableSection = wasHandoff ? sectionPaintTarget : shownSection;
+          sectionIntent = stableSection;
+          sectionTransitionTarget = wasHandoff ? sectionPaintTarget : '';
+          if (!wasHandoff) sectionTransitionPhase = '';
+          modal.querySelectorAll('[data-pref-section]').forEach(function (page) {
+            var painted = page.getAttribute('data-pref-section') === stableSection;
+            if (!wasHandoff) {
+              page.hidden = !painted;
+              page.inert = !painted;
+            }
+            page.setAttribute('aria-hidden', painted ? 'false' : 'true');
+          });
+          var body = modal.querySelector('.it-set-body');
+          var reset = modal.querySelector('[data-reset-section]');
+          if (!wasHandoff && body) body.removeAttribute('aria-busy');
+          if (!wasHandoff && reset) reset.disabled = !settingsLoaded;
+          activeSection = stableSection;
           updateSettingsNavigation(false);
           toast('玻璃效果准备失败，请重试', true);
         }
       });
     }
 
-    settleSettingsSection = function () {
-      if (sectionTransitionTarget) {
-        var target = modal.querySelector('[data-pref-section="' + activeSection + '"]');
-        if (target && !target.hidden && window.ItLiquidGlass.isReady(target)) {
-          cancelSettingsSectionTransition(activeSection);
-        } else if (!sectionPreparation) {
-          clearTimeout(sectionTransitionTimer);
-          sectionTransitionTimer = 0;
-          if (sectionTransitionFrame) cancelAnimationFrame(sectionTransitionFrame);
-          sectionTransitionFrame = 0;
-          sectionTransitionSeq++;
-          revealPreparedSettingsSection(activeSection);
+    function finishSettingsSectionHandoff(section, previous, sequence) {
+      if (sequence !== sectionTransitionSeq || sectionTransitionPhase !== 'handoff' ||
+          sectionPaintTarget !== section ||
+          !modal.classList.contains('on')) return;
+      var target = modal.querySelector('[data-pref-section="' + section + '"]');
+      var leaving = modal.querySelector('[data-pref-section="' + previous + '"]');
+      if (!target || !leaving) return;
+      if (!window.ItLiquidGlass.isReady(target)) {
+        var latest = sectionIntent;
+        if (sectionPreparation) sectionPreparation.abort();
+        sectionPreparation = null;
+        setSettingsSection(previous);
+        if (latest !== previous) {
+          sectionIntent = latest;
+          sectionTransitionTarget = latest;
+          revealPreparedSettingsSection(latest);
         }
+        return;
+      }
+      sectionTransitionSources.forEach(function (source) {
+        stopMotion(source.page);
+        source.page.hidden = true;
+        source.page.inert = true;
+        source.page.setAttribute('aria-hidden', 'true');
+        source.page.classList.remove('is-leaving', 'is-entering', 'is-entered');
+        source.page.style.removeProperty('z-index');
+        source.page.style.removeProperty('--it-settings-page-reveal');
+      });
+      stopMotion(target);
+      target.hidden = false;
+      target.inert = false;
+      target.setAttribute('aria-hidden', 'false');
+      target.classList.remove('is-leaving', 'is-entering', 'is-entered');
+      target.style.removeProperty('z-index');
+      target.style.removeProperty('--it-settings-page-reveal');
+      shownSection = activeSection = section;
+      var body = modal.querySelector('.it-set-body');
+      var reset = modal.querySelector('[data-reset-section]');
+      if (body) body.removeAttribute('aria-busy');
+      if (reset) reset.disabled = !settingsLoaded;
+      sectionTransitionSources = [];
+      sectionPaintTarget = '';
+      sectionTransitionFrom = '';
+      if (sectionIntent !== shownSection) {
+        sectionTransitionTarget = sectionIntent;
+        sectionTransitionPhase = sectionPreparation ? 'prepare' : '';
+        activeSection = shownSection;
+        updateSettingsNavigation(false);
+        if (!sectionPreparation) revealPreparedSettingsSection(sectionIntent);
+      } else {
+        sectionTransitionTarget = '';
+        sectionTransitionPhase = '';
+      }
+    }
+
+    function startSettingsSectionHandoff(section, previousOverride) {
+      var target = modal.querySelector('[data-pref-section="' + section + '"]');
+      if (!target || (!previousOverride && section === shownSection) ||
+          !window.ItLiquidGlass.isReady(target)) return;
+      var previous = previousOverride || shownSection;
+      var pages = Array.prototype.slice.call(modal.querySelectorAll('[data-pref-section]'));
+      var sourcePages = pages.filter(function (page) { return page !== target && !page.hidden; });
+      if (!sourcePages.length) {
+        var current = modal.querySelector('[data-pref-section="' + previous + '"]');
+        if (current && current !== target && !current.hidden) sourcePages = [current];
+      }
+      if (!sourcePages.length) { setSettingsSection(section); return; }
+      // Read every painted contribution before canceling any WAAPI track so a
+      // retarget can continue the existing composite instead of snapping it.
+      var sources = sourcePages.map(function (page) {
+        var style = getComputedStyle(page);
+        var reveal = parseFloat(style.getPropertyValue('--it-settings-page-reveal'));
+        return { page: page, reveal: Number.isFinite(reveal) ? reveal : 1, transform: style.transform };
+      });
+      var targetAlreadyPainted = !target.hidden && sectionTransitionPhase === 'handoff';
+      var targetStyle = targetAlreadyPainted ? getComputedStyle(target) : null;
+      var targetReveal = targetStyle ?
+        parseFloat(targetStyle.getPropertyValue('--it-settings-page-reveal')) : 0;
+      if (!Number.isFinite(targetReveal)) targetReveal = 0;
+      if (sectionPreparation) {
+        sectionPreparation.abort();
+        sectionPreparation = null;
+      }
+      closeSelect();
+      flushPreferencePreview();
+      var leaving = modal.querySelector('[data-pref-section="' + previous + '"]') || sources[0].page;
+      if (recording && leaving.contains(recording.input)) {
+        stopRecord();
+        fill();
+      }
+      if (document.activeElement && leaving.contains(document.activeElement)) {
+        var tab = modal.querySelector('[data-pref-tab="' + section + '"]');
+        if (tab) tab.focus({ preventScroll: true });
+      }
+      var duration = motionReduced() ? 0 : cssDuration('--it-settings-switch-duration', 140);
+      if (duration <= 0) { setSettingsSection(section); return; }
+      stopMotionGroup('settings-page');
+      var sequence = ++sectionTransitionSeq;
+      sectionTransitionTarget = section;
+      sectionPaintTarget = section;
+      sectionTransitionFrom = previous;
+      sectionTransitionPhase = 'handoff';
+      activeSection = section;
+      updateSettingsNavigation(true);
+      var body = modal.querySelector('.it-set-body');
+      var reset = modal.querySelector('[data-reset-section]');
+      if (body) body.setAttribute('aria-busy', 'true');
+      if (reset) reset.disabled = true;
+      sectionTransitionSources = sources;
+      sources.forEach(function (source, index) {
+        source.page.inert = true;
+        source.page.setAttribute('aria-hidden', 'true');
+        source.page.classList.remove('is-entering', 'is-entered', 'is-leaving');
+        source.page.classList.add('is-leaving');
+        source.page.style.zIndex = String(index + 1);
+      });
+      target.hidden = false;
+      target.inert = true;
+      target.setAttribute('aria-hidden', 'true');
+      target.classList.remove('is-leaving', 'is-entered');
+      target.classList.add('is-entering');
+      if (!targetStyle) targetStyle = getComputedStyle(target);
+      target.style.zIndex = String(sources.length + 1);
+      // Both pages share the final scroll viewport, so their glass maps remain
+      // exact while the two real pages cross-fade over one another.
+      sources.forEach(function (source) {
+        fadeSettingsSection(source.page, source.reveal, 0, source.transform, duration);
+      });
+      target.classList.add('is-entered');
+      fadeSettingsSection(target, targetReveal, 1,
+        targetStyle.transform, duration, function () {
+          finishSettingsSectionHandoff(section, previous, sequence);
+        });
+    }
+
+    settleSettingsSection = function () {
+      if (!modal.classList.contains('on') || sectionTransitionPhase === 'closing') return;
+      if (sectionTransitionPhase === 'handoff' && sectionPaintTarget) {
+        finishSettingsSectionHandoff(sectionPaintTarget, sectionTransitionFrom, sectionTransitionSeq);
+      } else if (sectionIntent !== shownSection && !sectionPreparation) {
+        revealPreparedSettingsSection(sectionIntent);
       }
       updateSettingsNavigation(false);
     };
 
-    function fadeSettingsSection(page, from, to, transform, duration) {
-      if (settingsRevealProperty) return;
+    function fadeSettingsSection(page, from, to, transform, duration, done) {
       var property = '--it-settings-page-reveal';
       if (!Number.isFinite(from)) from = 1 - to;
       page.style.setProperty(property, String(from));
+      if (settingsRevealProperty) {
+        void getComputedStyle(page).getPropertyValue(property);
+        page.style.setProperty(property, String(to));
+      }
       playMotion(page, [{ transform: transform }, {
         transform: to ? 'translateY(0)' : 'translateY(-4px)'
       }], duration, function () {
         page.style.removeProperty(property);
+        if (done) done();
       }, 'settings-page', false,
       getComputedStyle(document.documentElement).getPropertyValue('--lg-ease-enter').trim() || SCENE_EASE);
-      followSettingsReveal(page, property, from, to);
+      if (!settingsRevealProperty) followSettingsReveal(page, property, from, to);
     }
 
     function switchSettingsSection(section) {
       var target = modal.querySelector('[data-pref-section="' + section + '"]');
-      if (!target || section === activeSection) return;
-      if (sectionPreparation) sectionPreparation.abort();
-      sectionPreparation = null;
+      if (!target || section === sectionIntent) return;
+      sectionIntent = section;
       flushPreferencePreview();
       closeSelect();
-      activeSection = section;
-      updateSettingsNavigation(true);
-      var body = modal.querySelector('.it-set-body');
       var duration = motionReduced() ? 0 : cssDuration('--it-settings-switch-duration', 140);
-      if (!modal.classList.contains('on') || duration <= 0 || section === shownSection) {
-        if (modal.classList.contains('on')) revealPreparedSettingsSection(section);
-        else cancelSettingsSectionTransition(section);
-        if (body) body.scrollTop = 0;
-        return;
-      }
-      sectionTransitionTarget = section;
-      if (sectionTransitionPhase === 'leave') return;
-      clearTimeout(sectionTransitionTimer);
-      if (sectionTransitionFrame) cancelAnimationFrame(sectionTransitionFrame);
-      sectionTransitionFrame = 0;
-
-      var leaving = modal.querySelector('[data-pref-section="' + shownSection + '"]');
-      if (!leaving) {
+      if (!modal.classList.contains('on')) {
         setSettingsSection(section);
-        if (body) body.scrollTop = 0;
         return;
       }
-      var sequence = ++sectionTransitionSeq;
-      sectionTransitionPhase = 'leave';
-      if (body) body.setAttribute('aria-busy', 'true');
-      var leavingStyle = getComputedStyle(leaving);
-      var leavingReveal = parseFloat(leavingStyle.getPropertyValue('--it-settings-page-reveal'));
-      var leavingTransform = leavingStyle.transform;
-      leaving.inert = true;
-      leaving.setAttribute('aria-hidden', 'true');
-      leaving.classList.remove('is-entering', 'is-entered');
-      leaving.classList.add('is-leaving');
-      fadeSettingsSection(leaving, leavingReveal, 0, leavingTransform, duration);
-
-      sectionTransitionTimer = setTimeout(function () {
-        if (sequence !== sectionTransitionSeq || !modal.classList.contains('on')) return;
-        var previousSection = shownSection;
-        target = modal.querySelector('[data-pref-section="' + activeSection + '"]');
-        leaving.hidden = true;
-        leaving.classList.remove('is-leaving');
-        target.hidden = false;
-        target.inert = true;
-        target.setAttribute('aria-hidden', 'true');
-        target.classList.add('is-entering');
-        shownSection = activeSection;
-        sectionTransitionPhase = 'enter';
-        if (body) body.scrollTop = 0;
-        void target.offsetWidth;
-        sectionTransitionFrame = requestAnimationFrame(function () {
-          if (sequence !== sectionTransitionSeq || !modal.classList.contains('on')) return;
-          var controller = new AbortController();
-          var preparation = preparePageGlass(target, controller.signal);
-          function enter() {
-            if (sequence !== sectionTransitionSeq || !modal.classList.contains('on') ||
-                controller.signal.aborted) return;
-            sectionPreparation = null;
-            var enteringTransform = getComputedStyle(target).transform;
-            target.classList.add('is-entered');
-            fadeSettingsSection(target, 0, 1, enteringTransform, duration);
-            sectionTransitionTimer = setTimeout(function () {
-              if (sequence !== sectionTransitionSeq || !modal.classList.contains('on')) return;
-              target.inert = false;
-              target.setAttribute('aria-hidden', 'false');
-              target.classList.remove('is-entering', 'is-entered');
-              sectionTransitionTarget = '';
-              sectionTransitionPhase = '';
-              sectionTransitionTimer = 0;
-              sectionTransitionFrame = 0;
-              if (body) body.removeAttribute('aria-busy');
-            }, duration + 24);
-          }
-          if (preparation) {
-            sectionPreparation = controller;
-            preparation.then(enter).catch(function (error) {
-              if (error.name !== 'AbortError' && sequence === sectionTransitionSeq) {
-                sectionPreparation = null;
-                activeSection = previousSection;
-                cancelSettingsSectionTransition(previousSection);
-                updateSettingsNavigation(false);
-                toast('玻璃效果准备失败，请重试', true);
-              }
-            });
-          } else enter();
-        });
-      }, duration + 24);
+      if (sectionPreparation) {
+        sectionPreparation.abort();
+        sectionPreparation = null;
+      }
+      if (sectionTransitionPhase === 'handoff') {
+        if (section === sectionPaintTarget) {
+          sectionTransitionTarget = section;
+          sectionIntent = section;
+          activeSection = section;
+          updateSettingsNavigation(false);
+          return;
+        }
+        if (section === sectionTransitionFrom) {
+          sectionTransitionTarget = section;
+          sectionIntent = section;
+          activeSection = section;
+          startSettingsSectionHandoff(section, sectionPaintTarget);
+          return;
+        }
+        sectionTransitionTarget = section;
+        revealPreparedSettingsSection(section);
+        return;
+      }
+      if (section === shownSection) {
+        sectionTransitionTarget = '';
+        sectionTransitionPhase = '';
+        activeSection = shownSection;
+        updateSettingsNavigation(false);
+        return;
+      }
+      updateSettingsNavigation(false);
+      revealPreparedSettingsSection(section);
     }
 
     function updatePreferenceControl(control) {
@@ -4096,6 +4371,8 @@
       var controlsEnabled = enabled && (!Bridge.isDesktop || settingsLoaded);
       modal.querySelectorAll('.it-set-body input, .it-set-body select, .it-set-body button, [data-reset-section]')
         .forEach(function (control) { control.disabled = !controlsEnabled; });
+      var resetButton = modal.querySelector('[data-reset-section]');
+      if (resetButton && sectionTransitionPhase === 'handoff') resetButton.disabled = true;
       var colorControl = modal.querySelector('[data-pref="appearance.fontColor"]');
       if (colorControl) colorControl.disabled = !controlsEnabled ||
         settingsState.preferences.appearance.fontColorMode !== 'custom';
@@ -4120,7 +4397,29 @@
       persistSettings();
       stopRecord();
       closeSelect();
-      cancelSettingsSectionTransition(activeSection);
+      if (sectionTransitionPhase === 'handoff') {
+        // Keep both currently painted pages intact while the dialog itself
+        // retracts. Finishing the category transaction here would replace the
+        // live composite with one page for a single frame before the close.
+        if (sectionPreparation) sectionPreparation.abort();
+        sectionPreparation = null;
+        freezeSettingsSectionHandoff();
+        clearTimeout(sectionTransitionTimer);
+        sectionTransitionTimer = 0;
+        if (sectionTransitionFrame) cancelAnimationFrame(sectionTransitionFrame);
+        sectionTransitionFrame = 0;
+        sectionTransitionSeq++;
+        sectionIntent = sectionPaintTarget;
+        activeSection = sectionPaintTarget;
+        sectionTransitionTarget = '';
+        sectionTransitionPhase = 'closing';
+        var closingBody = modal.querySelector('.it-set-body');
+        var closingReset = modal.querySelector('[data-reset-section]');
+        if (closingBody) closingBody.removeAttribute('aria-busy');
+        if (closingReset) closingReset.disabled = !settingsLoaded;
+      } else {
+        cancelSettingsSectionTransition(shownSection);
+      }
       settingsSeq++;
       backgroundPickSeq++;
       popupBackgroundPickSeq++;
@@ -4131,7 +4430,12 @@
       modal.classList.add('it-surface-leave');
       modal.setAttribute('aria-hidden', 'true');
       modal.inert = true;
-      moveSurface(dialog, settingsOrigin, false, function () { modal.classList.remove('it-surface-leave'); });
+      moveSurface(dialog, settingsOrigin, false, function () {
+        modal.classList.remove('it-surface-leave');
+        if (sectionTransitionPhase === 'closing') {
+          setSettingsSection(sectionPaintTarget || shownSection);
+        }
+      });
       if (Bridge.isDesktop) Bridge.invoke('it_set_hotkeys_enabled', { enabled: true }).catch(function () {});
       return true;
     }
@@ -4231,12 +4535,12 @@
       if (e.target.closest && e.target.closest('[data-reset-section]')) {
         cancelPreferencePreview();
         var defaults = copyObject(DEFAULT_PREFERENCES);
-        if (activeSection === 'desktop') {
+        if (shownSection === 'desktop') {
           var preservedPreferences = copyObject(settingsState.preferences);
           settingsState = copyObject(DEFAULT_SETTINGS);
           settingsState.preferences = preservedPreferences;
           settingsState.preferences.popup = copyObject(defaults.popup);
-        } else if (activeSection === 'reading') {
+        } else if (shownSection === 'reading') {
           settingsState.preferences.appearance.font = defaults.appearance.font;
           settingsState.preferences.appearance.systemFontFamily = defaults.appearance.systemFontFamily;
           settingsState.preferences.appearance.fontScale = defaults.appearance.fontScale;
@@ -4244,22 +4548,22 @@
           settingsState.preferences.appearance.fontColorMode = defaults.appearance.fontColorMode;
           settingsState.preferences.appearance.fontColor = defaults.appearance.fontColor;
           settingsState.preferences.appearance.layout = defaults.appearance.layout;
-        } else if (activeSection === 'motion') {
+        } else if (shownSection === 'motion') {
           settingsState.preferences.appearance.motion = defaults.appearance.motion;
           settingsState.preferences.appearance.ambientLight = defaults.appearance.ambientLight;
-        } else if (activeSection === 'glass') {
+        } else if (shownSection === 'glass') {
           settingsState.preferences.liquidGlass[glassTarget] = copyObject(defaults.liquidGlass[glassTarget]);
-        } else if (activeSection === 'updates') {
+        } else if (shownSection === 'updates') {
           settingsState.preferences.updates = copyObject(defaults.updates);
-        } else if (activeSection === 'appearance') {
+        } else if (shownSection === 'appearance') {
           ['mode', 'palette', 'radius'].forEach(function (key) {
             settingsState.preferences.appearance[key] = defaults.appearance[key];
           });
         } else {
-          settingsState.preferences[activeSection === 'appearance' ? 'appearance' :
-            activeSection === 'background' ? 'background' : 'translation'] =
-            defaults[activeSection === 'appearance' ? 'appearance' :
-              activeSection === 'background' ? 'background' : 'translation'];
+          settingsState.preferences[shownSection === 'appearance' ? 'appearance' :
+            shownSection === 'background' ? 'background' : 'translation'] =
+            defaults[shownSection === 'appearance' ? 'appearance' :
+              shownSection === 'background' ? 'background' : 'translation'];
         }
         applyPreferences(settingsState.preferences);
         fill();
@@ -4363,7 +4667,7 @@
     });
     on(modal.querySelector('.it-set-body'), 'scroll', function () {
       if (openSelect && dialog.contains(openSelect.select)) closeSelect();
-    }, { passive: true });
+    }, { passive: true, capture: true });
     on($('it-set-selection'), 'click', function () { startRecord(this, 'selection_shortcut'); });
     on($('it-set-activation'), 'click', function () { startRecord(this, 'activation_shortcut'); });
     on($('it-set-mode'), 'change', function () {

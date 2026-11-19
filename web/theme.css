@@ -751,32 +751,32 @@ textarea.src::placeholder { color: var(--lg-ink-faint); }
 }
 
 /* 细窄、透明轨道的滚动条；WebKit 不同时声明标准颜色，避免覆盖自绘箭头规则。 */
-:is(textarea, .out, .doc-list, .sel-list, .it-set-body, .it-set-nav, .pane)::-webkit-scrollbar {
+:is(textarea, .out, .doc-list, .sel-list, .it-set-body, .it-set-page, .it-set-nav, .pane)::-webkit-scrollbar {
   width: 8px;
   height: 8px;
   background: transparent;
 }
-:is(textarea, .out, .doc-list, .sel-list, .it-set-body, .it-set-nav, .pane)::-webkit-scrollbar-track,
-:is(textarea, .out, .doc-list, .sel-list, .it-set-body, .it-set-nav, .pane)::-webkit-scrollbar-corner {
+:is(textarea, .out, .doc-list, .sel-list, .it-set-body, .it-set-page, .it-set-nav, .pane)::-webkit-scrollbar-track,
+:is(textarea, .out, .doc-list, .sel-list, .it-set-body, .it-set-page, .it-set-nav, .pane)::-webkit-scrollbar-corner {
   background: transparent;
 }
-:is(textarea, .out, .doc-list, .sel-list, .it-set-body, .it-set-nav, .pane)::-webkit-scrollbar-thumb {
+:is(textarea, .out, .doc-list, .sel-list, .it-set-body, .it-set-page, .it-set-nav, .pane)::-webkit-scrollbar-thumb {
   min-height: 30px;
   border: 2px solid transparent;
   border-radius: 99px;
   background: var(--lg-scrollbar-thumb);
   background-clip: padding-box;
 }
-:is(textarea, .out, .doc-list, .sel-list, .it-set-body, .it-set-nav, .pane)::-webkit-scrollbar-thumb:hover {
+:is(textarea, .out, .doc-list, .sel-list, .it-set-body, .it-set-page, .it-set-nav, .pane)::-webkit-scrollbar-thumb:hover {
   background-color: var(--lg-accent-deep);
 }
-:is(textarea, .out, .doc-list, .sel-list, .it-set-body, .it-set-nav, .pane)::-webkit-scrollbar-button {
+:is(textarea, .out, .doc-list, .sel-list, .it-set-body, .it-set-page, .it-set-nav, .pane)::-webkit-scrollbar-button {
   display: none;
   width: 0;
   height: 0;
 }
 @supports not selector(::-webkit-scrollbar) {
-  :is(textarea, .out, .doc-list, .sel-list, .it-set-body, .it-set-nav, .pane) {
+  :is(textarea, .out, .doc-list, .sel-list, .it-set-body, .it-set-page, .it-set-nav, .pane) {
     scrollbar-width: thin;
     scrollbar-color: var(--lg-scrollbar-thumb) transparent;
   }
@@ -1325,19 +1325,36 @@ textarea.src::placeholder { color: var(--lg-ink-faint); }
 .it-set-nav button.on { color: var(--lg-accent-deep); }
 .it-set-nav button[hidden] { display: none; }
 .it-set-page[hidden] { display: none; }
-.it-set-body { position: relative; }
+.it-set-body {
+  position: relative;
+  display: grid;
+  grid-template: minmax(0, 1fr) / minmax(0, 1fr);
+  min-height: 0;
+  min-width: 0;
+  padding: 0;
+  overflow: hidden;
+}
 .it-set .it-set-page.it-glass-section-preparing[hidden] {
   display: block !important;
   position: absolute;
-  top: 12px;
-  left: 20px;
-  right: 20px;
+  inset: 0;
+  z-index: 0;
   visibility: hidden;
   pointer-events: none;
 }
-.it-set-page { --it-settings-page-reveal: 1; opacity: 1; transform: translateY(0);
+.it-set-page {
+  --it-settings-page-reveal: 1;
+  grid-area: 1 / 1;
+  min-height: 0;
+  min-width: 0;
+  padding: 12px 20px 18px;
+  overflow-x: hidden;
+  overflow-y: auto;
+  opacity: 1;
+  transform: translateY(0);
   transition: --it-settings-page-reveal var(--it-settings-switch-duration) var(--lg-ease-enter),
-              transform var(--it-settings-switch-duration) var(--lg-ease-enter); }
+              transform var(--it-settings-switch-duration) var(--lg-ease-enter);
+}
 .it-set-page.is-leaving { --it-settings-page-reveal: 0; transform: translateY(-4px); pointer-events: none; }
 .it-set-page.is-entering { --it-settings-page-reveal: 0; transform: translateY(5px); pointer-events: none; }
 .it-set-page.is-entered { --it-settings-page-reveal: 1; transform: translateY(0); }
@@ -1357,7 +1374,7 @@ textarea.src::placeholder { color: var(--lg-ink-faint); }
 }
 .it-set-x:hover { background: var(--it-liquid-fill-mid); color: var(--lg-ink); }
 
-.it-set-body { min-width: 0; padding: 12px 20px 18px; overflow-y: auto; }
+.it-set-body { min-width: 0; }
 
 .it-set-row {
   display: flex;
@@ -1563,8 +1580,8 @@ html[data-it-layout="compact"] .it-set-row { padding-top: 5px; padding-bottom: 5
   .it-set-row > .it-set-select-wrap { flex-basis: min(55%, 210px); width: min(55%, 210px); }
   .it-set-color-row > .it-set-select-wrap { flex-basis: min(40%, 142px); width: min(40%, 142px); }
   .it-set-row > .it-set-select-wrap .sel-btn { min-height: 48px; }
-  .it-set-body { flex: 1 1 auto; padding: 14px 18px; }
-  .it-set .it-set-page.it-glass-section-preparing[hidden] { top: 14px; left: 18px; right: 18px; }
+  .it-set-body { flex: 1 1 auto; }
+  .it-set-page { padding: 14px 18px; }
   .it-set-row { min-height: 48px; }
   .it-set-range { min-height: 48px; padding: 10px 0; }
   .it-set-row select, .it-set-row input[type="text"] { flex-basis: min(55%, 210px); }

@@ -160,8 +160,9 @@ const instrumentation = `
   const animate = Element.prototype.animate;
   Element.prototype.animate = function (...args) {
     const pane = this.matches('.pane') ? this : this.closest('.pane');
-    const dialog = this.matches('.it-set') ? this : this.closest('.it-set');
-    const scope = dialog || pane;
+    const dialog = this.closest('.it-set');
+    const section = this.closest('[data-pref-section]');
+    const scope = section || dialog || pane;
     if (scope && window.ItLiquidGlass) {
       const dock = pane && document.querySelector('.dock[data-pane="' +
         pane.id.replace('pane-', '') + '"]');
@@ -182,7 +183,8 @@ const instrumentation = `
               state.geometry === state.pendingGeometry };
         });
       probe.animations.push({
-        scope: dialog ? 'settings' : pane.id, element: this.id || this.className,
+        scope: section ? section.dataset.prefSection : dialog ? 'settings' : pane.id,
+        element: this.id || this.className,
         ready: ItLiquidGlass.isReady(scope) && (!dock || ItLiquidGlass.isReady(dock)), controls
       });
     }
@@ -601,7 +603,7 @@ try {
 
   await page.evaluate(`(() => {
     const probe = window.__readinessProbe;
-    probe.holdWorker();
+    probe.animations = []; probe.holdWorker(); probe.holdDecodes = true;
     const target = document.querySelector('[data-pref-section="reading"]');
     const button = [...target.querySelectorAll('.sel-btn')].find((element) =>
       !element.closest('[data-desktop-only]') &&
@@ -610,22 +612,90 @@ try {
     document.querySelector('[data-pref-tab="reading"]').click();
   })()`);
   await page.until('window.__readinessProbe.heldWorkerReplies.length > 0', 8000);
-  check('A settings category waits for its glass before the incoming fade becomes visible',
+  check('A cold settings category leaves the current page visible until its glass is ready',
     await page.evaluate(`(() => {
+      const current = document.querySelector('[data-pref-section="appearance"]');
       const target = document.querySelector('[data-pref-section="reading"]');
-      return getComputedStyle(target).visibility === 'hidden' ||
-        Number(getComputedStyle(target).getPropertyValue('--it-settings-page-reveal')) === 0 ||
-        target.hidden;
+      return !current.hidden && !current.inert &&
+        !current.classList.contains('is-leaving') &&
+        target.hidden && target.inert &&
+        target.classList.contains('it-glass-section-preparing') &&
+        !window.__readinessProbe.animations.length;
     })()`));
   await page.evaluate('window.__readinessProbe.releaseWorker()');
+  await page.until('window.__readinessProbe.heldDecodes.length > 0', 8000);
+  check('A held settings image decode still leaves the current page visible',
+    await page.evaluate(`(() => {
+      const current = document.querySelector('[data-pref-section="appearance"]');
+      const target = document.querySelector('[data-pref-section="reading"]');
+      return !current.hidden && !current.inert && !current.classList.contains('is-leaving') &&
+        target.hidden && target.inert &&
+        !window.__readinessProbe.animations.length;
+    })()`));
+  await page.evaluate('window.__readinessProbe.releaseDecodes()');
   await page.until(`(() => {
     const target = document.querySelector('[data-pref-section="reading"]');
-    return !target.hidden && !target.inert &&
-      !target.classList.contains('is-entering') &&
-      !target.classList.contains('is-leaving') &&
-      ItLiquidGlass.isReady(target);
+    return !target.hidden && !target.inert && ItLiquidGlass.isReady(target);
   })()`);
-  check('The final settings category is interactive with complete optical maps', true);
+  const categoryFrames = await page.evaluate(`window.__readinessProbe.animations.filter(
+    (entry) => entry.scope === 'reading')`);
+  check('The first settings category animation has its exact maps decoded',
+    firstFramesReady(categoryFrames), frameSummary(categoryFrames));
+
+  await page.evaluate(`(() => {
+    const probe = window.__readinessProbe;
+    const target = document.querySelector('[data-pref-section="background"]');
+    target.querySelector('.sel-btn').style.borderRadius = '10.87px';
+    ItLiquidGlass.refresh(target);
+    probe.holdWorker(); probe.holdDecodes = true; probe.animations = [];
+    document.querySelector('[data-pref-tab="background"]').click();
+  })()`);
+  await page.until('window.__readinessProbe.heldWorkerReplies.length > 0', 8000);
+  await page.evaluate('window.__readinessProbe.releaseWorker()');
+  await page.until('window.__readinessProbe.heldDecodes.length > 0', 8000);
+  await page.evaluate('window.__readinessProbe.releaseDecodes()');
+  await page.until(`document.querySelector('[data-pref-section="background"]').classList.contains('is-entering')`);
+  await page.evaluate(`(() => {
+    for (const animation of document.getAnimations()) {
+      const section = animation.effect?.target?.closest?.('[data-pref-section]');
+      if (!section || !['reading', 'background'].includes(section.dataset.prefSection)) continue;
+      animation.pause();
+      animation.currentTime = Number(animation.effect.getTiming().duration) * .4;
+    }
+    const probe = window.__readinessProbe;
+    const target = document.querySelector('[data-pref-section="motion"]');
+    target.querySelector('.sel-btn').style.borderRadius = '11.43px';
+    ItLiquidGlass.refresh(target);
+    probe.holdWorker(); probe.holdDecodes = true; probe.animations = [];
+    document.querySelector('[data-pref-tab="motion"]').click();
+  })()`);
+  await page.until('window.__readinessProbe.heldWorkerReplies.length > 0', 8000);
+  await page.evaluate('window.__readinessProbe.releaseWorker()');
+  await page.until('window.__readinessProbe.heldDecodes.length > 0', 8000);
+  await page.evaluate('window.__readinessProbe.releaseDecodes()');
+  await page.until(`(() => {
+    const target = document.querySelector('[data-pref-section="motion"]');
+    return target.classList.contains('is-entering') && ItLiquidGlass.isReady(target);
+  })()`, 8000);
+  const redirected = await page.evaluate(`(() => ({
+    pages: [...document.querySelectorAll('[data-pref-section]')]
+      .filter((page) => !page.hidden).map((page) => ({name:page.dataset.prefSection,
+        inert:page.inert, leaving:page.classList.contains('is-leaving'),
+        entering:page.classList.contains('is-entering')})),
+    animatedScopes: [...new Set(window.__readinessProbe.animations.map((entry) => entry.scope))]
+  }))()`);
+  check('A newly ready category redirects an in-flight fade without committing the superseded page',
+    redirected.pages.length === 3 &&
+      redirected.pages.every((page) => page.inert &&
+        (page.name !== 'motion' ? page.leaving : page.entering)) &&
+      redirected.pages.find((page) => page.name === 'background')?.inert &&
+      redirected.animatedScopes.includes('reading') && redirected.animatedScopes.includes('background') &&
+      redirected.animatedScopes.includes('motion'), redirected);
+  await page.until(`(() => {
+    const visible = [...document.querySelectorAll('[data-pref-section]')].filter((section) => !section.hidden);
+    return visible.length === 1 && visible[0].dataset.prefSection === 'motion' &&
+      !visible[0].inert && !visible[0].classList.contains('is-entering');
+  })()`, 8000);
 
   await page.evaluate(`(() => {
     const api = window.__itDebug.preferences;
@@ -674,7 +744,7 @@ try {
       return target.hidden && target.classList.contains('it-glass-section-preparing') &&
         target.querySelector('.sel-btn').offsetWidth > 4 &&
         !document.querySelector('[data-pref-section="motion"]').hidden &&
-        document.querySelector('[data-pref-tab="reading"]').classList.contains('on');
+        document.querySelector('[data-pref-tab="motion"]').getAttribute('aria-current') === 'page';
     })()`));
   await page.evaluate('window.__readinessProbe.releaseWorker()');
   await page.until(`(() => {
@@ -695,7 +765,7 @@ try {
   })()`);
   await page.until('window.__readinessProbe.heldWorkerReplies.length > 0');
   await page.evaluate('window.__readinessFrames(2)');
-  check('A resize during normal category leave cannot reveal an unprepared display-none target',
+  check('A resize during category preparation cannot reveal an unprepared target',
     await page.evaluate(`(() => {
       const target = document.querySelector('[data-pref-section="translation"]');
       return target.hidden && target.classList.contains('it-glass-section-preparing') &&
@@ -709,8 +779,71 @@ try {
       !target.classList.contains('is-entering') && !target.classList.contains('is-leaving');
   })()`);
   check('The resized normal transition finishes on the prepared final category', true);
+
+  await page.evaluate(`(() => {
+    const probe = window.__readinessProbe;
+    const target = document.querySelector('[data-pref-section="background"]');
+    target.querySelector('.sel-btn').style.borderRadius = '11.81px';
+    ItLiquidGlass.refresh(target);
+    probe.holdWorker(); probe.holdDecodes = true;
+    document.querySelector('[data-pref-tab="background"]').click();
+  })()`);
+  await page.until('window.__readinessProbe.heldWorkerReplies.length > 0');
+  await page.evaluate('window.__readinessProbe.releaseWorker()');
+  await page.until('window.__readinessProbe.heldDecodes.length > 0');
+  await page.evaluate('window.__readinessProbe.releaseDecodes()');
+  await page.until(`document.querySelector('[data-pref-section="background"]').classList.contains('is-entering')`);
+  const closingComposite = await page.evaluate(`(() => {
+    const pages = [...document.querySelectorAll('[data-pref-section]')].filter((page) => !page.hidden);
+    const tracks = document.getAnimations().filter((animation) =>
+      animation.effect?.target?.closest?.('[data-pref-section]'));
+    for (const animation of tracks) {
+      animation.pause();
+      animation.currentTime = Number(animation.effect.getTiming().duration) * .4;
+    }
+    const read = () => pages.map((page) => ({
+      name: page.dataset.prefSection,
+      reveal: Number(getComputedStyle(page).getPropertyValue('--it-settings-page-reveal')),
+      transform: getComputedStyle(page).transform
+    }));
+    const before = read();
+    window.__itHandleBack();
+    return { before, after: read(), visible: pages.every((page) => !page.hidden),
+      leaving: document.querySelector('.it-set-mask').classList.contains('it-surface-leave') };
+  })()`);
+  const frozen = closingComposite.before.length === 2 && closingComposite.visible && closingComposite.leaving &&
+    closingComposite.before.every((page, index) => {
+      const after = closingComposite.after[index];
+      return page.name === after.name && Math.abs(page.reveal - after.reveal) < .03 &&
+        page.transform === after.transform;
+    });
+  check('Closing during category handoff freezes the current painted composition', frozen, closingComposite);
+  await page.until(`!document.querySelector('.it-set-mask').classList.contains('it-surface-leave')`);
+  await page.until('ItLiquidGlass.diagnostics().queuedJobs === 0');
+  check('Closing a category handoff hides staging and animation state on completion',
+    await page.evaluate(`(() => {
+      const modal = document.querySelector('.it-set-mask');
+      const pages = [...document.querySelectorAll('[data-pref-section]')];
+      const selected = pages.filter((page) => !page.hidden);
+      return !modal.classList.contains('on') && modal.inert &&
+        selected.length === 1 && selected[0].dataset.prefSection === 'background' &&
+        !document.querySelector('.it-glass-section-preparing') &&
+        !document.querySelector('.it-set-body[aria-busy="true"]') &&
+        pages.every((page) => !page.style.transform && !page.style.zIndex &&
+          !page.style.getPropertyValue('--it-settings-page-reveal') &&
+          !page.classList.contains('is-entering') && !page.classList.contains('is-leaving'));
+    })()`));
+  await page.evaluate(`window.__itOpenSettings({ section: 'translation' })`);
+  await page.until(`document.querySelector('.it-set-mask').classList.contains('on') &&
+      !document.querySelector('[data-pref-section="translation"]').inert`);
+  check('Reopened settings selects the requested category after a canceled preparation',
+    await page.evaluate(`document.querySelector('[data-pref-tab="translation"]').getAttribute('aria-current') === 'page' &&
+      document.querySelector('[data-pref-section="reading"]').hidden &&
+      [...document.querySelectorAll('[data-pref-section]')].every((page) =>
+        !page.style.transform && !page.style.zIndex &&
+        !page.style.getPropertyValue('--it-settings-page-reveal'))`));
   await page.evaluate('window.__itHandleBack()');
-  await page.until(`!document.querySelector('.it-set-mask').classList.contains('on')`);
+  await page.until(`!document.querySelector('.it-set-mask').classList.contains('it-surface-leave')`);
   await page.evaluate(`window.__itDebug.preferences.apply(window.__itDebug.preferences.defaults)`);
 
   await page.send('Emulation.setDeviceMetricsOverride', {
