@@ -1,0 +1,66 @@
+{
+  "scale": 2,
+  "source": "Approved 4K cover lettering, preserved as alpha masks",
+  "labels": [
+    {
+      "text": "笺",
+      "size_at_1080p": 58,
+      "bounds": [
+        0,
+        0,
+        116,
+        110
+      ]
+    },
+    {
+      "text": "翻译工具",
+      "size_at_1080p": 25,
+      "bounds": [
+        0,
+        118,
+        200,
+        165
+      ]
+    },
+    {
+      "text": "超轻快的免费的",
+      "size_at_1080p": 72,
+      "bounds": [
+        0,
+        173,
+        1008,
+        314
+      ]
+    },
+    {
+      "text": "开箱即用的大模型的",
+      "size_at_1080p": 70,
+      "bounds": [
+        0,
+        322,
+        1260,
+        458
+      ]
+    },
+    {
+      "text": "划词翻译软件",
+      "size_at_1080p": 110,
+      "bounds": [
+        0,
+        466,
+        1320,
+        680
+      ]
+    },
+    {
+      "text": "附送轻快手机app",
+      "size_at_1080p": 62,
+      "bounds": [
+        0,
+        688,
+        971,
+        824
+      ]
+    }
+  ]
+}
