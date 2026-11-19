@@ -1443,9 +1443,9 @@ document.documentElement.innerHTML = `
   [data-it-liquid-background]{background:rgb(var(--it-liquid-tint-rgb) / var(--it-liquid-background-opacity,0));
     -webkit-backdrop-filter:var(--it-liquid-filter,none);backdrop-filter:var(--it-liquid-filter,none);}
   .head{display:flex;align-items:center;justify-content:space-between;gap:8px;
-    padding:10px 14px 8px;font-size:11.5px;color:var(--lg-ink-sub);}
+    padding:10px 14px 8px;font-size:12px;color:var(--lg-ink-sub);}
   .head b{font-weight:600;color:var(--lg-accent-deep);}
-  .body{flex:1;overflow-y:auto;padding:2px 14px 12px;font-size:calc(14px * var(--user-font-scale));line-height:1.8;
+  .body{flex:1;overflow-y:auto;padding:2px 14px 12px;font-size:calc(15px * var(--user-font-scale));line-height:1.8;
     letter-spacing:.02em;color:var(--it-popup-content-color);font-weight:var(--it-popup-content-weight);
     font-family:var(--it-popup-content-font);white-space:pre-wrap;word-break:break-word;}
   @supports not selector(::-webkit-scrollbar){
@@ -1456,10 +1456,10 @@ document.documentElement.innerHTML = `
     background-clip:padding-box;border-radius:99px;}
   .body::-webkit-scrollbar-button{display:none;width:0;height:0;}
   .body::-webkit-scrollbar-corner{background:transparent;}
-  .ph{color:var(--lg-ink-faint);font-size:13px;}
+  .ph{color:var(--lg-ink-sub);font-size:14px;}
   .err{color:var(--lg-accent-deep);font-size:13px;}
   .foot{display:flex;align-items:center;justify-content:space-between;
-    padding:8px 12px 9px;border-top:1px solid var(--lg-edge-dark);font-size:11px;color:var(--lg-ink-faint);}
+    padding:8px 12px 9px;border-top:1px solid var(--lg-edge-dark);font-size:12px;color:var(--lg-ink-sub);}
   .foot button{border:1px solid var(--lg-edge);background:transparent;
     -webkit-backdrop-filter:none;backdrop-filter:none;
     color:var(--lg-accent-deep);border-radius:999px;

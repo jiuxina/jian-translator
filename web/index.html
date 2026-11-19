@@ -13,7 +13,7 @@
     }
   } catch (e) {}
 </script>
-<link rel="stylesheet" href="theme.css?v=20">
+<link rel="stylesheet" href="theme.css?v=21">
 </head>
 <body>
 
@@ -95,7 +95,7 @@
           <button type="button" class="pill" id="btn-pick-img">图片</button>
           <button type="button" class="pill" id="btn-paste">粘贴</button>
           <span class="spacer" style="margin-left:auto"></span>
-          <span id="src-meta" style="font-size:11.5px;color:var(--lg-ink-faint)"></span>
+          <span id="src-meta" class="reading-meta"></span>
         </div>
       </div>
 
@@ -141,7 +141,7 @@
           <textarea class="src" id="syl-src" placeholder="输入要压缩到指定音节数的译文原文，适合字幕、配音台词。"></textarea>
         </div>
         <div class="card-foot">
-          <span style="font-size:11.5px;color:var(--lg-ink-faint)">译文会严格控制在选定音节数附近</span>
+          <span class="reading-note">译文会严格控制在选定音节数附近</span>
         </div>
       </div>
 
@@ -187,7 +187,7 @@
           <textarea class="src" id="doc-src" placeholder="粘贴长文，或打开 .txt / .md 文件。会按分块大小逐块翻译并自动拼接。"></textarea>
         </div>
         <div class="card-foot">
-          <span style="font-size:11.5px;color:var(--lg-ink-faint)">长文按块顺序翻译，块间保持术语一致</span>
+          <span class="reading-note">长文按块顺序翻译，块间保持术语一致</span>
         </div>
       </div>
 
