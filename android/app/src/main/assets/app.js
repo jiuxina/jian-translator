@@ -21,7 +21,7 @@
   var API_BASE = 'https://index-translate.bilibili.com/v1';
   var CHAT_URL = API_BASE + '/chat/completions';
   var MAX_SRC = 8000;
-  var APP_VERSION = '2.4.1';
+  var APP_VERSION = '2.4.2';
   var LANGS = window.IT_LANGS || {};
   var COMMON = window.IT_COMMON_LANGS || [];
 
