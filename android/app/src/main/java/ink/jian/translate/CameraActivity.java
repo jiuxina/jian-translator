@@ -44,6 +44,7 @@ import androidx.camera.lifecycle.ProcessCameraProvider;
 import androidx.camera.view.PreviewView;
 import androidx.core.content.ContextCompat;
 import androidx.core.content.FileProvider;
+import androidx.exifinterface.media.ExifInterface;
 
 import com.google.common.util.concurrent.ListenableFuture;
 
@@ -196,6 +197,9 @@ public class CameraActivity extends ComponentActivity {
         bottomBar.addView(hint, hintLp);
 
         FrameLayout shutter = new FrameLayout(this);
+        shutter.setContentDescription("拍照");
+        shutter.setFocusable(true);
+        shutter.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_YES);
         GradientDrawable shutterMask = new GradientDrawable();
         shutterMask.setShape(GradientDrawable.OVAL);
         shutterMask.setColor(Color.WHITE);
@@ -343,6 +347,17 @@ public class CameraActivity extends ComponentActivity {
             return;
         }
         try {
+            CameraSelector available = new CameraSelector.Builder().requireLensFacing(lensFacing).build();
+            if (!cameraProvider.hasCamera(available)) {
+                int fallback = lensFacing == CameraSelector.LENS_FACING_BACK
+                        ? CameraSelector.LENS_FACING_FRONT : CameraSelector.LENS_FACING_BACK;
+                CameraSelector alternative = new CameraSelector.Builder().requireLensFacing(fallback).build();
+                if (!cameraProvider.hasCamera(alternative)) {
+                    finishWithError("当前设备没有可用摄像头");
+                    return;
+                }
+                lensFacing = fallback;
+            }
             Preview preview = new Preview.Builder().build();
             preview.setSurfaceProvider(previewView.getSurfaceProvider());
 
@@ -525,9 +540,24 @@ public class CameraActivity extends ComponentActivity {
     }
 
     private void switchCamera() {
-        lensFacing = lensFacing == CameraSelector.LENS_FACING_BACK
+        if (cameraProvider == null || capturing) return;
+        int nextLens = lensFacing == CameraSelector.LENS_FACING_BACK
                 ? CameraSelector.LENS_FACING_FRONT
                 : CameraSelector.LENS_FACING_BACK;
+        CameraSelector selector = new CameraSelector.Builder().requireLensFacing(nextLens).build();
+        try {
+            if (!cameraProvider.hasCamera(selector)) {
+                toast("当前设备没有另一侧摄像头");
+                return;
+            }
+        } catch (Exception error) {
+            toast("暂时无法切换摄像头");
+            return;
+        }
+        if (camera != null && camera.getCameraInfo().hasFlashUnit()) {
+            camera.getCameraControl().enableTorch(false);
+        }
+        lensFacing = nextLens;
         flashOn = false;
         bindUseCases();
     }
@@ -544,9 +574,38 @@ public class CameraActivity extends ComponentActivity {
             }
             BitmapFactory.Options opts = new BitmapFactory.Options();
             opts.inSampleSize = sample;
-            return BitmapFactory.decodeFile(file.getAbsolutePath(), opts);
+            Bitmap bitmap = BitmapFactory.decodeFile(file.getAbsolutePath(), opts);
+            if (bitmap == null) return null;
+            return orientPreview(file, bitmap);
         } catch (Throwable t) {
             return null;
+        }
+    }
+
+    private Bitmap orientPreview(File file, Bitmap bitmap) {
+        try {
+            ExifInterface exif = new ExifInterface(file.getAbsolutePath());
+            int orientation = exif.getAttributeInt(ExifInterface.TAG_ORIENTATION,
+                    ExifInterface.ORIENTATION_NORMAL);
+            android.graphics.Matrix matrix = new android.graphics.Matrix();
+            switch (orientation) {
+                case ExifInterface.ORIENTATION_FLIP_HORIZONTAL: matrix.setScale(-1, 1); break;
+                case ExifInterface.ORIENTATION_ROTATE_180: matrix.setRotate(180); break;
+                case ExifInterface.ORIENTATION_FLIP_VERTICAL: matrix.setScale(1, -1); break;
+                case ExifInterface.ORIENTATION_TRANSPOSE:
+                    matrix.setRotate(90); matrix.postScale(-1, 1); break;
+                case ExifInterface.ORIENTATION_ROTATE_90: matrix.setRotate(90); break;
+                case ExifInterface.ORIENTATION_TRANSVERSE:
+                    matrix.setRotate(-90); matrix.postScale(-1, 1); break;
+                case ExifInterface.ORIENTATION_ROTATE_270: matrix.setRotate(-90); break;
+                default: return bitmap;
+            }
+            Bitmap rotated = Bitmap.createBitmap(bitmap, 0, 0,
+                    bitmap.getWidth(), bitmap.getHeight(), matrix, true);
+            if (rotated != bitmap) bitmap.recycle();
+            return rotated;
+        } catch (Exception error) {
+            return bitmap;
         }
     }
 

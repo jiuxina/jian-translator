@@ -5,6 +5,7 @@ import android.app.Dialog;
 import android.content.res.Configuration;
 import android.content.res.ColorStateList;
 import android.content.Intent;
+import android.content.SharedPreferences;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
 import android.graphics.Color;
@@ -25,6 +26,7 @@ import android.view.Window;
 import android.view.WindowManager;
 import android.webkit.ConsoleMessage;
 import android.webkit.JavascriptInterface;
+import android.webkit.ValueCallback;
 import android.webkit.WebChromeClient;
 import android.webkit.WebResourceError;
 import android.webkit.WebResourceRequest;
@@ -47,6 +49,10 @@ import androidx.exifinterface.media.ExifInterface;
 
 import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
+import java.io.File;
+import java.io.FileOutputStream;
+import java.io.OutputStream;
+import java.nio.charset.StandardCharsets;
 import java.util.Locale;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -72,10 +78,15 @@ public class MainActivity extends Activity {
     private static final int REQ_CAMERA = 1003;
     private static final int REQ_GALLERY = 1005;
     private static final int REQ_CAMERA_PERM = 1004;
+    private static final int REQ_DOCUMENT = 1006;
+    private static final int REQ_EXPORT = 1007;
 
     private static final String ASSET_URL = "file:///android_asset/index.html";
     private static final String APPEARANCE_PREFS = "native_appearance";
     private static final String APPEARANCE_SNAPSHOT_KEY = "snapshot";
+    private static final String TRANSFER_PREFS = "pending_transfers";
+    private static final int MAX_DOCUMENT_BYTES = 8 * 1024 * 1024;
+    private static final Object EXPORT_IO_LOCK = new Object();
 
     private static final NativeAppearance DEFAULT_APPEARANCE = new NativeAppearance(
             false,
@@ -107,6 +118,23 @@ public class MainActivity extends Activity {
     private Future<?> imageTask;
     private int imageRequestSequence;
     private String imageCallbackToken;
+    private String imagePurpose = "translation";
+    private String pendingImageUri;
+    private ValueCallback<Uri[]> documentCallback;
+    private String documentRevision = "0";
+    private String pendingDocumentUri;
+    private String pendingExportPath;
+    private String pendingExportUri;
+    private String exportStatus;
+    private String exportMessage;
+    private boolean bridgeIsReady;
+    private boolean restoredImageRequest;
+    private boolean imageDeliveryRunning;
+    private boolean documentDeliveryRunning;
+    private boolean documentDeliveredToPage;
+    private boolean exportRunning;
+    private int pageGeneration;
+    private long exportNotificationSequence;
 
     // ------------------------------------------------------------------
     // 生命周期
@@ -116,6 +144,7 @@ public class MainActivity extends Activity {
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         appearance = loadAppearanceSnapshot();
+        restorePendingTransfers();
         // The keyboard overlays the page. Resizing or panning the WebView
         // would squeeze both translation cards and rebuild their controls.
         getWindow().setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_NOTHING);
@@ -140,7 +169,7 @@ public class MainActivity extends Activity {
         applyInsets();
 
         if (savedInstanceState != null) {
-            webView.restoreState(savedInstanceState);
+            if (webView.restoreState(savedInstanceState) == null) webView.loadUrl(ASSET_URL);
         } else {
             webView.loadUrl(ASSET_URL);
         }
@@ -166,6 +195,11 @@ public class MainActivity extends Activity {
 
     @Override
     protected void onDestroy() {
+        bridgeIsReady = false;
+        if (documentCallback != null) {
+            documentCallback.onReceiveValue(null);
+            documentCallback = null;
+        }
         cancelImageTask();
         imageIo.shutdownNow();
         if (photoSourceDialog != null) {
@@ -205,6 +239,18 @@ public class MainActivity extends Activity {
 
         webView.setWebViewClient(new WebViewClient() {
             @Override
+            public void onPageStarted(WebView view, String url, Bitmap favicon) {
+                pageGeneration++;
+                pageLoaded = false;
+                bridgeIsReady = false;
+                documentDeliveredToPage = false;
+                restoredImageRequest = imageCallbackToken != null;
+                if (documentCallback != null) {
+                    documentCallback.onReceiveValue(null);
+                    documentCallback = null;
+                }
+            }
+            @Override
             public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) {
                 Uri uri = request.getUrl();
                 if (uri == null) return false;
@@ -225,6 +271,7 @@ public class MainActivity extends Activity {
                 pageLoaded = true;
                 hideOverlay();
                 notifySystemAppearance();
+                deliverPendingTransfers();
             }
 
             @Override
@@ -236,6 +283,33 @@ public class MainActivity extends Activity {
         });
 
         webView.setWebChromeClient(new WebChromeClient() {
+            @Override
+            public boolean onShowFileChooser(WebView view, ValueCallback<Uri[]> callback,
+                    FileChooserParams parameters) {
+                if (documentCallback != null) {
+                    callback.onReceiveValue(null);
+                    return true;
+                }
+                documentCallback = callback;
+                pendingDocumentUri = null;
+                persistPendingTransfers();
+                Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+                intent.addCategory(Intent.CATEGORY_OPENABLE);
+                intent.setType("text/*");
+                intent.putExtra(Intent.EXTRA_MIME_TYPES,
+                        new String[]{"text/plain", "text/markdown", "text/x-markdown"});
+                intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION
+                        | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION);
+                try {
+                    startActivityForResult(intent, REQ_DOCUMENT);
+                } catch (Exception error) {
+                    documentCallback = null;
+                    callback.onReceiveValue(null);
+                    Toast.makeText(MainActivity.this, "没有可用的文件选择器", Toast.LENGTH_SHORT).show();
+                }
+                return true;
+            }
+
             @Override
             public boolean onConsoleMessage(ConsoleMessage message) {
                 return true;
@@ -617,13 +691,116 @@ public class MainActivity extends Activity {
 
         @JavascriptInterface
         public void pickImageWithToken(String token) {
+            pickImageWithTokenAndPurpose(token, "translation");
+        }
+
+        @JavascriptInterface
+        public void pickImageWithTokenAndPurpose(String token, String purpose) {
             runOnUiThread(new Runnable() {
                 @Override
                 public void run() {
+                    if (isFinishing() || isDestroyed()) return;
                     cancelImageTask();
                     imageCallbackToken = token;
+                    imagePurpose = "background".equals(purpose)
+                            || "popup-background".equals(purpose) ? purpose : "translation";
+                    pendingImageUri = null;
+                    restoredImageRequest = false;
+                    persistPendingTransfers();
                     showPhotoSourceSheet();
                 }
+            });
+        }
+
+        @JavascriptInterface
+        public void bridgeReady() {
+            runOnUiThread(() -> {
+                if (isFinishing() || isDestroyed()) return;
+                bridgeIsReady = true;
+                deliverPendingTransfers();
+            });
+        }
+
+        @JavascriptInterface
+        public void acknowledgeImage(String token) {
+            runOnUiThread(() -> {
+                if (isFinishing() || isDestroyed()) return;
+                if (java.util.Objects.equals(token, imageCallbackToken)) clearPendingImage();
+            });
+        }
+
+        @JavascriptInterface
+        public void prepareDocumentImport(String revision) {
+            runOnUiThread(() -> {
+                if (isFinishing() || isDestroyed()) return;
+                documentRevision = revision == null ? "0" : revision.substring(0, Math.min(64, revision.length()));
+                persistPendingTransfers();
+            });
+        }
+
+        @JavascriptInterface
+        public void acknowledgeDocumentImport(String revision) {
+            runOnUiThread(() -> {
+                if (isFinishing() || isDestroyed()) return;
+                if (java.util.Objects.equals(revision, documentRevision)) {
+                    pendingDocumentUri = null;
+                    persistPendingTransfers();
+                }
+            });
+        }
+
+        @JavascriptInterface
+        public void saveDocument(String filename, String text) {
+            runOnUiThread(() -> {
+                if (isFinishing() || isDestroyed()) return;
+                if (pendingExportPath != null || exportRunning) {
+                    notifyDocumentSaved("error", "请先完成当前保存");
+                    return;
+                }
+                if (text == null || text.trim().isEmpty()) {
+                    notifyDocumentSaved("error", "还没有译文");
+                    return;
+                }
+                if (text.length() > MAX_DOCUMENT_BYTES) {
+                    notifyDocumentSaved("error", "译文过大，请分段保存");
+                    return;
+                }
+                final String safeName = filename == null ? "译文.txt"
+                        : filename.replaceAll("[\\\\/:*?\"<>|\\p{Cntrl}]", "_");
+                exportRunning = true;
+                imageIo.execute(() -> {
+                    File file = new File(getCacheDir(), "document-export-" + java.util.UUID.randomUUID() + ".txt");
+                    boolean prepared = false;
+                    try (FileOutputStream stream = new FileOutputStream(file)) {
+                        stream.write(text.getBytes(StandardCharsets.UTF_8));
+                        prepared = true;
+                    } catch (Exception error) {
+                        Log.w(TAG, "Unable to prepare document export");
+                    }
+                    final boolean ready = prepared;
+                    runOnUiThread(() -> {
+                        exportRunning = false;
+                        if (isFinishing() || isDestroyed()) return;
+                        if (!ready) {
+                            notifyDocumentSaved("error", "无法准备译文文件");
+                            return;
+                        }
+                        pendingExportPath = file.getAbsolutePath();
+                        pendingExportUri = null;
+                        persistPendingTransfers();
+                        Intent intent = new Intent(Intent.ACTION_CREATE_DOCUMENT);
+                        intent.addCategory(Intent.CATEGORY_OPENABLE);
+                        intent.setType("text/plain");
+                        intent.putExtra(Intent.EXTRA_TITLE, safeName.isEmpty() ? "译文.txt" : safeName);
+                        intent.addFlags(Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+                                | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION);
+                        try {
+                            startActivityForResult(intent, REQ_EXPORT);
+                        } catch (Exception error) {
+                            finishExport("error", "没有可用的保存位置选择器");
+                        }
+                    });
+                });
             });
         }
 
@@ -647,6 +824,215 @@ public class MainActivity extends Activity {
                 }
             });
         }
+    }
+
+    private void restorePendingTransfers() {
+        SharedPreferences prefs = getSharedPreferences(TRANSFER_PREFS, MODE_PRIVATE);
+        imageCallbackToken = prefs.getString("image_token", null);
+        imagePurpose = prefs.getString("image_purpose", "translation");
+        pendingImageUri = prefs.getString("image_uri", null);
+        documentRevision = prefs.getString("document_revision", "0");
+        pendingDocumentUri = prefs.getString("document_uri", null);
+        pendingExportPath = prefs.getString("export_path", null);
+        pendingExportUri = prefs.getString("export_uri", null);
+        exportStatus = prefs.getString("export_status", null);
+        exportMessage = prefs.getString("export_message", null);
+        restoredImageRequest = imageCallbackToken != null;
+    }
+
+    private void persistPendingTransfers() {
+        // Save identifiers/URIs only. Large image/document payloads never enter a Bundle.
+        getSharedPreferences(TRANSFER_PREFS, MODE_PRIVATE).edit()
+                .putString("image_token", imageCallbackToken)
+                .putString("image_purpose", imagePurpose)
+                .putString("image_uri", pendingImageUri)
+                .putString("document_revision", documentRevision)
+                .putString("document_uri", pendingDocumentUri)
+                .putString("export_path", pendingExportPath)
+                .putString("export_uri", pendingExportUri)
+                .putString("export_status", exportStatus)
+                .putString("export_message", exportMessage).commit();
+    }
+
+    private void clearPendingImage() {
+        pendingImageUri = null;
+        imageCallbackToken = null;
+        restoredImageRequest = false;
+        persistPendingTransfers();
+    }
+
+    private void retainUriAccess(Uri uri, Intent data) {
+        int flags = data.getFlags()
+                & (Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
+        try { getContentResolver().takePersistableUriPermission(uri, flags); }
+        catch (Exception ignored) { /* Some providers offer only the transient grant. */ }
+    }
+
+    private void deliverPendingTransfers() {
+        if (!bridgeIsReady || !pageLoaded || webView == null || isFinishing() || isDestroyed()) return;
+        if (pendingImageUri != null && !imageDeliveryRunning) deliverPendingImage();
+        if (pendingDocumentUri != null && documentCallback == null
+                && !documentDeliveredToPage && !documentDeliveryRunning) {
+            deliverPendingDocument();
+        }
+        if (pendingExportUri != null && pendingExportPath != null && !exportRunning) writePendingExport();
+        if (exportStatus != null) {
+            String status = exportStatus;
+            String message = exportMessage;
+            final long notification = exportNotificationSequence;
+            webView.evaluateJavascript("(function(){if(typeof window.__itOnDocumentSaved!=='function')return false;"
+                    + "window.__itOnDocumentSaved(" + jsString(status) + "," + jsString(message)
+                    + ");return true;})()", value -> {
+                        if (!isFinishing() && !isDestroyed() && "true".equals(value)
+                                && notification == exportNotificationSequence) {
+                            exportStatus = null;
+                            exportMessage = null;
+                            persistPendingTransfers();
+                        }
+                    });
+        }
+    }
+
+    private void deliverPendingImage() {
+        cancelImageTask();
+        imageDeliveryRunning = true;
+        final int request = imageRequestSequence;
+        final int requestPage = pageGeneration;
+        final String uriText = pendingImageUri;
+        final String token = imageCallbackToken;
+        final String purpose = imagePurpose;
+        final boolean restored = restoredImageRequest;
+        imageTask = imageIo.submit(() -> {
+            String image = uriToDataUrl(Uri.parse(uriText));
+            if (Thread.currentThread().isInterrupted()) return;
+            String script = image == null ? null : (restored
+                    ? "window.__itRestoreImage && window.__itRestoreImage(" + jsString(image) + ","
+                            + jsString(token) + "," + jsString(purpose) + ")"
+                    : "window.__itOnImage && window.__itOnImage(" + jsString(image) + "," + jsString(token) + ")");
+            runOnUiThread(() -> {
+                if (request != imageRequestSequence || isFinishing() || isDestroyed()) return;
+                imageTask = null;
+                imageDeliveryRunning = false;
+                if (requestPage != pageGeneration) {
+                    deliverPendingTransfers();
+                    return;
+                }
+                if (!bridgeIsReady || !pageLoaded || webView == null) return;
+                if (script == null) {
+                    clearPendingImage();
+                    Toast.makeText(this, "读取图片失败，请重新选择", Toast.LENGTH_SHORT).show();
+                    return;
+                }
+                // The web hook explicitly acknowledges matching or intentionally stale tokens.
+                webView.evaluateJavascript(script, null);
+            });
+        });
+    }
+
+    private void deliverPendingDocument() {
+        documentDeliveryRunning = true;
+        final String uriText = pendingDocumentUri;
+        final String revision = documentRevision;
+        imageIo.execute(() -> {
+            String text = null;
+            String name = "导入文档";
+            try {
+                Uri uri = Uri.parse(uriText);
+                try (android.database.Cursor cursor = getContentResolver().query(uri,
+                        new String[]{android.provider.OpenableColumns.DISPLAY_NAME}, null, null, null)) {
+                    if (cursor != null && cursor.moveToFirst()) name = cursor.getString(0);
+                }
+                try (InputStream stream = getContentResolver().openInputStream(uri)) {
+                    if (stream == null) throw new java.io.IOException("Missing document stream");
+                    ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+                    byte[] block = new byte[8192];
+                    int count;
+                    while ((count = stream.read(block)) != -1) {
+                        if (Thread.currentThread().isInterrupted()) return;
+                        if (bytes.size() + count > MAX_DOCUMENT_BYTES) throw new java.io.IOException("Document too large");
+                        bytes.write(block, 0, count);
+                    }
+                    text = bytes.toString(StandardCharsets.UTF_8.name());
+                    if (text.startsWith("\uFEFF")) text = text.substring(1);
+                }
+            } catch (Exception error) {
+                Log.w(TAG, "Unable to restore document import");
+            }
+            final String result = text;
+            final String filename = name;
+            runOnUiThread(() -> {
+                documentDeliveryRunning = false;
+                if (isFinishing() || isDestroyed()) return;
+                if (!java.util.Objects.equals(uriText, pendingDocumentUri)
+                        || !java.util.Objects.equals(revision, documentRevision)) {
+                    deliverPendingTransfers();
+                    return;
+                }
+                if (result == null) {
+                    pendingDocumentUri = null;
+                    persistPendingTransfers();
+                    Toast.makeText(this, "读取文件失败，文件需为不超过 8 MB 的 UTF-8 文本", Toast.LENGTH_LONG).show();
+                    return;
+                }
+                if (bridgeIsReady && pageLoaded && webView != null) {
+                    webView.evaluateJavascript("window.__itOnRestoredDocument && window.__itOnRestoredDocument("
+                            + jsString(result) + "," + jsString(filename) + "," + jsString(revision) + ")", null);
+                }
+            });
+        });
+    }
+
+    private void writePendingExport() {
+        if (exportRunning || pendingExportPath == null || pendingExportUri == null) return;
+        exportRunning = true;
+        final String path = pendingExportPath;
+        final String uriText = pendingExportUri;
+        imageIo.execute(() -> {
+            boolean success = false;
+            // An Activity can be reconstructed while its predecessor's I/O is settling.
+            synchronized (EXPORT_IO_LOCK) {
+                try (InputStream input = new java.io.FileInputStream(path);
+                        OutputStream output = getContentResolver().openOutputStream(Uri.parse(uriText), "wt")) {
+                    if (output == null) throw new java.io.IOException("Missing destination stream");
+                    byte[] block = new byte[8192];
+                    int count;
+                    while ((count = input.read(block)) != -1) output.write(block, 0, count);
+                    output.flush();
+                    success = true;
+                } catch (Exception error) {
+                    Log.w(TAG, "Unable to save document");
+                }
+            }
+            final boolean saved = success;
+            runOnUiThread(() -> {
+                exportRunning = false;
+                if (isFinishing() || isDestroyed()) return;
+                finishExport(saved ? "saved" : "error", saved ? "译文已保存" : "保存失败，请重新选择保存位置");
+            });
+        });
+    }
+
+    private void finishExport(String status, String message) {
+        final String completedPath = pendingExportPath;
+        pendingExportPath = null;
+        pendingExportUri = null;
+        notifyDocumentSaved(status, message);
+        // Each request owns its file, so an old cleanup cannot truncate a newer export.
+        if (completedPath != null) imageIo.execute(() -> {
+            synchronized (EXPORT_IO_LOCK) {
+                try (FileOutputStream stream = new FileOutputStream(completedPath)) {
+                    stream.getChannel().truncate(0);
+                } catch (Exception ignored) { }
+            }
+        });
+    }
+
+    private void notifyDocumentSaved(String status, String message) {
+        exportNotificationSequence++;
+        exportStatus = status;
+        exportMessage = message;
+        persistPendingTransfers();
+        deliverPendingTransfers();
     }
 
     // ------------------------------------------------------------------
@@ -739,6 +1125,8 @@ public class MainActivity extends Activity {
                 dismissImmediately();
                 if (nextAction != null && !isFinishing() && !isDestroyed()) {
                     nextAction.run();
+                } else if (nextAction == null) {
+                    clearPendingImage();
                 }
             };
             if (duration == 0L) {
@@ -801,9 +1189,11 @@ public class MainActivity extends Activity {
     }
 
     private void openGallery() {
-        Intent intent = new Intent(Intent.ACTION_GET_CONTENT);
+        Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
         intent.setType("image/*");
         intent.addCategory(Intent.CATEGORY_OPENABLE);
+        intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION
+                | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION);
         try {
             cancelImageTask();
             startActivityForResult(Intent.createChooser(intent, "选择图片"), REQ_GALLERY);
@@ -828,43 +1218,49 @@ public class MainActivity extends Activity {
     @Override
     protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
-        if (resultCode != RESULT_OK || data == null || isFinishing() || isDestroyed()) return;
-
-        Uri uri = data.getData();
-        if (uri == null) return;
-
-        cancelImageTask();
-        final int request = imageRequestSequence;
-        final String callbackToken = imageCallbackToken;
-        imageTask = imageIo.submit(() -> {
-            String script = null;
-            try {
-                String dataUrl = uriToDataUrl(uri);
-                if (Thread.currentThread().isInterrupted()) return;
-                if (dataUrl != null) {
-                    // Escaping a large data URL is also CPU work; only WebView delivery belongs on UI.
-                    script = "window.__itOnImage && window.__itOnImage(" + jsString(dataUrl)
-                            + "," + jsString(callbackToken) + ")";
-                }
-            } catch (OutOfMemoryError error) {
-                Log.w(TAG, "Unable to prepare image for WebView", error);
+        if (isFinishing() || isDestroyed()) return;
+        Uri uri = resultCode == RESULT_OK && data != null ? data.getData() : null;
+        if (requestCode == REQ_DOCUMENT) {
+            ValueCallback<Uri[]> callback = documentCallback;
+            documentCallback = null;
+            pendingDocumentUri = uri == null ? null : uri.toString();
+            if (uri != null) retainUriAccess(uri, data);
+            persistPendingTransfers();
+            if (callback != null) {
+                documentDeliveredToPage = uri != null;
+                callback.onReceiveValue(uri == null ? null : new Uri[]{uri});
+            } else {
+                deliverPendingTransfers();
             }
-            final String imageScript = script;
-            runOnUiThread(() -> {
-                if (request != imageRequestSequence || isFinishing() || isDestroyed()
-                        || webView == null) return;
-                imageTask = null;
-                if (imageScript == null) {
-                    Toast.makeText(this, "读取图片失败", Toast.LENGTH_SHORT).show();
-                    return;
-                }
-                webView.evaluateJavascript(imageScript, null);
-            });
-        });
+            return;
+        }
+        if (requestCode == REQ_EXPORT) {
+            if (exportRunning || pendingExportUri != null) return;
+            if (uri == null) {
+                finishExport("cancelled", "已取消保存");
+            } else {
+                retainUriAccess(uri, data);
+                pendingExportUri = uri.toString();
+                persistPendingTransfers();
+                if (pendingExportPath == null) finishExport("error", "译文缓存已失效，请重新下载");
+                else writePendingExport();
+            }
+            return;
+        }
+        if (requestCode != REQ_CAMERA && requestCode != REQ_GALLERY) return;
+        if (uri == null) {
+            clearPendingImage();
+            return;
+        }
+        if (requestCode == REQ_GALLERY) retainUriAccess(uri, data);
+        pendingImageUri = uri.toString();
+        persistPendingTransfers();
+        deliverPendingTransfers();
     }
 
     private void cancelImageTask() {
         imageRequestSequence++;
+        imageDeliveryRunning = false;
         if (imageTask != null) {
             imageTask.cancel(true);
             imageTask = null;
@@ -897,6 +1293,14 @@ public class MainActivity extends Activity {
             if (Thread.currentThread().isInterrupted()) return null;
 
             bitmap = rotateByExif(uri, bitmap);
+            if (bitmap.hasAlpha()) {
+                Bitmap opaque = Bitmap.createBitmap(bitmap.getWidth(), bitmap.getHeight(), Bitmap.Config.ARGB_8888);
+                android.graphics.Canvas canvas = new android.graphics.Canvas(opaque);
+                canvas.drawColor(Color.WHITE);
+                canvas.drawBitmap(bitmap, 0, 0, null);
+                bitmap.recycle();
+                bitmap = opaque;
+            }
 
             ByteArrayOutputStream out = new ByteArrayOutputStream();
             bitmap.compress(Bitmap.CompressFormat.JPEG, 85, out);
@@ -949,7 +1353,7 @@ public class MainActivity extends Activity {
                 case '\n': sb.append("\\n"); break;
                 case '\r': sb.append("\\r"); break;
                 default:
-                    if (c < 0x20) sb.append(String.format("\\u%04x", (int) c));
+                    if (c < 0x20 || c == '\u2028' || c == '\u2029') sb.append(String.format("\\u%04x", (int) c));
                     else sb.append(c);
             }
         }

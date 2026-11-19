@@ -5,6 +5,7 @@ import { readFile } from 'node:fs/promises';
 const decode = new TextDecoder('utf-8', { fatal: true });
 const main = decode.decode(await readFile(new URL('../android/app/src/main/java/ink/jian/translate/MainActivity.java', import.meta.url)));
 const camera = decode.decode(await readFile(new URL('../android/app/src/main/java/ink/jian/translate/CameraActivity.java', import.meta.url)));
+const web = decode.decode(await readFile(new URL('../web/app.js', import.meta.url)));
 const checks = [
   ['file input delegates to Android chooser', () => assert.match(main, /boolean onShowFileChooser\(WebView[^]*?ValueCallback<Uri\[\]>/)],
   ['document picker uses persistent access', () => assert.match(main, /Intent\.ACTION_OPEN_DOCUMENT/)],
@@ -32,6 +33,15 @@ const checks = [
   ['native document completion checks both URI and edit revision', () => assert.match(main, /!java\.util\.Objects\.equals\(revision, documentRevision\)/)],
   ['export writer guards duplicate starts itself', () => assert.match(main, /private void writePendingExport\(\) \{\s+if \(exportRunning/)],
   ['notification acknowledgements check message generation', () => assert.match(main, /notification == exportNotificationSequence/)],
+  ['each export owns a cache file across activity reconstruction', () => assert.match(main, /"document-export-" \+ java\.util\.UUID\.randomUUID\(\)/)],
+  ['old and reconstructed export I/O cannot write concurrently', () => assert.match(main, /synchronized \(EXPORT_IO_LOCK\)/)],
+  ['shared page installs restored-transfer hooks exactly once during startup', () => {
+    assert.equal((web.match(/\binitRestoredTransfers\(\);/g) || []).length, 1);
+    const hooks = web.slice(web.indexOf('  function initRestoredTransfers() {'), web.indexOf('\n  /* ---------------- 12.', web.indexOf('  function initRestoredTransfers() {')));
+    assert.match(hooks, /window\.__itRestoreImage/);
+    assert.match(hooks, /window\.__itOnRestoredDocument/);
+    assert.match(hooks, /window\.NativeBridge\.bridgeReady\(\)/);
+  }],
 ];
 let failed = 0;
 for (const [name, check] of checks) {
