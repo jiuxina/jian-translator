@@ -31,6 +31,7 @@ let settings = defaultSettings();
 let hotkeysEnabled = true;
 let saving = false;
 let captureRunning = false;
+let activeSelectionOperation = null;
 let popupSequence = 0;
 let popupState = null;
 let popupRequest = null;
@@ -147,6 +148,7 @@ async function saveSettings(input) {
     shortcutsChanged = next.selection_shortcut !== previous.selection_shortcut ||
       next.activation_shortcut !== previous.activation_shortcut;
     if (shortcutsChanged) {
+      cancelSelectionCapture(activeSelectionOperation);
       globalShortcut.unregisterAll();
       registerShortcuts(next);
     }
@@ -312,7 +314,20 @@ async function listSystemFonts() {
   }
 }
 
-async function captureSelection() {
+async function foregroundApplicationPid() {
+  try {
+    const { stdout } = await runFile('/usr/bin/osascript', ['-l', 'JavaScript', '-e',
+      "ObjC.import('AppKit'); Number($.NSWorkspace.sharedWorkspace.frontmostApplication.processIdentifier);"],
+    { timeout: 1500, maxBuffer: 1024, encoding: 'utf8' });
+    const pid = Number(stdout.trim());
+    return Number.isSafeInteger(pid) && pid > 0 ? pid : null;
+  } catch {
+    // A missing foreground identity is not permission to activate our window.
+    return null;
+  }
+}
+
+async function captureSelection(expectedPid, signal) {
   if (!systemPreferences.isTrustedAccessibilityClient(false)) {
     throw new Error('请在“系统设置 → 隐私与安全性 → 辅助功能”中允许笺，然后重新划词。');
   }
@@ -320,27 +335,42 @@ async function captureSelection() {
   // read on launch, while idle, or during tests. changeCount prevents stale text.
   const source = `
 ObjC.import('AppKit');
+var expectedPid = ${JSON.stringify(expectedPid)};
+JSON.stringify((function () {
+function sourceIsCurrent() {
+  return Number($.NSWorkspace.sharedWorkspace.frontmostApplication.processIdentifier) === expectedPid;
+}
+if (!sourceIsCurrent()) return null;
 var pasteboard = $.NSPasteboard.generalPasteboard;
 var previous = Number(pasteboard.changeCount);
 delay(0.3);
+if (Number($.NSWorkspace.sharedWorkspace.frontmostApplication.processIdentifier) !== expectedPid) return null;
 Application('System Events').keystroke('c', {using: 'command down'});
 var text = '';
 for (var tick = 0; tick < 20; tick++) {
   delay(0.05);
+  if (!sourceIsCurrent()) return null;
   if (Number(pasteboard.changeCount) !== previous) {
     var value = pasteboard.stringForType($.NSPasteboardTypeString);
     if (value) text = ObjC.unwrap(value);
     break;
   }
 }
-JSON.stringify(text);
+return text;
+})());
 `;
   try {
     const { stdout } = await runFile('/usr/bin/osascript', ['-l', 'JavaScript', '-e', source],
-      { timeout: 5000, maxBuffer: 1024 * 1024, encoding: 'utf8' });
+      { timeout: 5000, maxBuffer: 1024 * 1024, encoding: 'utf8', signal });
     const text = JSON.parse(stdout);
+    if (text === null) {
+      const error = new Error('选区来源已改变');
+      error.name = 'AbortError';
+      throw error;
+    }
     return typeof text === 'string' ? text.slice(0, 200000) : '';
-  } catch {
+  } catch (error) {
+    if (error.name === 'AbortError') throw error;
     throw new Error('无法复制当前选区；请检查笺的辅助功能及“自动化 → System Events”权限。');
   }
 }
@@ -377,7 +407,7 @@ function ensurePopup() {
     ).catch(() => { /* Destroying the WebContents also cancels its request. */ });
   });
   window.on('closed', () => {
-    if (popupRequest && popupRequest.window === window) popupRequest.canceled = true;
+    if (popupRequest && popupRequest.window === window) cancelPopupRequest(popupRequest);
     if (popupWindow === window) {
       popupWindow = null;
       popupState = null;
@@ -419,8 +449,42 @@ function isCurrentPopup(request) {
 function cancelPopupRequest(request) {
   if (!request) return;
   request.canceled = true;
+  if (request.pending && request.operation) {
+    request.operation.canceled = true;
+    request.operation.controller.abort();
+    releaseCaptureEscape(request.operation);
+  }
   if (request.blurHandler) request.window.removeListener('blur', request.blurHandler);
   if (popupRequest === request) popupRequest = null;
+}
+
+function releaseCaptureEscape(operation) {
+  if (!operation || !operation.escapeRegistered) return;
+  operation.escapeRegistered = false;
+  globalShortcut.unregister('Escape');
+}
+
+function cancelSelectionCapture(operation) {
+  if (!operation) return;
+  operation.canceled = true;
+  operation.controller.abort();
+  releaseCaptureEscape(operation);
+  if (operation.request && isCurrentPopup(operation.request)) closePopup(operation.request.window);
+}
+
+function registerCaptureEscape(operation) {
+  // Do not replace or later unregister another handler's registration.
+  try {
+    if (!globalShortcut.isRegistered('Escape')) {
+      operation.escapeRegistered = globalShortcut.register('Escape', () => cancelSelectionCapture(operation));
+    }
+  } catch { /* The source application remains active if Escape is unavailable. */ }
+}
+
+async function selectionSourceIsCurrent(operation) {
+  if (!operation || operation.canceled || !operation.sourcePid) return false;
+  const pid = await foregroundApplicationPid();
+  return !operation.canceled && pid === operation.sourcePid;
 }
 
 function closePopup(window) {
@@ -442,13 +506,15 @@ function positionPopup(window) {
   window.setPosition(Math.round(x), Math.round(y));
 }
 
-async function beginPopup() {
+async function beginPopup(operation) {
   const state = ensurePopup();
   const previous = popupRequest && popupRequest.window === state.window ? popupRequest : null;
   cancelPopupRequest(previous);
   const request = {
-    id: ++popupSequence, window: state.window, state, canceled: false, target: settings.target_lang
+    id: ++popupSequence, window: state.window, state, canceled: false, target: settings.target_lang,
+    operation, pending: true
   };
+  if (operation) operation.request = request;
   popupRequest = request;
   request.window.setFocusable(false);
   if (request.window.isVisible()) request.window.hide();
@@ -480,6 +546,10 @@ async function beginPopup() {
 
 async function finishPopup(request, text, notice) {
   if (!isCurrentPopup(request)) return;
+  if (request.operation && !await selectionSourceIsCurrent(request.operation)) {
+    closePopup(request.window);
+    return;
+  }
   const payload = JSON.stringify({
     id: request.id, phase: notice ? 'notice' : 'ready', text, notice, target: request.target
   });
@@ -488,35 +558,55 @@ async function finishPopup(request, text, notice) {
     'if(window.__popupApply)window.__popupApply(window.__itPopupPayload);'
   );
   if (!isCurrentPopup(request)) return;
+  // Rendering may itself wait for IPC; recheck before claiming focus.
+  if (request.operation && !await selectionSourceIsCurrent(request.operation)) {
+    closePopup(request.window);
+    return;
+  }
+  if (!isCurrentPopup(request)) return;
+  request.pending = false;
+  releaseCaptureEscape(request.operation);
   request.window.setFocusable(true);
   request.window.focus();
   request.blurHandler = () => { if (isCurrentPopup(request)) closePopup(request.window); };
   request.window.once('blur', request.blurHandler);
 }
 
-async function showPopup(text, notice) {
-  const request = await beginPopup();
+async function showPopup(text, notice, operation) {
+  const request = await beginPopup(operation);
   if (request) await finishPopup(request, text, notice);
 }
 
 async function translateSelection() {
   if (captureRunning) return;
   captureRunning = true;
+  const operation = { canceled: false, sourcePid: null, controller: new AbortController(), escapeRegistered: false };
+  activeSelectionOperation = operation;
+  registerCaptureEscape(operation);
   let request = null;
   try {
     const inMain = settings.open_main_window;
     if (inMain) {
       if (popupWindow && !popupWindow.isDestroyed() && popupWindow.isVisible()) closePopup(popupWindow);
     } else {
-      request = await beginPopup();
+      request = await beginPopup(operation);
       if (!request) return;
     }
-    const text = await captureSelection();
+    operation.sourcePid = await foregroundApplicationPid();
+    if (operation.canceled || !operation.sourcePid) {
+      cancelSelectionCapture(operation);
+      return;
+    }
+    const text = await captureSelection(operation.sourcePid, operation.controller.signal);
+    if (!await selectionSourceIsCurrent(operation)) {
+      cancelSelectionCapture(operation);
+      return;
+    }
     if (request && !isCurrentPopup(request)) return;
     if (!text.trim()) {
       const notice = '没有取到选中文字。请先选中文本，再按划词快捷键；部分软件不支持自动复制。';
       if (request) await finishPopup(request, '', notice);
-      else await showPopup('', notice);
+      else await showPopup('', notice, operation);
     } else if (inMain) {
       showMain();
       notifyAction({ type: 'translate-selection', text });
@@ -524,6 +614,10 @@ async function translateSelection() {
       await finishPopup(request, text, '');
     }
   } catch (error) {
+    if (operation.canceled || error.name === 'AbortError') {
+      cancelSelectionCapture(operation);
+      return;
+    }
     if (request && isCurrentPopup(request)) {
       await finishPopup(request, '', error.message).catch(() => {
         if (isCurrentPopup(request)) dialog.showErrorBox('划词翻译不可用', error.message);
@@ -532,6 +626,8 @@ async function translateSelection() {
       dialog.showErrorBox('划词翻译不可用', error.message);
     }
   } finally {
+    releaseCaptureEscape(operation);
+    if (activeSelectionOperation === operation) activeSelectionOperation = null;
     captureRunning = false;
   }
 }

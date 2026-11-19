@@ -38,6 +38,7 @@ function fixture() {
   const actions = [];
   const shortcuts = new Map();
   let foregroundPid = 42;
+  let afterReadyDelivery = null;
   class SyntheticWindow extends EventEmitter {
     constructor(options) {
       super();
@@ -55,6 +56,7 @@ function fixture() {
           const json = script.slice(script.indexOf('=') + 1, script.indexOf(';'));
           this.payloads.push(JSON.parse(json));
           events.push(`payload:${this.payloads.at(-1).phase}`);
+          if (this.payloads.at(-1).phase === 'ready' && afterReadyDelivery) afterReadyDelivery();
         }
         if (script.includes('window.__popupPresent()')) {
           this.presentations++;
@@ -138,7 +140,7 @@ function fixture() {
   });
   vm.runInContext(`
     let popupWindow = null, popupState = null, popupRequest = null;
-    let popupSequence = 0, captureRunning = false, quitting = false;
+    let popupSequence = 0, captureRunning = false, quitting = false, activeSelectionOperation = null;
     const settings = { preferences: {}, target_lang: 'auto', open_main_window: false };
     ${lifecycle}
     globalThis.api = { prewarmPopup, translateSelection,
@@ -148,7 +150,8 @@ function fixture() {
       isCapturing: () => captureRunning };
   `, context);
   return { ...context.api, windows, captures, events, dialogs, actions, shortcuts,
-    setForeground: pid => { foregroundPid = pid; } };
+    setForeground: pid => { foregroundPid = pid; },
+    onReadyDelivery: callback => { afterReadyDelivery = callback; } };
 }
 
 async function until(condition, description) {
@@ -371,6 +374,18 @@ async function readyWarmWindow(test) {
 
 {
   const test = fixture();
+  const window = await readyWarmWindow(test);
+  test.onReadyDelivery(() => test.setForeground(99));
+  const operation = test.translateSelection();
+  await captureStarted(test, 1);
+  test.captures[0].resolve('Selection delivered during an application switch');
+  await operation;
+  check('The final IPC delivery cannot bypass the foreground check before focus',
+    window.destroyed && !test.events.includes('focus') && !test.shortcuts.has('Escape'));
+}
+
+{
+  const test = fixture();
   await readyWarmWindow(test);
   const existingEscape = () => {};
   test.shortcuts.set('Escape', existingEscape);
@@ -385,11 +400,12 @@ async function readyWarmWindow(test) {
 const captureStart = source.indexOf('async function captureSelection(');
 const captureEnd = source.indexOf('\nasync function applyPopupAppearance(', captureStart);
 const scripts = [];
+let captureResult = '"Synthetic text"';
 const captureContext = vm.createContext({
   systemPreferences: { isTrustedAccessibilityClient: () => true },
   runFile: async (_file, args, options) => {
     scripts.push({ script: args.at(-1), options });
-    return { stdout: '"Synthetic text"' };
+    return { stdout: captureResult };
   },
   JSON
 });
@@ -402,6 +418,21 @@ check('The native copy script checks the expected foreground PID immediately bef
   scripts[0].script.indexOf('expectedPid', scripts[0].script.indexOf('delay(0.3)')) <
     scripts[0].script.indexOf("keystroke('c'"));
 check('Canceling capture can terminate its pending helper process', scripts[0].options.signal === signal);
+captureResult = 'null';
+await assert.rejects(capture(42, signal), { name: 'AbortError' });
+check('A native source-change result is cancellation rather than a permission error', true);
+
+const foregroundStart = source.indexOf('async function foregroundApplicationPid(');
+const foregroundSource = source.slice(foregroundStart, captureStart);
+let pidResult = '42\n';
+const pidContext = vm.createContext({
+  runFile: async () => ({ stdout: pidResult }),
+  Number
+});
+const foreground = vm.runInContext(`${foregroundSource}\nforegroundApplicationPid;`, pidContext);
+assert.equal(await foreground(), 42);
+for (pidResult of ['not-a-pid', '0', '-1', '']) assert.equal(await foreground(), null);
+check('Foreground identity accepts only a positive PID and fails closed on malformed output', true);
 
 report.passed = report.checks.length;
 await mkdir('.build', { recursive: true });
