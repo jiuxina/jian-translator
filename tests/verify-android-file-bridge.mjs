@@ -18,6 +18,20 @@ const checks = [
   ['lens switch checks availability before rebinding', () => assert.match(camera, /hasCamera\(selector\)/)],
   ['confirmation preview reads EXIF orientation', () => assert.match(camera, /new ExifInterface\(file/)],
   ['confirmation preview applies orientation', () => assert.match(camera, /Bitmap\.createBitmap\(bitmap[^]*?matrix, true\)/)],
+  ['cancelled document selection completes the callback', () => assert.match(main, /callback\.onReceiveValue\(uri == null \? null : new Uri\[\]\{uri\}\)/)],
+  ['image acknowledgement is bound to its request token', () => assert.match(main, /Objects\.equals\(token, imageCallbackToken\)\) clearPendingImage\(\)/)],
+  ['document acknowledgement is bound to its revision', () => assert.match(main, /Objects\.equals\(revision, documentRevision\)/)],
+  ['restored payload is deferred until page and hooks are ready', () => assert.match(main, /if \(!bridgeIsReady \|\| !pageLoaded \|\| webView == null/)],
+  ['transparent native image import gets an opaque white background', () => assert.match(main, /if \(bitmap\.hasAlpha\(\)\)[^]*?canvas\.drawColor\(Color\.WHITE\)/)],
+  ['all mirrored EXIF cases are supported', () => {
+    for (const orientation of ['FLIP_HORIZONTAL', 'FLIP_VERTICAL', 'TRANSPOSE', 'TRANSVERSE']) {
+      assert.ok(camera.includes(`ExifInterface.ORIENTATION_${orientation}`));
+    }
+  }],
+  ['page changes invalidate old image decoding destinations', () => assert.match(main, /requestPage != pageGeneration/)],
+  ['native document completion checks both URI and edit revision', () => assert.match(main, /!java\.util\.Objects\.equals\(revision, documentRevision\)/)],
+  ['export writer guards duplicate starts itself', () => assert.match(main, /private void writePendingExport\(\) \{\s+if \(exportRunning/)],
+  ['notification acknowledgements check message generation', () => assert.match(main, /notification == exportNotificationSequence/)],
 ];
 let failed = 0;
 for (const [name, check] of checks) {
