@@ -13,8 +13,29 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  verify:
+    name: Verify portable regression and trigger version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Check trigger tag before platform builds
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: node --input-type=module -e "import {readFileSync} from 'node:fs'; if (process.env.RELEASE_TAG !== 'v' + JSON.parse(readFileSync('app/macos/package.json', 'utf8')).version) throw new Error('Trigger tag differs from application version');"
+      - name: Run portable offline regression gate
+        run: node scripts/verify-release.mjs
+      - name: Verify desktop patcher and installer injection
+        run: python tests/verify-desktop-patch.py
+
   windows:
     name: Build Windows packages
+    needs: [verify]
     runs-on: windows-latest
     env:
       PYTHONUTF8: "1"
@@ -50,6 +71,7 @@ jobs:
 
   macos:
     name: Build macOS packages
+    needs: [verify]
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
@@ -76,6 +98,7 @@ jobs:
 
   android:
     name: Build Android APK
+    needs: [verify]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -114,7 +137,7 @@ jobs:
 
   release:
     name: Prepare and publish release
-    needs: [windows, macos, android]
+    needs: [verify, windows, macos, android]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -131,7 +154,8 @@ jobs:
       - name: Prepare release bundle
         env:
           SOURCE_REVISION: ${{ github.sha }}
-        run: node scripts/prepare-release.mjs --windows-dir .build/release-input/windows-packages --macos-dir .build/release-input/macos-packages --android .build/release-input/android-package/笺.apk --out-dir .build/release-ready --revision "$SOURCE_REVISION"
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: node scripts/prepare-release.mjs --windows-dir .build/release-input/windows-packages --macos-dir .build/release-input/macos-packages --android .build/release-input/android-package/笺.apk --out-dir .build/release-ready --revision "$SOURCE_REVISION" --tag "$RELEASE_TAG"
       - name: List release bundle and hashes
         run: |
           find .build/release-ready -maxdepth 1 -type f -printf '%f\n' | sort

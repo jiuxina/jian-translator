@@ -42,7 +42,7 @@ export function parseArguments(args) {
   const names = {
     '--version': 'version', '--windows-dir': 'windowsDir', '--macos-dir': 'macosDir',
     '--android': 'androidPath',
-    '--out-dir': 'outDir', '--revision': 'revision'
+    '--out-dir': 'outDir', '--revision': 'revision', '--tag': 'tag'
   };
   const options = {};
   for (let index = 0; index < args.length; index += 2) {
@@ -66,6 +66,9 @@ export async function prepareRelease(options) {
   const appVersion = releaseVersion(packageJson.version);
   const version = releaseVersion(options.version || appVersion);
   if (version !== appVersion) throw new Error('发布版本与应用构建清单不一致');
+  if (Object.hasOwn(options, 'tag') && options.tag !== `v${version}`) {
+    throw new Error('标签与发布版本不一致：必须为 v' + version);
+  }
   const revision = options.revision || execFileSync('git', ['rev-parse', '--verify', 'HEAD'], {
     cwd: projectRoot, encoding: 'utf8', windowsHide: true
   }).trim();
@@ -121,7 +124,8 @@ export async function prepareRelease(options) {
       name, bytes: bytes.length, sha256, input, platform, architecture
     })),
     verification: {
-      preparer: ['regular input files', 'distinct inputs', 'SHA-256 of copied bytes', 'new output directory'],
+      preparer: ['regular input files', 'distinct inputs', 'SHA-256 of copied bytes',
+        'new output directory', ...(Object.hasOwn(options, 'tag') ? ['trigger tag equals manifest tag'] : [])],
       priorTaskEvidence: version === '2.2.0' ? {
         browser: { passed: 97, total: 107, fullRerunAfterFixes: false,
           log: 'output/verify-presets-final.log' },

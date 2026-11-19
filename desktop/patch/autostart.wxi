@@ -1,0 +1,57 @@
+        <!-- Jian installer-owned startup lifecycle. No component claims the shared Run value. -->
+        <Property Id="JIAN_PREVIOUS_INSTALL_DIR" Secure="yes">
+            <RegistrySearch Id="JianPreviousInstallDir" Root="HKCU" Key="Software\\{{manufacturer}}\\{{product_name}}" Name="InstallDir" Type="raw" />
+        </Property>
+        <SetProperty Id="JIAN_CURRENT_EXE" Value="[#Path]" After="CostFinalize" Sequence="execute" />
+
+        <CustomAction Id="JianUpdateAutostart" Script="jscript" Execute="immediate" Return="check">
+            <![CDATA[
+var shell = new ActiveXObject("WScript.Shell");
+var key = "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run\\IndexTranslate";
+function normalized(path) {
+    return String(path || "").replace(/\//g, "\\").replace(/\\+$/, "").toLowerCase();
+}
+function executable(command) {
+    if (typeof command !== "string") return "";
+    var match = /^"([^"\r\n]+)"(?:\s.*)?$/.exec(command) || /^([^\s"]+)$/.exec(command);
+    if (!match) return "";
+    var target = shell.ExpandEnvironmentStrings(match[1]);
+    return /^[a-z]:[\\/]/i.test(target) ? normalized(target) : "";
+}
+var command = null;
+try { command = shell.RegRead(key); }
+catch (error) { if ((error.number & 65535) !== 2 && (error.number & 65535) !== 3) throw error; }
+var current = String(Session.Property("JIAN_CURRENT_EXE"));
+var previous = normalized(Session.Property("JIAN_PREVIOUS_INSTALL_DIR"));
+var filename = current.replace(/^.*[\\/]/, "");
+var target = executable(command);
+if (target && (target === normalized(current) ||
+    (previous && target === previous + "\\" + filename.toLowerCase()))) {
+    // Re-read immediately before writing: another version may have claimed Run meanwhile.
+    if (shell.RegRead(key) === command) shell.RegWrite(key, '"' + current + '"', "REG_SZ");
+}
+            ]]>
+        </CustomAction>
+        <CustomAction Id="JianRemoveAutostart" Script="jscript" Execute="immediate" Return="check">
+            <![CDATA[
+var shell = new ActiveXObject("WScript.Shell");
+var key = "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run\\IndexTranslate";
+function normalized(path) {
+    return String(path || "").replace(/\//g, "\\").replace(/\\+$/, "").toLowerCase();
+}
+var command = null;
+try { command = shell.RegRead(key); }
+catch (error) { if ((error.number & 65535) !== 2 && (error.number & 65535) !== 3) throw error; }
+if (typeof command === "string") {
+    var match = /^"([^"\r\n]+)"(?:\s.*)?$/.exec(command) || /^([^\s"]+)$/.exec(command);
+    var target = match ? shell.ExpandEnvironmentStrings(match[1]) : "";
+    if (/^[a-z]:[\\/]/i.test(target) &&
+        normalized(target) === normalized(Session.Property("JIAN_CURRENT_EXE")) &&
+        shell.RegRead(key) === command) shell.RegDelete(key);
+}
+            ]]>
+        </CustomAction>
+        <InstallExecuteSequence>
+            <Custom Action="JianUpdateAutostart" After="InstallFinalize">NOT REMOVE</Custom>
+            <Custom Action="JianRemoveAutostart" After="JianUpdateAutostart">(REMOVE = &quot;ALL&quot;) AND NOT UPGRADINGPRODUCTCODE</Custom>
+        </InstallExecuteSequence>

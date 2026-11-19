@@ -100,3 +100,19 @@ await link(path.join(windowsDir, '笺.exe'), path.join(aliases, '笺.msi'));
 await assert.rejects(prepareRelease({ ...options, windowsDir: aliases, outDir: path.join(fixture, 'alias-output') }),
   /同一个输入/);
 console.log(`Release preparation, exact assets, hashes, exclusive output and invalid inputs passed: ${fixture}`);
+
+const workflow = (await readFile(path.join(root, '.github/workflows/release.yml'), 'utf8')).replace(/\r\n/g, '\n');
+for (const job of ['windows', 'macos', 'android']) {
+  assert.match(workflow, new RegExp(`  ${job}:\\n[\\s\\S]*?needs: \\[verify\\]`),
+    `${job} build is blocked by the portable verification job`);
+}
+assert.match(workflow, /needs: \[verify, windows, macos, android\]/,
+  'Publication requires verification and every platform build');
+assert.match(workflow, /node scripts\/verify-release\.mjs/);
+assert.match(workflow, /--tag "\$RELEASE_TAG"/,
+  'The actual trigger tag reaches the preparer before publication');
+const gate = await readFile(path.join(root, 'scripts/verify-release.mjs'), 'utf8');
+assert.match(gate, /execFileSync/);
+assert.match(gate, /verify-windows-installer\.mjs/);
+assert.match(gate, /verify-translation-stream\.mjs/);
+console.log('Release workflow verification dependency and trigger-tag forwarding passed.');

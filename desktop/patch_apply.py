@@ -2,7 +2,8 @@
 # -*- coding: utf-8 -*-
 """把桌面增强补丁应用到本机 pake-cli 模板（幂等）。
 
-- src/app/setup.rs + liquid-glass.js：替换桌面集成并注入共享液态玻璃滤镜
+- src/app/setup.rs + liquid-glass.js + translation-stream.js：替换桌面集成并注入共享脚本
+- assets/main.wxs：安装、升级和卸载时按路径归属同步用户已启用的自启动项
 - src/app/window.rs：主窗口唤起时不显示预热的划词浮窗
 - src/lib.rs：注册自定义命令 + 启动到托盘读取用户设置
 - build.rs：把命令写进应用 ACL 白名单
@@ -203,6 +204,25 @@ def exclude_popup_from_window_reveal(source):
     return source[:start] + body + source[end:]
 
 
+def install_autostart_wix(source, actions):
+    """Install the lifecycle inside the actual Pake WiX template, idempotently."""
+    begin = "        <!-- JIAN_AUTOSTART_BEGIN -->"
+    end = "        <!-- JIAN_AUTOSTART_END -->"
+    if source.count("</Product>") != 1:
+        raise RuntimeError("main.wxs 必须且只能包含一个 Product 结束标记")
+    if source.count("    </Product>") != 1:
+        raise RuntimeError("main.wxs Product 结束缩进与受支持模板不一致")
+    if begin in source or end in source:
+        pattern = re.escape(begin) + r"[\s\S]*?" + re.escape(end) + r"\r?\n?"
+        if source.count(begin) != 1 or source.count(end) != 1:
+            raise RuntimeError("main.wxs 自启动生命周期标记不完整或重复")
+        source, count = re.subn(pattern, "", source)
+        if count != 1:
+            raise RuntimeError("main.wxs 自启动生命周期标记顺序无效")
+    block = begin + "\n" + actions.rstrip() + "\n" + end + "\n"
+    return source.replace("    </Product>", block + "    </Product>", 1)
+
+
 def main():
     desktop = os.path.dirname(os.path.abspath(__file__))
     package_path = os.path.join(os.path.dirname(desktop), "app", "macos", "package.json")
@@ -236,6 +256,20 @@ def main():
             os.path.join(tauri, "src", "app", "liquid-glass.js"),
         )
         print("已更新 liquid-glass.js")
+        shutil.copyfile(
+            os.path.join(os.path.dirname(desktop), "web", "translation-stream.js"),
+            os.path.join(tauri, "src", "app", "translation-stream.js"),
+        )
+        print("已更新 translation-stream.js")
+
+        wix_path = os.path.join(tauri, "assets", "main.wxs")
+        wix_source = read(wix_path)
+        wix_updated = install_autostart_wix(
+            wix_source, read(os.path.join(desktop, "patch", "autostart.wxi"))
+        )
+        if wix_updated != wix_source:
+            write(wix_path, wix_updated)
+            print("已接入 MSI 自启动安装、升级与卸载生命周期")
 
         window_path = os.path.join(tauri, "src", "app", "window.rs")
         window_source = read(window_path)

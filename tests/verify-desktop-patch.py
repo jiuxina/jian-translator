@@ -217,6 +217,25 @@ class DesktopStartupDefaultsTests(unittest.TestCase):
         self.assertIn('unwrap_or(cli_default)', source)
 
 
+class DesktopInstallerLifecycleTests(unittest.TestCase):
+    def test_actions_are_inserted_once_inside_product_and_upgraded(self):
+        source = '<Wix>\n    <Product Id="*">\n    </Product>\n</Wix>\n'
+        actual = PATCHER.install_autostart_wix(source, '<CustomAction Id="first" />\n')
+        self.assertIn('<CustomAction Id="first" />', actual)
+        self.assertLess(actual.index('JIAN_AUTOSTART_BEGIN'), actual.index('</Product>'))
+        self.assertEqual(PATCHER.install_autostart_wix(actual, '<CustomAction Id="first" />\n'), actual)
+        updated = PATCHER.install_autostart_wix(actual, '<CustomAction Id="next" />\n')
+        self.assertNotIn('Id="first"', updated)
+        self.assertEqual(updated.count('JIAN_AUTOSTART_BEGIN'), 1)
+        self.assertIn('Id="next"', updated)
+
+    def test_missing_ambiguous_or_damaged_templates_fail_closed(self):
+        for source in ('<Wix />', '</Product>\n</Product>',
+                       '        <!-- JIAN_AUTOSTART_BEGIN -->\n    </Product>'):
+            with self.subTest(source=source), self.assertRaises(RuntimeError):
+                PATCHER.install_autostart_wix(source, '')
+
+
 class DesktopAutostartPatchTests(unittest.TestCase):
     COMMANDS = ("it_get_autostart_status", "it_set_autostart")
     HANDLER_PATTERN = r"(?ms)tauri::generate_handler!\[.*?^        \]\)"
@@ -264,6 +283,12 @@ class DesktopAutostartPatchTests(unittest.TestCase):
                 'features = [\n  "Win32_UI_WindowsAndMessaging",\n]\n'
             ),
             os.path.normpath(os.path.join(tauri, "src/app/window.rs")): DesktopPopupRevealTests.SOURCE,
+            os.path.normpath(os.path.join(tauri, "assets/main.wxs")): (
+                '<Wix><Product>\n    </Product></Wix>\n'
+            ),
+            os.path.normpath(os.path.join(desktop, "patch/autostart.wxi")): (
+                '<CustomAction Id="JianUpdateAutostart" />\n'
+            ),
             os.path.normpath(os.path.join(desktop, "patch/setup.rs")): "\n".join(
                 "pub fn %s() {}" % command for command in self.COMMANDS + (
                     "it_list_system_fonts", "it_write_clipboard_text",
