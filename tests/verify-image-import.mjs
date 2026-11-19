@@ -25,6 +25,7 @@ function fixture() {
     window: {},
     state,
     imageSeq: 0,
+    textEditRevision: 0,
     $: element,
     on: (target, type, handler) => handlers.set(`${target.id}:${type}`, handler),
     Bridge: { pickImage: (callback) => pending.push(callback), isMac: false },
@@ -36,6 +37,9 @@ function fixture() {
     refreshCount() {},
     runText() {},
     stopActiveWriter() {},
+    bindCancel() {},
+    cancelTask() {},
+    copyResult() {},
     outText() {},
     copyText() {},
   });
@@ -73,7 +77,7 @@ for (const action of ['btn-clear', 'img-del']) {
   assert.equal(test.state.image, 'synthetic-selected-image', 'An import is accepted only once');
 }
 
-const pickStart = source.indexOf('    pickImage: function (onPicked) {');
+const pickStart = source.indexOf('    pickImage: function (onPicked, purpose) {');
 const pickEnd = source.indexOf('\n    /* 背景图', pickStart);
 assert.ok(pickStart >= 0 && pickEnd > pickStart, 'Production image bridge is present');
 const pickSource = source.slice(pickStart, pickEnd).trim()
@@ -88,6 +92,9 @@ function nativeFixture(withTokens) {
     Bridge: { isAndroid: true },
     nativeImagePickSequence: 0,
     nativeImagePickPrefix: 'synthetic-page',
+    writePendingTransfer() {},
+    readPendingTransfer: () => null,
+    removePendingTransfer() {},
     toast: () => assert.fail('Synthetic picker should open normally'),
   });
   vm.runInContext(`Bridge.pickImage = ${pickSource};`, context);

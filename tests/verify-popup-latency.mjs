@@ -14,9 +14,10 @@ const DEBUG = process.env.IT_CDP_ORIGIN || 'http://127.0.0.1:9240';
 const REPORT = process.env.IT_POPUP_LATENCY_REPORT || '.build/popup-latency.json';
 const SCREENSHOT = process.env.IT_POPUP_LATENCY_SCREENSHOT || '.build/popup-pending.png';
 const utf8 = new TextDecoder('utf-8', { fatal: true });
-const [nativeSource, engineSource] = await Promise.all([
+const [nativeSource, engineSource, transportSource] = await Promise.all([
   readFile(path.join(ROOT, 'desktop/patch/setup.rs')).then((value) => utf8.decode(value)),
   readFile(path.join(ROOT, 'web/liquid-glass.js')).then((value) => utf8.decode(value)),
+  readFile(path.join(ROOT, 'web/translation-stream.js')).then((value) => utf8.decode(value)),
 ]);
 const marker = 'const POPUP_BOOTSTRAP: &str = r#"';
 const start = nativeSource.indexOf(marker);
@@ -99,6 +100,9 @@ const fixture = `
         else chunks.push(bytes);
       },
       end() {
+        const bytes = new TextEncoder().encode('data: ' + JSON.stringify({ choices: [{ delta: {}, finish_reason: 'stop' }] }) + '\\n\\n');
+        if (reads.length) reads.shift().resolve({ value: bytes, done: false });
+        else chunks.push(bytes);
         ended = true;
         while (reads.length) reads.shift().resolve({ done: true });
       },
@@ -176,6 +180,7 @@ try {
   });
   await evaluate(fixture);
   await evaluate(engineSource);
+  await evaluate(transportSource);
   await evaluate(bootstrap);
   await until(`typeof window.__popupApply === 'function' &&
     typeof window.__popupPresent === 'function' && typeof window.__popupDismiss === 'function'`);

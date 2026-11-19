@@ -8,7 +8,7 @@ import { createHash } from 'node:crypto';
 const shellRoot = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.resolve(shellRoot, '..', '..');
 const generatedRoot = path.join(shellRoot, '.generated');
-const resources = ['index.html', 'theme.css', 'app.js', 'langs.js', 'liquid-glass.js', 'updates.js'];
+const resources = ['index.html', 'theme.css', 'app.js', 'langs.js', 'liquid-glass.js', 'updates.js', 'translation-stream.js'];
 const args = process.argv.slice(2);
 if (args.some(arg => !['--prepare-only', '--dir'].includes(arg))) {
   throw new Error('仅支持 --prepare-only 或 --dir');
@@ -30,7 +30,7 @@ for (const name of resources) {
 }
 await writeFile(path.join(generatedRoot, 'web-sha256.json'), `${JSON.stringify(hashes, null, 2)}\n`, 'utf8');
 if (args.includes('--prepare-only')) {
-  console.log('已准备共享悬浮窗与六项前端资源清单；未构建 macOS 安装包。');
+  console.log('已准备共享悬浮窗与七项前端资源清单；未构建 macOS 安装包。');
   process.exit(0);
 }
 if (process.platform !== 'darwin') {

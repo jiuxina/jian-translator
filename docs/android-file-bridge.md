@@ -27,4 +27,6 @@
 
 `node tests/verify-android-file-bridge.mjs` 覆盖桥接、恢复和相机的源码契约；它不代替 Android 编译或设备验收。
 
+`node tests/verify-transfer-recovery.mjs` 使用合成存储、DOM 和原生回调替身执行共享页面的生产恢复函数，覆盖就绪顺序、持久化恢复、编辑失效、过期 token、图片用途分流、重复投递确认与保存反馈。不会读取真实页面存储或文件。
+
 平台验收需使用合成 txt/md、透明 PNG 和拍摄样张，覆盖选择/取消、保存失败、后台重建、进程重建、连续导入、导入后编辑、TalkBack、单摄设备，以及带旋转和镜像 EXIF 的确认预览。未运行的编译或设备检查必须单独列明，不记作通过。

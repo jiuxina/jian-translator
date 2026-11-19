@@ -2022,6 +2022,7 @@ try {
     });
     const liquidGlassEngine = await readFile('web/liquid-glass.js', 'utf8');
     await popup.evaluate(liquidGlassEngine);
+    await popup.evaluate(await readFile('web/translation-stream.js', 'utf8'));
     await popup.evaluate(bootstrap);
     const image = await popup.evaluate(`(() => {
       const canvas = document.createElement('canvas');

@@ -21,7 +21,7 @@ use tauri::{
     webview::PageLoadEvent,
     AppHandle, Manager, PhysicalPosition, Url, WebviewUrl, WebviewWindow, WebviewWindowBuilder,
 };
-use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut};
+use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
 use tauri_plugin_window_state::{AppHandleExt, StateFlags};
 
 #[cfg(target_os = "windows")]
@@ -986,6 +986,7 @@ fn popup_payload_script(payload: &str) -> String {
 /// JS 用 payload.id 去重，不会重复发翻译请求。
 fn deliver_popup(window: &WebviewWindow, payload: &str, appearance: &serde_json::Value) {
     let _ = window.eval(LIQUID_GLASS_ENGINE);
+    let _ = window.eval(TRANSLATION_STREAM_ENGINE);
     let _ = window.eval(POPUP_BOOTSTRAP);
     let _ = window.eval(&popup_appearance_script(appearance));
     let _ = window.eval(&popup_payload_script(payload));
@@ -1172,6 +1173,7 @@ fn ensure_popup(app: &AppHandle) -> Option<WebviewWindow> {
         .on_page_load(|window, payload| {
             if payload.event() == PageLoadEvent::Finished {
                 let _ = window.eval(LIQUID_GLASS_ENGINE);
+                let _ = window.eval(TRANSLATION_STREAM_ENGINE);
                 let _ = window.eval(POPUP_BOOTSTRAP);
             }
         });
@@ -1180,6 +1182,7 @@ fn ensure_popup(app: &AppHandle) -> Option<WebviewWindow> {
         // about:blank 不一定触发 PageLoadEvent，创建后立即注入模板；
         // 载入阶段会补投同一 payload，模板按请求与阶段幂等处理。
         let _ = window.eval(LIQUID_GLASS_ENGINE);
+        let _ = window.eval(TRANSLATION_STREAM_ENGINE);
         let _ = window.eval(POPUP_BOOTSTRAP);
         let popup_handle = app.clone();
         window.on_window_event(move |event| {
@@ -1377,6 +1380,7 @@ fn watch_popup(app: AppHandle, window: WebviewWindow, generation: u64) {
 /// 悬浮窗页面：纯 HTML/CSS/JS，直接调官网同源接口，流式渲染。
 /// Rust 会重复投递「模板 + 数据」；模板幂等，数据按 id 去重。
 const LIQUID_GLASS_ENGINE: &str = include_str!("liquid-glass.js");
+const TRANSLATION_STREAM_ENGINE: &str = include_str!("translation-stream.js");
 
 const POPUP_BOOTSTRAP: &str = r#"
 (function () {
@@ -1544,7 +1548,8 @@ window.ItLiquidGlass.attach(document.getElementById('copy'), 'button');
   function queueOutput(text, revision) {
     if (revision !== requestRevision || dismissed) return;
     if (output.querySelector('.ph')) output.textContent = '';
-    copy.disabled = false;
+    // Streaming text is only a preview until the transport confirms completion.
+    copy.disabled = true;
     if (popupMotionDisabled()) {
       output.appendChild(document.createTextNode(text));
       return;
@@ -1634,16 +1639,12 @@ window.ItLiquidGlass.attach(document.getElementById('copy'), 'button');
     copy.disabled = true;
     if (!text.trim()) return;
 
-    var accumulated = '';
     controller = typeof AbortController === 'function' ? new AbortController() : null;
-    var options = {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
+    var payload = {
         model: 'index-mt-2b',
         stream: true,
         temperature: 0,
-        max_tokens: 1024,
+        max_tokens: Math.max(1024, Math.min(16000, text.length * 3)),
         chat_template_kwargs: { enable_thinking: false },
         messages: [{
           role: 'user',
@@ -1651,53 +1652,33 @@ window.ItLiquidGlass.attach(document.getElementById('copy'), 'button');
             ? '请将以下文本翻译为英语。直接输出翻译结果，不要进行任何解释。\n\n'
             : '请将以下文本翻译为中文。直接输出翻译结果，不要进行任何解释。\n\n') + text
         }]
-      })
+      };
+    var options = {
+      onDelta: function (delta) {
+        if (revision !== requestRevision || dismissed) return;
+        queueOutput(delta, revision);
+      },
+      describeError: function (status) { return 'HTTP ' + status; }
     };
     if (controller) options.signal = controller.signal;
 
-    fetch('https://index-translate.bilibili.com/v1/chat/completions', options)
-      .then(async function (response) {
-        if (revision !== requestRevision || dismissed) return;
-        if (!response.ok) throw new Error('HTTP ' + response.status);
-        var reader = response.body.getReader();
-        var decoder = new TextDecoder();
-        var buffer = '';
-        while (true) {
-          var read = await reader.read();
-          if (revision !== requestRevision || dismissed) {
-            try { await reader.cancel(); } catch (error) {}
-            return;
-          }
-          if (read.done) break;
-          buffer += decoder.decode(read.value, { stream: true });
-          var parts = buffer.split('\n\n');
-          buffer = parts.pop();
-          for (var i = 0; i < parts.length; i++) {
-            var line = parts[i].trim();
-            if (line.indexOf('data:') !== 0) continue;
-            var data = line.slice(5).trim();
-            if (!data || data === '[DONE]') continue;
-            try {
-              var json = JSON.parse(data);
-              var delta = json.choices && json.choices[0] && json.choices[0].delta;
-              if (revision === requestRevision && !dismissed && delta && delta.content) {
-                accumulated += delta.content;
-                queueOutput(delta.content, revision);
-              }
-            } catch (e) {}
-          }
-        }
+    window.ItTranslationStream.request('https://index-translate.bilibili.com/v1/chat/completions', payload, options)
+      .then(function (result) {
         if (revision !== requestRevision || dismissed) return;
         if (paintFrame) cancelAnimationFrame(paintFrame);
         paintFrame = 0;
         flushOutputQueue(true, revision);
-        if (!accumulated) output.innerHTML = '<span class="ph">没有拿到译文</span>';
-        if (!accumulated) copy.disabled = true;
+        output.textContent = result.text;
+        copy.disabled = !result.text.trim();
       }).catch(function (error) {
         if (revision !== requestRevision || dismissed || error && error.name === 'AbortError') return;
         cancelOutputQueue();
         copy.disabled = true;
-        output.innerHTML = '<span class="err">翻译失败：' + error.message + '</span>';
+        var failure = document.createElement('span');
+        failure.className = 'err';
+        failure.textContent = '翻译失败：' + error.message;
+        output.textContent = '';
+        output.appendChild(failure);
       });
   };
 
@@ -1974,7 +1955,7 @@ fn read_clipboard_text() -> String {
     use windows_sys::Win32::System::DataExchange::{
         CloseClipboard, GetClipboardData, IsClipboardFormatAvailable, OpenClipboard,
     };
-    use windows_sys::Win32::System::Memory::{GlobalLock, GlobalUnlock};
+    use windows_sys::Win32::System::Memory::{GlobalLock, GlobalSize, GlobalUnlock};
     use windows_sys::Win32::System::Ole::CF_UNICODETEXT;
 
     unsafe {
@@ -1987,15 +1968,20 @@ fn read_clipboard_text() -> String {
         let handle = GetClipboardData(CF_UNICODETEXT as u32);
         let mut text = String::new();
         if !handle.is_null() {
-            let pointer = GlobalLock(handle);
-            if !pointer.is_null() {
-                let wide = pointer as *const u16;
-                let mut length = 0usize;
-                while *wide.add(length) != 0 && length < 200_000 {
-                    length += 1;
+            let bytes = GlobalSize(handle);
+            // CF_UNICODETEXT owns a movable global allocation. Reject malformed
+            // byte lengths, and never scan past either that allocation or our
+            // input limit (including one unit reserved for the terminator).
+            if bytes >= 2 && bytes % 2 == 0 {
+                let pointer = GlobalLock(handle);
+                if !pointer.is_null() {
+                    let units = (bytes / std::mem::size_of::<u16>()).min(200_001);
+                    let wide = std::slice::from_raw_parts(pointer as *const u16, units);
+                    if let Some(length) = wide.iter().position(|unit| *unit == 0) {
+                        text = String::from_utf16_lossy(&wide[..length]);
+                    }
+                    let _ = GlobalUnlock(handle);
                 }
-                text = String::from_utf16_lossy(std::slice::from_raw_parts(wide, length));
-                let _ = GlobalUnlock(handle);
             }
         }
         let _ = CloseClipboard();
@@ -2290,11 +2276,14 @@ fn run_selection_translate(
                     let _ = window.set_focus();
                     let json = serde_json::to_string(&text).unwrap_or_else(|_| "\"\"".to_string());
                     let eval = format!(
-                        "(function(t){{ if (typeof window.__itTranslateSelection === 'function') \
-                     {{ window.__itTranslateSelection(t); }} \
-                     else {{ window.__itPendingSelection = t; }} }})({json})"
+                        "(function(t,id){{ \
+                     if(String(window.__itSelectionAccepted)===String(id))return; \
+                     if(typeof window.__itTranslateSelection==='function') \
+                     {{ window.__itTranslateSelection(t,id); }} \
+                     else {{ window.__itPendingSelection={{text:t,id:id}}; }} }})({json},{id})"
                     );
-                    // 主窗口刚被唤起 / 页面还没加载完时，单次 eval 会丢，补投几次
+                    // Only an unacknowledged/not-yet-ready page can consume a
+                    // retry. The frontend acknowledges before editing or I/O.
                     for delay in [0u64, 250, 700, 1500] {
                         let window = window.clone();
                         let eval = eval.clone();
@@ -2338,17 +2327,34 @@ pub fn it_set_hotkeys_enabled(enabled: bool) {
     HOTKEYS_ENABLED.store(enabled, Ordering::Relaxed);
 }
 
-/// 临时诊断：把前端事件写到 %TEMP%\it-titlebar.log，验证自绘标题栏的点击链路。
+/// Development-only bounded diagnostics; the release command is a no-op.
 #[tauri::command(async)]
 pub fn it_debug_log(message: String) {
-    use std::io::Write;
-    if let Ok(mut file) = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(std::env::temp_dir().join("it-titlebar.log"))
+    #[cfg(debug_assertions)]
     {
-        let _ = writeln!(file, "{message}");
+        use std::io::Write;
+        static LOG_LOCK: Mutex<()> = Mutex::new(());
+        let Ok(_guard) = LOG_LOCK.lock() else { return; };
+        let path = std::env::temp_dir().join("it-titlebar.log");
+        let rotate = fs::metadata(&path).map(|metadata| metadata.len() >= 262_144).unwrap_or(false);
+        if rotate {
+            // Keep one bounded previous log and truncate the active file.
+            let _ = fs::copy(&path, path.with_extension("previous.log"));
+        }
+        if let Ok(mut file) = std::fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .append(!rotate)
+            .truncate(rotate)
+            .open(path)
+        {
+            let bounded: String = message.chars().take(1024)
+                .filter(|character| !character.is_control()).collect();
+            let _ = writeln!(file, "{bounded}");
+        }
     }
+    #[cfg(not(debug_assertions))]
+    let _ = message;
 }
 
 fn rollback_settings_changes(
@@ -2607,23 +2613,24 @@ pub fn set_global_shortcut(
     }
 
     let app_handle = app.clone();
-    let last_triggered = Arc::new(Mutex::new(Instant::now()));
+    let last_triggered = Arc::new(Mutex::new(None::<Instant>));
 
     if let Err(error) = app_handle.plugin(
         tauri_plugin_global_shortcut::Builder::new()
             .with_handler({
                 let last_triggered = Arc::clone(&last_triggered);
-                move |app, event, _shortcut| {
-                    if !HOTKEYS_ENABLED.load(Ordering::Relaxed) {
+                move |app, event, shortcut_event| {
+                    if shortcut_event.state() != ShortcutState::Pressed
+                        || !HOTKEYS_ENABLED.load(Ordering::Relaxed) {
                         return;
                     }
                     let Ok(mut last_triggered) = last_triggered.lock() else {
                         return;
                     };
-                    if Instant::now().duration_since(*last_triggered) < Duration::from_millis(320) {
+                    if last_triggered.is_some_and(|last| last.elapsed() < Duration::from_millis(320)) {
                         return;
                     }
-                    *last_triggered = Instant::now();
+                    *last_triggered = Some(Instant::now());
 
                     let settings = current_settings();
                     if let Some(hotkey) = parse_shortcut(&settings.selection_shortcut) {

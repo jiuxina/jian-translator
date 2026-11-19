@@ -28,7 +28,7 @@ for (const [name, source] of [['web app', webApp], ['Android app asset', android
 for (const [name, source] of [['web about page', webIndex], ['Android about page', androidIndex]]) {
   assert.match(source, /class="it-about-version">版本 2\.4\.1<\/p>/, name);
 }
-for (const name of ['index.html', 'theme.css', 'app.js', 'langs.js', 'liquid-glass.js', 'updates.js']) {
+for (const name of ['index.html', 'theme.css', 'app.js', 'langs.js', 'liquid-glass.js', 'updates.js', 'translation-stream.js']) {
   assert.deepEqual(await readFile(path.join(root, 'web', name)),
     await readFile(path.join(root, 'android/app/src/main/assets', name)),
     `${name}: Android must ship the same public frontend bytes`);

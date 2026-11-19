@@ -21,6 +21,7 @@ function fixture() {
     nativeImagePickPrefix: 'test', nativeImagePickSequence: 0,
     $: el, on: (target, type, handler) => handlers.set(target.id + ':' + type, handler),
     sessionStorage: { getItem: () => null, setItem() {}, removeItem() {} },
+    readPendingTransfer: () => null, writePendingTransfer() {}, removePendingTransfer() {},
     Bridge: { isMac: false, isAndroid: false }, setTimeout: (fn) => { fn(); return 0; }, clearTimeout() {},
     toast() {}, switchTab() {}, refreshCount() {}, fmtSeconds: () => '1s',
     setBusy: (button, busy) => { button.disabled = busy; }, setImage: (value) => { context.state.image = value; },
@@ -81,5 +82,22 @@ const flush = async () => { for (let i = 0; i < 10; i++) await Promise.resolve()
   test.context.window.__itTranslateSelection('selection', 'request-1');
   assert.equal(test.el('src').value, 'my edit', 'Duplicate selection delivery cannot overwrite input');
   assert.equal(test.pending.length, 1, 'A native request is translated once');
+}
+{
+  const test = fixture();
+  let deliver;
+  test.context.navigator = { clipboard: { read: () => new Promise((resolve) => { deliver = resolve; }) } };
+  test.event('btn-paste');
+  test.event('btn-clear');
+  deliver([{ types: ['image/png'], getType: async () => ({ synthetic: true }) }]);
+  await flush();
+  assert.equal(test.readers.length, 0, 'Clearing during clipboard permission wait discards late images');
+}
+{
+  const test = fixture();
+  let deliver;
+  test.context.navigator = { clipboard: { readText: () => new Promise((resolve) => { deliver = resolve; }) } };
+  test.event('btn-paste'); test.event('btn-clear'); deliver('old clipboard'); await flush();
+  assert.equal(test.el('src').value, '', 'Clearing during clipboard text read discards late text');
 }
 console.log('Translation task ownership and delayed import checks passed.');

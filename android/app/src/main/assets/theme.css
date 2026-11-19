@@ -820,6 +820,7 @@ textarea.src::placeholder { color: var(--lg-ink-faint); }
 .dock.it-glass-preparing { display: flex; visibility: hidden; }
 .dock.it-glass-preparing > * { pointer-events: none; }
 .dock > * { pointer-events: auto; }
+.dock > [hidden] { display: none; }
 
 .btn-primary {
   display: inline-flex;

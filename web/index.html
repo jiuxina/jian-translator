@@ -214,16 +214,19 @@
 <!-- 吸底操作区：挂在 body 上，避免被面板的 flex 高度计算挤走 -->
 <div class="dock on" data-pane="text">
   <button type="button" class="btn-secondary" id="btn-clear">清空</button>
+  <button type="button" class="btn-secondary" id="btn-cancel-text" hidden>取消</button>
   <button type="button" class="btn-primary" id="btn-go">翻译</button>
 </div>
 
 <div class="dock" data-pane="syllable">
   <button type="button" class="btn-secondary" id="btn-clear-syllable">清空</button>
+  <button type="button" class="btn-secondary" id="btn-cancel-syllable" hidden>取消</button>
   <button type="button" class="btn-primary" id="btn-go-syllable">翻译</button>
 </div>
 
 <div class="dock" data-pane="doc">
   <button type="button" class="btn-secondary" id="btn-clear-doc">清空</button>
+  <button type="button" class="btn-secondary" id="btn-cancel-doc" hidden>取消</button>
   <button type="button" class="btn-primary" id="btn-go-doc">翻译</button>
 </div>
 
@@ -253,6 +256,7 @@
 <script src="langs.js?v=15"></script>
 <script src="liquid-glass.js?v=4"></script>
 <script src="updates.js?v=1"></script>
+<script src="translation-stream.js?v=1"></script>
 <script src="app.js?v=18"></script>
 </body>
 </html>

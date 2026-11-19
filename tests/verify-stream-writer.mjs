@@ -303,4 +303,19 @@ function segments(output) {
   second.stop();
 }
 
-console.log('Stream writer checks passed: order, compaction, cleanup, ownership, dynamic reduced motion.');
+{
+  const test = fixture();
+  test.reduce(true);
+  const other = new FixtureNode();
+  const first = test.startWriter(test.output);
+  const second = test.startWriter(other);
+  first.push('文本'); second.push('音节');
+  assert.equal(first.closed, false, 'Another mode cannot close this writer');
+  assert.equal(test.output.textContent, '文本');
+  assert.equal(other.textContent, '音节');
+  second.stop(); first.push('继续');
+  assert.equal(test.output.textContent, '文本继续', 'Other-mode cancellation keeps this output live');
+  first.stop();
+}
+
+console.log('Stream writer checks passed: order, compaction, cleanup, independent outputs, dynamic reduced motion.');

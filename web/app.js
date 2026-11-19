@@ -292,6 +292,21 @@
   /* ---------------- 2. 平台桥 ---------------- */
   var nativeImagePickSequence = 0;
   var nativeImagePickPrefix = Date.now().toString(36) + ':' + Math.random().toString(36).slice(2);
+  function readPendingTransfer(key) {
+    var raw = null;
+    try { raw = localStorage.getItem(key); } catch (_) {}
+    if (!raw) { try { raw = sessionStorage.getItem(key); } catch (_) {} }
+    try { return raw ? JSON.parse(raw) : null; } catch (_) { return null; }
+  }
+  function writePendingTransfer(key, value) {
+    var raw = JSON.stringify(value);
+    try { localStorage.setItem(key, raw); } catch (_) {}
+    try { sessionStorage.setItem(key, raw); } catch (_) {}
+  }
+  function removePendingTransfer(key) {
+    try { localStorage.removeItem(key); } catch (_) {}
+    try { sessionStorage.removeItem(key); } catch (_) {}
+  }
   var Bridge = {
     isDesktop: PLATFORM === 'desktop',
     isMac: !!(window.__JIAN_DESKTOP__ && window.__JIAN_DESKTOP__.platform === 'darwin'),
@@ -312,18 +327,28 @@
     },
 
     /* 选图：桌面用原生 file input，安卓走原生相册/相机 */
-    pickImage: function (onPicked) {
+    pickImage: function (onPicked, purpose) {
       if (Bridge.isAndroid && window.NativeBridge && window.NativeBridge.pickImage) {
+        purpose = purpose || 'translation';
         var token = nativeImagePickPrefix + ':' + (++nativeImagePickSequence);
         var usesTokens = typeof window.NativeBridge.pickImageWithToken === 'function';
         var delivered = false;
+        writePendingTransfer('it-image-import', { token: token, purpose: purpose });
         window.__itOnImage = function (dataUrl, returnedToken) {
-          if (delivered || (usesTokens && returnedToken !== token)) return;
+          if (delivered || (usesTokens && returnedToken !== token)) {
+            if (window.NativeBridge.acknowledgeImage) window.NativeBridge.acknowledgeImage(returnedToken || '');
+            return;
+          }
           delivered = true;
-          onPicked(dataUrl);
+          Promise.resolve(onPicked(dataUrl)).then(function () {
+            if (window.NativeBridge.acknowledgeImage) window.NativeBridge.acknowledgeImage(token);
+            var pending = readPendingTransfer('it-image-import');
+            if (pending && pending.token === token) removePendingTransfer('it-image-import');
+          });
         };
         try {
-          if (usesTokens) window.NativeBridge.pickImageWithToken(token);
+          if (window.NativeBridge.pickImageWithTokenAndPurpose) window.NativeBridge.pickImageWithTokenAndPurpose(token, purpose);
+          else if (usesTokens) window.NativeBridge.pickImageWithToken(token);
           else window.NativeBridge.pickImage();
         } catch (e) { toast('无法打开相册', true); }
         return;
@@ -374,7 +399,10 @@
         var canvas = document.createElement('canvas');
         canvas.width = Math.round(img.width * scale);
         canvas.height = Math.round(img.height * scale);
-        canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height);
+        var context = canvas.getContext('2d');
+        context.fillStyle = '#FFFFFF';
+        context.fillRect(0, 0, canvas.width, canvas.height);
+        context.drawImage(img, 0, 0, canvas.width, canvas.height);
         done(canvas.toDataURL('image/jpeg', 0.85));
       } catch (e) { done(dataUrl); }
     };
@@ -397,6 +425,9 @@
 
     srcSel.appendChild(opt('auto', '自动检测'));
     COMMON.forEach(function (c) { srcSel.appendChild(opt(c, langName(c))); });
+    Object.keys(LANGS).forEach(function (c) {
+      if (COMMON.indexOf(c) === -1) srcSel.appendChild(opt(c, langName(c)));
+    });
 
     var g1 = document.createElement('optgroup');
     g1.label = '常用';
@@ -849,9 +880,7 @@
       syllable: 'index-mt-2b-syllable',
       doc: 'index-nailong-2b'
     },
-    image: null,
-    running: false,
-    controller: null
+    image: null
   };
 
   /* ---------------- 4a. Saved preferences ---------------- */
@@ -1209,64 +1238,8 @@
    * @returns {Promise<{text:string, usage:object|null}>}
    */
   function chatStream(payload, onDelta, signal) {
-    var started = performance.now();
-    var firstAt = 0;
-    var collected = '';
-
-    return fetch(CHAT_URL, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
-      signal: signal
-    }).then(function (resp) {
-      if (!resp.ok) {
-        return resp.text().then(function (body) {
-          throw new Error(describeError(resp.status, body));
-        });
-      }
-
-      /* 个别老 WebView 没有 ReadableStream，退回非流式 */
-      if (!resp.body || typeof resp.body.getReader !== 'function') {
-        return resp.json().then(function (j) {
-          var content = (j.choices && j.choices[0] && j.choices[0].message && j.choices[0].message.content) || '';
-          if (content && onDelta) onDelta(content);
-          collected = content;
-          return { text: collected, usage: j.usage || null, ms: performance.now() - started, firstMs: 0 };
-        });
-      }
-
-      var reader = resp.body.getReader();
-      var decoder = new TextDecoder();
-      var buffer = '';
-      var usage = null;
-
-      function pump() {
-        return reader.read().then(function (chunk) {
-          if (chunk.done) {
-            return { text: collected, usage: usage, ms: performance.now() - started, firstMs: firstAt ? firstAt - started : 0 };
-          }
-          buffer += decoder.decode(chunk.value, { stream: true });
-          var parts = buffer.split('\n\n');
-          buffer = parts.pop();
-          for (var i = 0; i < parts.length; i++) {
-            var line = parts[i].trim();
-            if (line.indexOf('data:') !== 0) continue;
-            var raw = line.slice(5).trim();
-            if (!raw || raw === '[DONE]') continue;
-            var json;
-            try { json = JSON.parse(raw); } catch (e) { continue; }
-            var delta = json.choices && json.choices[0] && json.choices[0].delta;
-            if (delta && delta.content) {
-              if (!firstAt) firstAt = performance.now();
-              collected += delta.content;
-              if (onDelta) onDelta(delta.content);
-            }
-            if (json.usage) usage = json.usage;
-          }
-          return pump();
-        });
-      }
-      return pump();
+    return window.ItTranslationStream.request(CHAT_URL, payload, {
+      onDelta: onDelta, signal: signal, describeError: describeError
     });
   }
 
@@ -1913,6 +1886,8 @@
 
   var imageSeq = 0;
   function setImage(dataUrl) {
+    var pendingImport = readPendingTransfer('it-image-import');
+    if (pendingImport && pendingImport.purpose === 'translation') removePendingTransfer('it-image-import');
     state.image = dataUrl || null;
     var box = $('img-preview');
     var img = $('img-thumb');
@@ -1988,13 +1963,19 @@
      commit(text, final) 把文本一次落定；长文分块之间用它做段间校正，
      final=true 时去掉光标并结束 writer。 */
   var activeWriter = null;
+  var outputWriters = new Map();
 
-  function stopActiveWriter() {
-    if (activeWriter) { activeWriter.stop(); activeWriter = null; }
+  function stopActiveWriter(el) {
+    if (el) {
+      var writer = outputWriters.get(el);
+      if (writer) writer.stop();
+    } else if (activeWriter) { activeWriter.stop(); activeWriter = null; }
   }
 
   function startWriter(el) {
-    stopActiveWriter();
+    if (typeof outputWriters === 'undefined') outputWriters = new Map();
+    var previousWriter = outputWriters.get(el);
+    if (previousWriter) previousWriter.stop();
     var queue = '';
     var raf = 0;
     var done = false;
@@ -2104,6 +2085,7 @@
         paintPlain(String(text || ''), !final);
         if (final) {
           done = true;
+          if (outputWriters.get(el) === writer) outputWriters.delete(el);
           if (activeWriter === writer) activeWriter = null;
         }
       },
@@ -2113,15 +2095,80 @@
         queue = '';
         if (raf) { cancelAnimationFrame(raf); raf = 0; }
         clearSegments();
+        if (outputWriters.get(el) === writer) outputWriters.delete(el);
         if (activeWriter === writer) activeWriter = null;
       }
     };
     activeWriter = writer;
+    outputWriters.set(el, writer);
     return writer;
   }
 
+  /* ---------------- Translation tasks ---------------- */
+  var taskStates = {};
+  var docEditRevision = 0;
+  var docImportSequence = 0;
+  var textEditRevision = 0;
+  function taskFor(mode) {
+    if (!taskStates[mode]) taskStates[mode] = { sequence: 0, current: null, result: '' };
+    return taskStates[mode];
+  }
+  function resultButtons(mode) {
+    var ids = mode === 'text' ? ['btn-copy'] : mode === 'syllable' ? ['btn-copy-syllable'] : ['btn-copy-doc', 'btn-dl'];
+    ids.forEach(function (id) { var button = $(id); if (button) button.disabled = !taskFor(mode).result.trim(); });
+  }
+  function taskCurrent(task) { return taskFor(task.mode).current === task; }
+  function beginTask(mode, button, out) {
+    var state = taskFor(mode);
+    if (state.current) { toast('当前模式正在翻译，请先取消'); return null; }
+    state.result = '';
+    resultButtons(mode);
+    var task = { mode: mode, id: ++state.sequence, controller: new AbortController(),
+      writer: startWriter(out), button: button, cancelled: false };
+    state.current = task;
+    var cancel = $('btn-cancel-' + mode);
+    if (cancel) cancel.hidden = false;
+    return task;
+  }
+  function finishTask(task) {
+    if (!taskCurrent(task)) return;
+    taskFor(task.mode).current = null;
+    setBusy(task.button, false);
+    var cancel = $('btn-cancel-' + task.mode);
+    if (cancel) cancel.hidden = true;
+    resultButtons(task.mode);
+  }
+  function cancelTask(mode, clear) {
+    var state = taskFor(mode), task = state.current;
+    if (task) {
+      state.current = null;
+      task.cancelled = true;
+      task.writer.stop();
+      task.controller.abort();
+      setBusy(task.button, false);
+      var cancel = $('btn-cancel-' + mode);
+      if (cancel) cancel.hidden = true;
+    }
+    if (clear) state.result = '';
+    resultButtons(mode);
+  }
+  function copyResult(mode) {
+    var result = taskFor(mode).result;
+    if (!result.trim()) { toast('还没有完整译文'); return; }
+    copyText(result);
+  }
+  function bindCancel(mode, outId, metaId) {
+    on($('btn-cancel-' + mode), 'click', function () {
+      if (!taskFor(mode).current) return;
+      cancelTask(mode, false);
+      outText($(outId), taskFor(mode).result, false);
+      $(metaId).textContent = '已取消，保留已完成内容';
+    });
+    resultButtons(mode);
+  }
+
   function runText() {
-    if (state.running) return;
+    if (taskFor('text').current) { toast('文本正在翻译，请先取消'); return; }
     var src = $('src');
     var text = (src.value || '').trim();
     var instruct = ($('instruct').value || '').trim();
@@ -2135,10 +2182,10 @@
     var meta = $('meta-text');
     var started = performance.now();
 
-    state.running = true;
-    state.controller = new AbortController();
+    var task = beginTask('text', go, out);
+    if (!task) return;
     setBusy(go, true, image ? '视觉翻译中…' : '翻译中…');
-    var writer = startWriter(out);
+    var writer = task.writer;
     meta.textContent = '';
 
     var payload;
@@ -2156,19 +2203,22 @@
 
     var buffer = '';
     chatStream(payload, function (chunk) {
+      if (!taskCurrent(task)) return;
       buffer += chunk;
       writer.push(chunk);
-    }, state.controller.signal).then(function (result) {
-      if (writer.closed) return;
+    }, task.controller.signal).then(function (result) {
+      if (!taskCurrent(task)) return;
+      taskFor('text').result = result.text;
       writer.commit(result.text, true);
       var parts = [];
       if (result.usage) parts.push(result.usage.total_tokens + ' tokens');
       parts.push(fmtSeconds(result.ms));
       meta.textContent = parts.join(' · ');
     }).catch(function (error) {
+      if (!taskCurrent(task)) return;
       writer.stop();
       if (error && error.name === 'AbortError') {
-        outText(out, buffer || '', false);
+        outText(out, taskFor('text').result, false);
         meta.textContent = '已取消';
         return;
       }
@@ -2177,14 +2227,35 @@
       out.classList.remove('empty');
       meta.textContent = '';
     }).then(function () {
-      state.running = false;
-      state.controller = null;
-      setBusy(go, false);
+      finishTask(task);
     });
   }
 
   function initTextPane() {
-    on($('src'), 'input', refreshCount);
+    on($('src'), 'input', function () { textEditRevision++; refreshCount(); });
+    bindCancel('text', 'out-text', 'meta-text');
+    function importPastedImage(file, expectedRevision) {
+      if (expectedRevision != null && expectedRevision !== imageSeq) return;
+      var revision = ++imageSeq;
+      var pending = readPendingTransfer('it-image-import');
+      if (pending && pending.purpose === 'translation') removePendingTransfer('it-image-import');
+      var reader = new FileReader();
+      reader.onload = function (event) {
+        shrinkImage(event.target.result, function (dataUrl) {
+          if (revision === imageSeq) setImage(dataUrl);
+        });
+      };
+      reader.onerror = function () { if (revision === imageSeq) toast('读取图片失败', true); };
+      reader.readAsDataURL(file);
+    }
+    on($('src'), 'paste', function (event) {
+      var items = event.clipboardData && event.clipboardData.items;
+      for (var index = 0; items && index < items.length; index++) {
+        if (items[index].type.indexOf('image/') !== 0) continue;
+        var image = items[index].getAsFile();
+        if (image) { event.preventDefault(); importPastedImage(image); return; }
+      }
+    });
 
     on($('btn-pick-img'), 'click', function () {
       var requestedImageSeq = imageSeq;
@@ -2197,13 +2268,37 @@
     on($('img-del'), 'click', function () { setImage(null); });
 
     on($('btn-paste'), 'click', function () {
+      var imageRevision = imageSeq;
+      var textRevision = textEditRevision;
+      function stillCurrent() { return imageRevision === imageSeq && textRevision === textEditRevision; }
+      if (!Bridge.isMac && navigator.clipboard && navigator.clipboard.read) {
+        navigator.clipboard.read().then(function (items) {
+          if (!stillCurrent()) return;
+          for (var index = 0; index < items.length; index++) {
+            var type = items[index].types.filter(function (value) { return value.indexOf('image/') === 0; })[0];
+            if (type) return items[index].getType(type).then(function (file) {
+              if (stillCurrent()) importPastedImage(file, imageRevision);
+            });
+          }
+          return navigator.clipboard.readText().then(function (text) {
+            if (!stillCurrent()) return;
+            if (!text) { toast('剪贴板是空的'); return; }
+            textEditRevision++;
+            $('src').value += ($('src').value ? '\n' : '') + text;
+            refreshCount();
+          });
+        }).catch(function () { toast('读取剪贴板被拒绝，请在输入框直接粘贴'); });
+        return;
+      }
       if (!Bridge.isMac && (!navigator.clipboard || !navigator.clipboard.readText)) {
         toast('当前环境不支持读取剪贴板');
         return;
       }
       var read = Bridge.isMac ? Bridge.invoke('it_read_clipboard_text') : navigator.clipboard.readText();
       read.then(function (text) {
+        if (!stillCurrent()) return;
         if (!text) { toast('剪贴板是空的'); return; }
+        textEditRevision++;
         var src = $('src');
         src.value = (src.value ? src.value + '\n' : '') + text;
         refreshCount();
@@ -2213,8 +2308,9 @@
     on($('btn-go'), 'click', runText);
 
     on($('btn-clear'), 'click', function () {
-      if (state.controller) state.controller.abort();
-      stopActiveWriter();
+      textEditRevision++;
+      cancelTask('text', true);
+      stopActiveWriter($('out-text'));
       $('src').value = '';
       $('instruct').value = '';
       $('instruct-badge').hidden = true;
@@ -2224,22 +2320,36 @@
       refreshCount();
     });
 
-    on($('btn-copy'), 'click', function () { copyText($('out-text').textContent); });
+    on($('btn-copy'), 'click', function () { copyResult('text'); });
 
     on($('instruct'), 'input', function () {
       $('instruct-badge').hidden = !this.value.trim();
     });
 
     /* 桌面端划词翻译入口：Rust 侧捕获选区后调用 */
-    window.__itTranslateSelection = function (text) {
+    var acceptedSelections = new Set();
+    window.__itTranslateSelection = function (text, requestId) {
       text = String(text == null ? '' : text).trim();
-      if (!text) return;
+      if (!text) return false;
+      if (requestId != null) {
+        requestId = String(requestId);
+        if (acceptedSelections.has(requestId)) return true;
+        acceptedSelections.add(requestId);
+        if (acceptedSelections.size > 128) acceptedSelections.delete(acceptedSelections.values().next().value);
+        window.__itSelectionAccepted = requestId;
+      }
+      cancelTask('text', true);
+      textEditRevision++;
       switchTab('text');
       if (text.length > MAX_SRC) text = text.slice(0, MAX_SRC);
       $('src').value = text;
       refreshCount();
       setImage(null);
-      setTimeout(runText, 60);
+      var selectionRevision = textEditRevision;
+      setTimeout(function () {
+        if (selectionRevision === textEditRevision && $('src').value === text) runText();
+      }, 60);
+      return true;
     };
 
     /* 安卓相机拍完回填后自动翻译 */
@@ -2257,7 +2367,16 @@
           if (pending) sessionStorage.removeItem('it-pending-selection');
         } catch (e) {}
       }
-      if (pending) setTimeout(function () { window.__itTranslateSelection(pending); }, 300);
+      if (pending) {
+        if (typeof pending === 'object') window.__itTranslateSelection(pending.text, pending.id);
+        else {
+          try {
+            var parsed = JSON.parse(pending);
+            if (parsed && parsed.id != null && parsed.text) { window.__itTranslateSelection(parsed.text, parsed.id); return; }
+          } catch (_) {}
+          window.__itTranslateSelection(pending);
+        }
+      }
     }
     consumePendingSelection();
   }
@@ -2313,7 +2432,7 @@
 
   /* ---------------- 10. 音节 Tab ---------------- */
   function runSyllable() {
-    if (state.running) return;
+    if (taskFor('syllable').current) { toast('音节模式正在翻译，请先取消'); return; }
     var text = ($('syl-src').value || '').trim();
     if (!text) { toast('先输入原文'); return; }
 
@@ -2322,10 +2441,10 @@
     var meta = $('meta-syllable');
     var syllables = $('syl-count').value;
 
-    state.running = true;
-    state.controller = new AbortController();
+    var task = beginTask('syllable', go, out);
+    if (!task) return;
     setBusy(go, true);
-    var writer = startWriter(out);
+    var writer = task.writer;
     meta.textContent = '';
 
     var payload = basePayload(
@@ -2336,41 +2455,43 @@
 
     var buffer = '';
     chatStream(payload, function (chunk) {
+      if (!taskCurrent(task)) return;
       buffer += chunk;
       writer.push(chunk);
-    }, state.controller.signal).then(function (result) {
-      if (writer.closed) return;
+    }, task.controller.signal).then(function (result) {
+      if (!taskCurrent(task)) return;
+      taskFor('syllable').result = result.text;
       writer.commit(result.text, true);
       var parts = [];
       if (result.usage) parts.push(result.usage.total_tokens + ' tokens');
       parts.push(fmtSeconds(result.ms));
       meta.textContent = parts.join(' · ');
     }).catch(function (error) {
+      if (!taskCurrent(task)) return;
       writer.stop();
       if (error && error.name === 'AbortError') { meta.textContent = '已取消'; return; }
       out.textContent = '翻译失败：' + (error && error.message ? error.message : error);
       out.classList.remove('empty');
     }).then(function () {
-      state.running = false;
-      state.controller = null;
-      setBusy(go, false);
+      finishTask(task);
     });
   }
 
   function initSyllablePane() {
+    bindCancel('syllable', 'out-syllable', 'meta-syllable');
     on($('syl-src'), 'input', function () {
       $('syl-count-label').textContent = (this.value || '').length + ' 字';
     });
     on($('btn-go-syllable'), 'click', runSyllable);
     on($('btn-clear-syllable'), 'click', function () {
-      if (state.controller) state.controller.abort();
-      stopActiveWriter();
+      cancelTask('syllable', true);
+      stopActiveWriter($('out-syllable'));
       $('syl-src').value = '';
       $('syl-count-label').textContent = '0 字';
       outText($('out-syllable'), '', false);
       $('meta-syllable').textContent = '';
     });
-    on($('btn-copy-syllable'), 'click', function () { copyText($('out-syllable').textContent); });
+    on($('btn-copy-syllable'), 'click', function () { copyResult('syllable'); });
   }
 
   /* ---------------- 11. 长文本 Tab ---------------- */
@@ -2395,7 +2516,7 @@
   }
 
   function runDoc() {
-    if (state.running) return;
+    if (taskFor('doc').current) { toast('长文正在翻译，请先取消'); return; }
     var text = ($('doc-src').value || '').trim();
     if (!text) { toast('先粘贴长文或打开文件'); return; }
 
@@ -2406,16 +2527,18 @@
     var meta = $('meta-doc');
     var bar = $('doc-bar');
 
-    state.running = true;
-    state.controller = new AbortController();
+    var task = beginTask('doc', go, out);
+    if (!task) return;
+    var snapshot = { model: state.model.doc, src: state.src, tgt: state.tgt };
     setBusy(go, true, '翻译中…');
-    var writer = startWriter(out);
+    var writer = task.writer;
     bar.style.width = '0%';
 
     var done = [];
     var index = 0;
 
     function next() {
+      if (!taskCurrent(task)) return Promise.resolve();
       if (index >= chunks.length) {
         writer.commit(done.join('\n\n'), true);
         meta.textContent = chunks.length + ' 块 · 完成';
@@ -2425,17 +2548,20 @@
       var chunk = chunks[index];
       meta.textContent = '第 ' + (index + 1) + ' / ' + chunks.length + ' 块';
       var payload = basePayload(
-        state.model.doc,
-        plainPrompt(chunk, state.src, state.tgt),
+        snapshot.model,
+        plainPrompt(chunk, snapshot.src, snapshot.tgt),
         maxTokensFor(chunk)
       );
 
       var buffer = '';
       return chatStream(payload, function (delta) {
+        if (!taskCurrent(task)) return;
         buffer += delta;
         writer.push(delta);
-      }, state.controller.signal).then(function (result) {
+      }, task.controller.signal).then(function (result) {
+        if (!taskCurrent(task)) return;
         done.push((result.text || buffer).trim());
+        taskFor('doc').result = done.join('\n\n');
         index++;
         bar.style.width = Math.round(index / chunks.length * 100) + '%';
         if (writer.closed) return Promise.resolve();
@@ -2446,13 +2572,10 @@
     }
 
     next().then(function () {
-      state.running = false;
-      state.controller = null;
-      setBusy(go, false);
+      finishTask(task);
     }).catch(function (error) {
-      state.running = false;
-      state.controller = null;
-      setBusy(go, false);
+      if (!taskCurrent(task)) return;
+      finishTask(task);
       if (error && error.name === 'AbortError') {
         meta.textContent = '已取消（已完成 ' + done.length + ' 块）';
         return;
@@ -2464,33 +2587,61 @@
   }
 
   function initDocPane() {
+    bindCancel('doc', 'out-doc', 'meta-doc');
     on($('doc-src'), 'input', function () {
+      docEditRevision++;
+      invalidateDocumentImport();
       var n = (this.value || '').length;
       $('doc-stat').textContent = n ? n.toLocaleString() + ' 字符' : '';
       $('doc-name').textContent = '原文';
     });
 
-    on($('btn-doc-file'), 'click', function () { $('doc-file').click(); });
+    on($('btn-doc-file'), 'click', function () {
+      docImportSequence++;
+      var revision = nativeImagePickPrefix + ':' + docImportSequence;
+      var pending = { token: revision, revision: docEditRevision };
+      writePendingTransfer('it-document-import', pending);
+      if (Bridge.isAndroid && window.NativeBridge && window.NativeBridge.prepareDocumentImport) {
+        window.NativeBridge.prepareDocumentImport(revision);
+      }
+      $('doc-file').click();
+    });
 
     on($('doc-file'), 'change', function () {
       var file = this.files && this.files[0];
       this.value = '';
       if (!file) return;
+      var sequence = ++docImportSequence;
+      var editRevision = docEditRevision;
+      var pending = readPendingTransfer('it-document-import');
+      function acknowledge() {
+        if (Bridge.isAndroid && window.NativeBridge && window.NativeBridge.acknowledgeDocumentImport && pending) {
+          window.NativeBridge.acknowledgeDocumentImport(pending.token);
+        }
+        var current = readPendingTransfer('it-document-import');
+        if (pending && current && pending.token === current.token) removePendingTransfer('it-document-import');
+      }
       var reader = new FileReader();
       reader.onload = function (ev) {
+        acknowledge();
+        if (sequence !== docImportSequence || editRevision !== docEditRevision) return;
+        docEditRevision++;
         $('doc-src').value = ev.target.result || '';
         $('doc-name').textContent = file.name;
         $('doc-stat').textContent = (ev.target.result || '').length.toLocaleString() + ' 字符';
       };
-      reader.onerror = function () { toast('读取文件失败', true); };
+      reader.onerror = function () { acknowledge(); if (sequence === docImportSequence) toast('读取文件失败', true); };
       reader.readAsText(file);
     });
 
     on($('btn-go-doc'), 'click', runDoc);
 
     on($('btn-clear-doc'), 'click', function () {
-      if (state.controller) state.controller.abort();
-      stopActiveWriter();
+      cancelTask('doc', true);
+      stopActiveWriter($('out-doc'));
+      docEditRevision++;
+      docImportSequence++;
+      invalidateDocumentImport();
       $('doc-src').value = '';
       $('doc-name').textContent = '原文';
       $('doc-stat').textContent = '';
@@ -2499,11 +2650,15 @@
       $('doc-bar').style.width = '0%';
     });
 
-    on($('btn-copy-doc'), 'click', function () { copyText($('out-doc').textContent); });
+    on($('btn-copy-doc'), 'click', function () { copyResult('doc'); });
 
     on($('btn-dl'), 'click', function () {
-      var text = $('out-doc').textContent || '';
+      var text = taskFor('doc').result;
       if (!text.trim()) { toast('还没有译文'); return; }
+      if (Bridge.isAndroid && window.NativeBridge && window.NativeBridge.saveDocument) {
+        window.NativeBridge.saveDocument('译文.txt', text);
+        return;
+      }
       var blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
       var a = document.createElement('a');
       a.href = URL.createObjectURL(blob);
@@ -2512,6 +2667,45 @@
       a.click();
       setTimeout(function () { URL.revokeObjectURL(a.href); a.remove(); }, 1000);
     });
+  }
+
+  function invalidateDocumentImport() {
+    var pending = readPendingTransfer('it-document-import');
+    if (pending) { pending.invalidated = true; writePendingTransfer('it-document-import', pending); }
+  }
+
+  function initRestoredTransfers() {
+    window.__itOnRestoredDocument = function (text, name, revision) {
+      var pending = readPendingTransfer('it-document-import');
+      if (pending && pending.token === revision && !pending.invalidated &&
+          !$('doc-src').value) {
+        docEditRevision++;
+        $('doc-src').value = text;
+        $('doc-name').textContent = name;
+        $('doc-stat').textContent = text.length.toLocaleString() + ' 字符';
+      }
+      if (window.NativeBridge && window.NativeBridge.acknowledgeDocumentImport) window.NativeBridge.acknowledgeDocumentImport(revision);
+      if (pending && pending.token === revision) removePendingTransfer('it-document-import');
+      return true;
+    };
+    window.__itOnDocumentSaved = function (status, message) { toast(message, status === 'error'); return true; };
+    window.__itRestoreImage = function (dataUrl, token, purpose) {
+      var pending = readPendingTransfer('it-image-import');
+      if (pending && pending.token === token && pending.purpose === purpose) {
+        if (purpose === 'translation') setImage(dataUrl);
+        else {
+          var preferences = copyObject(activePreferences);
+          if (purpose === 'background') preferences.background.data = dataUrl;
+          else if (purpose === 'popup-background') preferences.popup.backgroundData = dataUrl;
+          applyPreferences(preferences);
+          try { localStorage.setItem(PREFERENCES_KEY, JSON.stringify(activePreferences)); } catch (_) {}
+        }
+        removePendingTransfer('it-image-import');
+      }
+      if (window.NativeBridge && window.NativeBridge.acknowledgeImage) window.NativeBridge.acknowledgeImage(token);
+      return true;
+    };
+    if (Bridge.isAndroid && window.NativeBridge && window.NativeBridge.bridgeReady) window.NativeBridge.bridgeReady();
   }
 
   /* ---------------- 12. 背景 ---------------- */
@@ -4077,19 +4271,25 @@
         Bridge.pickImage(function (dataUrl) {
           if (!dataUrl || !settingsState || session !== settingsSeq ||
               selection !== backgroundPickSeq || !modal.classList.contains('on')) return;
-          shrinkImage(dataUrl, function (compressed) {
-            if (!settingsState || session !== settingsSeq || selection !== backgroundPickSeq ||
-                !modal.classList.contains('on')) return;
-            settingsState.preferences.background.data = compressed;
-            cancelPreferencePreview();
-            applyPreferences(settingsState.preferences);
-            fill();
-            queueSettingsPersistence(true);
+          return new Promise(function (resolve) {
+            shrinkImage(dataUrl, function (compressed) {
+              if (settingsState && session === settingsSeq && selection === backgroundPickSeq &&
+                  modal.classList.contains('on')) {
+                settingsState.preferences.background.data = compressed;
+                cancelPreferencePreview();
+                applyPreferences(settingsState.preferences);
+                fill();
+                queueSettingsPersistence(true);
+              }
+              resolve();
+            });
           });
-        });
+        }, 'background');
       }
       if (e.target.closest && e.target.closest('#it-pref-reset-background')) {
         backgroundPickSeq++;
+        var pendingBackground = readPendingTransfer('it-image-import');
+        if (pendingBackground && pendingBackground.purpose === 'background') removePendingTransfer('it-image-import');
         settingsState.preferences.background.data = '';
         cancelPreferencePreview();
         applyPreferences(settingsState.preferences);
@@ -4102,18 +4302,23 @@
         Bridge.pickImage(function (dataUrl) {
           if (!dataUrl || !settingsState || popupSession !== settingsSeq ||
               popupSelection !== popupBackgroundPickSeq || !modal.classList.contains('on')) return;
-          shrinkImage(dataUrl, function (compressed) {
-            if (!settingsState || popupSession !== settingsSeq ||
-                popupSelection !== popupBackgroundPickSeq || !modal.classList.contains('on')) return;
-            settingsState.preferences.popup.backgroundData = compressed;
-            applyPreferences(settingsState.preferences);
-            fill();
-            queueSettingsPersistence(true);
+          return new Promise(function (resolve) {
+            shrinkImage(dataUrl, function (compressed) {
+              if (settingsState && popupSession === settingsSeq && popupSelection === popupBackgroundPickSeq && modal.classList.contains('on')) {
+                settingsState.preferences.popup.backgroundData = compressed;
+                applyPreferences(settingsState.preferences);
+                fill();
+                queueSettingsPersistence(true);
+              }
+              resolve();
+            });
           });
-        });
+        }, 'popup-background');
       }
       if (e.target.closest && e.target.closest('#it-popup-follow-background')) {
         popupBackgroundPickSeq++;
+        var pendingPopup = readPendingTransfer('it-image-import');
+        if (pendingPopup && pendingPopup.purpose === 'popup-background') removePendingTransfer('it-image-import');
         settingsState.preferences.popup.backgroundData = '';
         applyPreferences(settingsState.preferences);
         fill();
@@ -4375,6 +4580,8 @@
     } else if (scheduleAppUpdateCheck) {
       scheduleAppUpdateCheck();
     }
+
+    initRestoredTransfers();
 
     /* 调试钩子：只在 ?debug=1 时挂载，正式运行不暴露内部状态 */
     if (/[?&]debug=1/.test(location.search)) {

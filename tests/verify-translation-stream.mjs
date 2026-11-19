@@ -49,6 +49,8 @@ for (const newline of ['\n', '\r\n', '\r']) {
   assert.equal(result.output, '完整译文🙂', 'Chunked UTF-8 and newline boundaries preserve text');
 }
 assert.equal((await run([event(delta('末帧')), 'data: ' + JSON.stringify(stop)])).result.text, '末帧');
+assert.equal((await run([event(delta('A')) + event(stop) + 'data: [DONE]\n\n' + event(delta('B'))])).result.text,
+  'A', 'Frames after DONE are ignored even within the same network chunk');
 await assert.rejects(run(['event: error\ndata: {"error":{"message":"synthetic denied"}}\n\n']), /synthetic denied/);
 await assert.rejects(run([event(delta('incomplete'))]), /中断|结束|完整/);
 await assert.rejects(run([event(delta('incomplete')), 'data: [DONE]\n\n']), /中断|结束|完整/);

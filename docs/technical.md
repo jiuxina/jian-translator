@@ -11,6 +11,7 @@
 [Release 准备记录](release-preparation.md)；桌面产物详情记录在
 [桌面集成说明](desktop-integration.md)。
 本次完整代码质量与用户体验审查见 [审查报告](code-quality-ux-audit-2026-11-18.md)。
+对应修复、协议变更及验证边界见 [2026-11-19 修复记录](code-quality-ux-fixes-2026-11-19.md)。
 
 ## 编译后验证约定
 
