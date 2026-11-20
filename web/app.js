@@ -634,12 +634,12 @@
       reelEl.style.transition = '';
     }
 
-    function setLabel(text, animate) {
+    function setLabel(text, animate, remeasure) {
       text = String(text || '');
       var nextValue = select.value;
       var fromValue = currentValue;
       currentValue = nextValue;          // 即使本次不转，起点也要跟着走
-      if (text === currentLabel) return;
+      if (text === currentLabel && !remeasure) return;
       var from = currentLabel || text;
       currentLabel = text;
       var sequence = ++spinSequence;
@@ -705,9 +705,9 @@
       else settleSpin();
     }
 
-    function syncButton(animate) {
+    function syncButton(animate, remeasure) {
       button.disabled = select.disabled;
-      setLabel(labelOf(), animate !== false);
+      setLabel(labelOf(), animate !== false, remeasure);
     }
 
     function updateSearchControl() {
@@ -905,8 +905,8 @@
   }
 
   /* 程序化改值后统一刷新按钮；animate=false 用于初始化/恢复，避免开场就转 */
-  function refreshSelectButtons(animate) {
-    enhancedSelects.forEach(function (sync) { sync(animate === true); });
+  function refreshSelectButtons(animate, remeasure) {
+    enhancedSelects.forEach(function (sync) { sync(animate === true, remeasure === true); });
   }
 
   /* ---------------- 4. 状态 ---------------- */
@@ -1150,8 +1150,9 @@
     var root = document.documentElement;
     var appearance = activePreferences.appearance;
     var dark = resolvedAppearance(activePreferences) === 'dark';
+    var fontWeightChanged = root.style.getPropertyValue('--it-content-weight') !== String(appearance.fontWeight);
     var geometryChanged = root.dataset.itRadius !== appearance.radius ||
-      root.dataset.itLayout !== appearance.layout;
+      root.dataset.itLayout !== appearance.layout || fontWeightChanged;
     var motionChanged = root.dataset.itMotion !== appearance.motion;
     var backgroundChanged = !appliedPreferenceBackground ||
       appliedPreferenceBackground.dark !== dark ||
@@ -1240,6 +1241,10 @@
       appliedPreferenceBackground = Object.assign({ dark: dark }, activePreferences.background);
     }
     window.ItLiquidGlass.configure(liquidGlass);
+    if (fontWeightChanged) {
+      refreshSelectButtons(false, true);
+      positionThumbs(false);
+    }
     if (geometryChanged) window.ItLiquidGlass.refresh(document);
     syncAndroidAppearance(activePreferences);
   }
@@ -3373,11 +3378,12 @@
               <div class="it-set-note" id="it-pref-font-status" hidden></div>
               <label class="it-set-range"><span>内容字号 <output data-pref-output="appearance.fontScale"></output></span>
                 <input type="range" min="90" max="140" step="5" data-pref="appearance.fontScale" data-pref-type="number"></label>
-              <label class="it-set-row"><span>字体粗细</span><select data-pref="appearance.fontWeight">
+              <label class="it-set-row"><span>界面字体粗细</span><select data-pref="appearance.fontWeight">
                 <option value="300">300 · 纤细</option><option value="400">400 · 常规</option>
                 <option value="500">500 · 中等</option><option value="600">600 · 半粗</option>
                 <option value="700">700 · 粗体</option>
               </select></label>
+              <div class="it-set-note">统一调整界面、原文、译文和划词浮窗中的所有文字。</div>
               <div class="it-set-row it-set-color-row"><span>字体颜色</span>
                 <select data-pref="appearance.fontColorMode" aria-label="字体颜色模式">
                   <option value="theme">跟随主题</option><option value="custom">自定义</option>

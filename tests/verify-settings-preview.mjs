@@ -35,7 +35,8 @@ function styleFixture(onWrite = () => {}) {
 }
 
 function appearanceFixture() {
-  const counts = { style: 0, data: 0, meta: 0, background: 0, configure: 0, refresh: 0, reads: 0 };
+  const counts = { style: 0, data: 0, meta: 0, background: 0, configure: 0, refresh: 0, reads: 0,
+    thumbs: 0, selects: 0 };
   const root = {
     style: styleFixture(() => counts.style++),
     dataset: new Proxy({}, { set(target, name, value) {
@@ -62,6 +63,8 @@ function appearanceFixture() {
     LANGS: { en: 'English', zh: 'Chinese' },
     currentSystemAppearance: 'light',
     applyBackground: () => counts.background++,
+    positionThumbs: () => counts.thumbs++,
+    refreshSelectButtons: (animate, remeasure) => { if (!animate && remeasure) counts.selects++; },
     cssDuration: (name, fallback) => { counts.reads++; return fallback; },
     cssNumber: (name, fallback) => { counts.reads++; return fallback; },
   });
@@ -99,6 +102,29 @@ function appearanceFixture() {
   } };
   vm.runInContext('syncAndroidAppearance(activePreferences); syncAndroidAppearance(activePreferences)', test.context);
   assert.equal(attempts, 2, 'A failed native delivery is retried and not cached as successful');
+}
+
+{
+  const test = appearanceFixture();
+  vm.runInContext('applyPreferences(activePreferences)', test.context);
+  const first = { ...test.counts };
+  for (const weight of [300, 500, 700]) {
+    test.context.activePreferences.appearance.fontWeight = weight;
+    vm.runInContext('applyPreferences(activePreferences)', test.context);
+    assert.equal(test.root.style.getPropertyValue('--it-content-weight'), String(weight));
+  }
+  assert.equal(test.counts.thumbs, first.thumbs + 3,
+    'Changing the shared font weight realigns navigation and model sliders');
+  assert.equal(test.counts.selects, first.selects + 3,
+    'Changing the shared font weight remeasures unchanged dropdown labels');
+  assert.equal(test.counts.refresh, first.refresh + 3,
+    'Font weight changes refresh glass geometry for resized controls');
+  assert.equal(test.calls.length, 1, 'Font weight changes do not repaint native Android colors');
+  assert.equal(test.counts.background, first.background, 'Font weight changes do not rebuild backgrounds');
+  vm.runInContext('applyPreferences(activePreferences)', test.context);
+  assert.equal(test.counts.thumbs, first.thumbs + 3, 'Reapplying the same weight avoids measuring sliders again');
+  assert.equal(test.counts.selects, first.selects + 3, 'Reapplying the same weight avoids remeasuring dropdown labels');
+  assert.equal(test.counts.refresh, first.refresh + 3, 'Reapplying the same weight avoids refreshing glass again');
 }
 
 function settingsFixture({ desktop = false } = {}) {
@@ -200,6 +226,24 @@ function settingsFixture({ desktop = false } = {}) {
     retry() { handlers.get('it-set-retry:click').call(element('it-set-retry')); },
     get: element,
   };
+}
+
+{
+  const test = settingsFixture();
+  const weight = test.control('appearance.fontWeight', 'select-one');
+  for (const value of ['300', '700']) {
+    weight.value = value;
+    test.event('change', weight);
+    assert.equal(test.snapshots.at(-1).appearance.fontWeight, Number(value),
+      'The single font weight selection applies immediately');
+    const saved = test.writes.at(-1).value;
+    assert.equal(saved.appearance.fontWeight, Number(value), 'The shared weight is persisted as a number');
+    test.context.saved = saved;
+    vm.runInContext('var restored = normalizePreferences(saved)', test.context);
+    assert.equal(test.context.restored.appearance.fontWeight, Number(value),
+      'Existing stored preferences restore the shared interface weight');
+  }
+  assert.equal(test.frames.size, 0, 'A font weight selection does not wait for a preview frame');
 }
 
 {
