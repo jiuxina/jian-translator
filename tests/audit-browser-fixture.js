@@ -52,8 +52,8 @@
       return Promise.resolve(new Response(stream, { status: 200, headers: { 'Content-Type': 'text/event-stream' } }));
     }
     if (String(url).indexOf('https://api.github.com/') === 0) {
-      return Promise.resolve(new Response(JSON.stringify({ tag_name: 'v2.4.3',
-        html_url: 'https://github.com/jiuxina/jian-translator/releases/tag/v2.4.3' }),
+      return Promise.resolve(new Response(JSON.stringify({ tag_name: 'v2.4.4',
+        html_url: 'https://github.com/jiuxina/jian-translator/releases/tag/v2.4.4' }),
       { status: 200, headers: { 'Content-Type': 'application/json' } }));
     }
     var resolved = new URL(String(url), location.href);

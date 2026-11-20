@@ -1,8 +1,23 @@
 # Release 准备记录
 
-## 当前版本：v2.4.3
+## 当前版本：v2.4.4
 
-### 当前阶段：待维护者推送（2026-11-19）
+### 当前阶段：版本与发布说明准备（2026-11-20）
+
+前端及关于页、Windows/macOS 构建版本统一为 `2.4.4`；Android 为 versionName `2.4.4` /
+versionCode `11`，macOS 包清单与锁文件同步。发布说明见 [v2.4.4](releases/v2.4.4.md)。
+本版包含原文与译文字号、行距和辅助文字对比度优化，以及统一控制界面、正文与划词浮窗的
+字体粗细设置。已有字重偏好直接沿用；切换字重时同步重测下拉标签并对齐滑块。
+共享 `app.js` 缓存查询版本递增至 `22`，Android 资源镜像同步。
+
+本次验证入口为 `node tests/verify-version-consistency.mjs`、
+`node tests/verify-release-preparation.mjs`，两项定向检查已通过；代码与文档完成后执行一次
+`node scripts/verify-release.mjs` 便携离线门槛。原生编译、安装升级与实机体验以标签构建和平台验收为准。
+
+本地准备完成后等待维护者推送最终提交及 `v2.4.4` 标签；不创建或推送标签、不上传附件、
+不发布远程 Release。未重命名历史安装包，也未为尚未构建的新包生成校验值。
+
+### 历史：v2.4.3 发布准备（2026-11-19）
 
 前端及关于页、Windows/macOS 构建版本统一为 `2.4.3`；Android 为 versionName `2.4.3` /
 versionCode `10`，macOS 包清单与锁文件一并同步。发布说明见 [v2.4.3](releases/v2.4.3.md)。
