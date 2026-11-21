@@ -33,7 +33,8 @@ function fixture(initialWindow = {}) {
     stopActiveWriter() {}, basePayload: (model, prompt) => ({ model, prompt, messages: [{ content: prompt }] }),
     buildInstructionPrompt: (text) => text, buildImagePrompt: (text) => text,
     buildSyllablePrompt: (text) => text, plainPrompt: (text, src, tgt) => ({ text, src, tgt }), maxTokensFor: () => 2000,
-    chatStream: (payload, onDelta, signal) => new Promise((resolve, reject) => pending.push({ payload, onDelta, signal, resolve, reject })),
+    chatStream: (payload, onDelta, signal, sourceText) => new Promise((resolve, reject) =>
+      pending.push({ payload, onDelta, signal, sourceText, resolve, reject })),
     FileReader: class { constructor() { readers.push(this); } readAsText() {} abort() {} },
   });
   vm.runInContext(helpers + '\n' + section('  function runText()', '  /* 展开和回收') + '\n' +
@@ -240,5 +241,79 @@ for (const action of ['manual-text', 'img-del', 'btn-clear', 'replacement-image'
   await flush();
   assert.equal(test.el('src').value, 'newer pasted text', 'The newer asynchronous paste retains input ownership');
   assert.equal(test.pending.length, 0, 'The superseded native shortcut cannot start an automatic translation');
+}
+
+function repetitionFailure() {
+  const error = new Error('检测到译文异常重复，已停止输出，请重试');
+  error.name = 'TranslationRepetitionError';
+  error.code = 'repetitive_output';
+  return error;
+}
+for (const mode of ['text', 'image', 'syllable']) {
+  const test = fixture();
+  const syllable = mode === 'syllable';
+  const pane = syllable ? 'syllable' : 'text';
+  const sourceId = syllable ? 'syl-src' : 'src';
+  const outputId = syllable ? 'out-syllable' : 'out-text';
+  const copyId = syllable ? 'btn-copy-syllable' : 'btn-copy';
+  const goId = syllable ? 'btn-go-syllable' : 'btn-go';
+  const run = () => syllable ? test.context.runSyllable() : test.context.runText();
+  test.el(sourceId).value = 'original text';
+  test.el('instruct').value = 'Use formal wording.';
+  if (mode === 'image') test.context.state.image = 'data:image/jpeg;base64,c3ludGhldGlj';
+  run();
+  assert.equal(test.pending[0].sourceText, 'original text', `${mode} sends raw source context to repetition protection`);
+  test.pending[0].onDelta('temporary preview');
+  test.pending[0].reject(repetitionFailure());
+  await flush();
+  assert.equal(test.context.taskFor(pane).current, null, `${mode} releases the failed task`);
+  assert.equal(test.context.taskFor(pane).result, '', `${mode} cannot promote an abnormal preview to a result`);
+  assert.match(test.el(outputId).textContent, /异常重复.*重试/);
+  assert.ok(!test.el(outputId).textContent.includes('temporary preview'));
+  assert.equal(test.el(goId).disabled, false, `${mode} permits retry after the stopped request`);
+  assert.equal(test.el('btn-cancel-' + pane).hidden, true);
+  assert.equal(test.el(copyId).disabled, true);
+  test.event(copyId);
+  assert.deepEqual(test.copied, [], `${mode} cannot copy the failed preview`);
+  run();
+  assert.equal(test.pending.length, 2, `${mode} can start a fresh request`);
+  test.pending[1].resolve({ text: 'successful retry', ms: 1 });
+  await flush();
+  test.event(copyId);
+  assert.deepEqual(test.copied, ['successful retry']);
+}
+{
+  const test = fixture();
+  test.context.state.image = 'data:image/jpeg;base64,c3ludGhldGlj';
+  test.context.runText();
+  assert.equal(test.pending[0].sourceText, '', 'Image-only translation does not use image data or prompts as source repetition context');
+}
+{
+  const test = fixture();
+  test.el('doc-src').value = '甲一。乙二。丙三。';
+  test.el('doc-chunk').value = '3';
+  test.context.runDoc();
+  assert.equal(test.pending[0].sourceText, '甲一。', 'Each document request uses only its own original chunk');
+  test.pending[0].resolve({ text: 'first completed', ms: 1 });
+  await flush();
+  assert.equal(test.pending[1].sourceText, '乙二。');
+  test.pending[1].onDelta('abnormal incomplete preview');
+  test.pending[1].reject(repetitionFailure());
+  await flush();
+  assert.equal(test.pending.length, 2, 'A failed chunk prevents subsequent document requests');
+  assert.equal(test.context.taskFor('doc').current, null);
+  assert.equal(test.context.taskFor('doc').result, 'first completed');
+  assert.equal(test.el('out-doc').textContent, 'first completed', 'The failed chunk is removed while completed chunks stay visible');
+  assert.match(test.el('meta-doc').textContent, /第 2 块失败.*异常重复/);
+  assert.equal(test.el('doc-bar').style.width, '33%');
+  test.event('btn-copy-doc');
+  assert.deepEqual(test.copied, ['first completed']);
+  test.context.runDoc();
+  for (let index = 2; index < 5; index++) {
+    test.pending[index].resolve({ text: `retry chunk ${index - 1}`, ms: 1 });
+    await flush();
+  }
+  assert.equal(test.el('out-doc').textContent, 'retry chunk 1\n\nretry chunk 2\n\nretry chunk 3');
+  assert.equal(test.el('meta-doc').textContent, '3 块 · 完成');
 }
 console.log('Translation task ownership and delayed import checks passed.');

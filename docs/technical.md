@@ -98,6 +98,29 @@ Tao 无边框阴影预留区曾在页面四边露出原生白边；当前普通�
 不再交付；原身份 Release 已构建并核验名称、包名、非 debuggable 标志与六项资源，
 原 Release 签名仍待授权使用，签名与覆盖安装能力尚未验证。
 
+## 翻译重复输出保护（2026-11-22）
+
+共享 `web/translation-stream.js` 在传输层检查新到达的译文，文字、图片、音节、文档分块
+和桌面划词浮窗使用相同的请求保护。持续相邻重复达到异常门槛时，停止请求、取消流读取并
+返回可重试的错误；异常译文不进入成功结果保存流程。文档分块翻译保留之前已完成的分块，
+不会把失败分块记为完成。Android 的同名资源与共享源码保持同步。
+
+检查以 UTF-16 编码单元计数，扫描的重复周期限制为 1–512，至少同时达到 8 个周期和
+64 个编码单元后才判断异常。原文分析只取前 16,000 个 UTF-16 编码单元，并取已检查的
+全部重复周期中的最大连续次数，将全局允许次数提高到至少 `2 × 原文最大连续次数 + 2`，
+以控制超长音节输入等场景的分析开销；这一范围只限制原文分析，译文仍完整地按增量检查。
+短强调与纯标点分隔不作为持续内容循环处理。
+这是有界的启发式检查，用于及时阻断明确的连续循环，不保证识别全部语义重复；
+超过扫描周期的长段落重复仍需结合服务端结束信息和既有请求超时处理。
+
+针对性回归使用内存中的合成 SSE/JSON 响应执行生产传输函数，覆盖词句循环、网络分片、
+取消与资源清理、正常短重复和原文重复容许范围，不读取真实翻译内容或调用翻译服务。
+本轮 `node scripts/verify-release.mjs` 便携离线门槛 **17/17** 通过，其中传输边界检查
+**25/25**；原文分析预算、Unicode 代理对分片、生产请求适配层、文字/图片/音节错误处理及
+文档已完成分块保留检查通过。版本、Android 镜像及生成浮窗共享资源检查通过。
+这些离线结果不替代真实接口、原生设备或安装包验收。
+共享入口缓存为 `translation-stream.js?v=2`，调用方 `app.js?v=24`，Android 镜像同步。
+
 ## 本地验证
 
 需要 Node.js 22 或以上以及 Chrome。无需安装前端依赖。
@@ -115,6 +138,8 @@ node tests/serve-preview.mjs web 8899
 node tests/verify-motion.mjs
 node tests/verify-liquid-glass.mjs
 node tests/verify-stream-writer.mjs
+node tests/verify-translation-stream.mjs
+node tests/verify-stream-boundaries.mjs
 node tests/verify-image-import.mjs
 node tests/verify-settings-preview.mjs
 node tests/verify-segment-drag.mjs

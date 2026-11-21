@@ -1286,9 +1286,9 @@
    * 流式调用 /v1/chat/completions。
    * @returns {Promise<{text:string, usage:object|null}>}
    */
-  function chatStream(payload, onDelta, signal) {
+  function chatStream(payload, onDelta, signal, sourceText) {
     return window.ItTranslationStream.request(CHAT_URL, payload, {
-      onDelta: onDelta, signal: signal, describeError: describeError
+      onDelta: onDelta, signal: signal, sourceText: sourceText, describeError: describeError
     });
   }
 
@@ -2343,7 +2343,7 @@
       if (!taskCurrent(task)) return;
       buffer += chunk;
       writer.push(chunk);
-    }, task.controller.signal).then(function (result) {
+    }, task.controller.signal, text).then(function (result) {
       if (!taskCurrent(task)) return;
       taskFor('text').result = result.text;
       writer.commit(result.text, true);
@@ -2667,7 +2667,7 @@
       if (!taskCurrent(task)) return;
       buffer += chunk;
       writer.push(chunk);
-    }, task.controller.signal).then(function (result) {
+    }, task.controller.signal, text).then(function (result) {
       if (!taskCurrent(task)) return;
       taskFor('syllable').result = result.text;
       writer.commit(result.text, true);
@@ -2767,7 +2767,7 @@
         if (!taskCurrent(task)) return;
         buffer += delta;
         writer.push(delta);
-      }, task.controller.signal).then(function (result) {
+      }, task.controller.signal, chunk).then(function (result) {
         if (!taskCurrent(task)) return;
         done.push((result.text || buffer).trim());
         taskFor('doc').result = done.join('\n\n');

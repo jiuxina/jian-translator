@@ -1,8 +1,55 @@
 /* Shared Web / desktop popup transport. No UI state lives in this module. */
 (function (root) {
   'use strict';
+
+  // Track adjacent periods incrementally so chunk boundaries cannot hide a
+  // loop, and a large delta cannot hide one behind a non-repeating suffix.
+  function repetitionTracker() {
+    var maxPeriod = 512, history = [], runs = [], position = 0, meaningfulAt = -1;
+    var formatting = /[\s\u0021-\u002f\u003a-\u0040\u005b-\u0060\u007b-\u007e\u2000-\u206f\u2500-\u257f\u3000-\u303f\uff01-\uff0f\uff1a-\uff20\uff3b-\uff40\uff5b-\uff65]/;
+    var tracker = {
+      copies: 1,
+      push: function (text, limit) {
+        for (var index = 0; index < text.length; index++) {
+          var character = text.charAt(index);
+          if (!formatting.test(character)) meaningfulAt = position;
+          var available = Math.min(maxPeriod, position);
+          for (var period = 1; period <= available; period++) {
+            var run = character === history[(position - period) % maxPeriod] ? (runs[period] || 0) + 1 : 0;
+            runs[period] = run;
+            if (run < period || meaningfulAt < position - period + 1) continue;
+            if (run >= tracker.copies * period) tracker.copies = Math.floor(run / period) + 1;
+            if (limit && run >= (limit - 1) * period && run + period >= 64) return true;
+          }
+          // The longest period still needs this slot's old value above.
+          history[position % maxPeriod] = character;
+          position++;
+        }
+        return false;
+      }
+    };
+    return tracker;
+  }
+
+  function repetitionGuard(sourceText) {
+    var source = repetitionTracker(), output = repetitionTracker();
+    // Bound synchronous source analysis, including unrestricted syllable input.
+    if (typeof sourceText === 'string') source.push(sourceText.slice(0, 16000));
+    // Translation can change a repeated unit's length. Allow room for source
+    // repetition without trusting it as an unlimited output exemption.
+    var limit = Math.max(8, source.copies * 2 + 2);
+    return function (delta) {
+      if (!output.push(delta, limit)) return;
+      var error = new Error('检测到译文异常重复，已停止输出，请重试');
+      error.name = 'TranslationRepetitionError';
+      error.code = 'repetitive_output';
+      throw error;
+    };
+  }
+
   function request(url, payload, options) {
     options = options || {};
+    var checkRepetition = repetitionGuard(options.sourceText);
     var started = performance.now(), firstAt = 0, collected = '', usage = null;
     var finishReason = null, terminal = false, timer = 0, reader = null, timedOut = false;
     var controller = new AbortController();
@@ -32,6 +79,7 @@
       }
       var delta = choice && ((choice.delta && choice.delta.content) || (choice.message && choice.message.content));
       if (typeof delta === 'string' && delta) {
+        checkRepetition(delta);
         if (!firstAt) firstAt = performance.now();
         collected += delta;
         if (options.onDelta) options.onDelta(delta);

@@ -35,7 +35,7 @@ async function run(parts, options = {}) {
     CHAT_URL: 'https://synthetic.invalid/chat', describeError: () => 'synthetic HTTP failure' });
   if (transport) vm.runInContext(transport, context);
   const chatStream = vm.runInContext(app.slice(start, end) + '\nchatStream;', context);
-  const result = await chatStream({}, (text) => output.push(text), options.signal);
+  const result = await chatStream({}, (text) => output.push(text), options.signal, options.sourceText);
   return { result, output: output.join(''), cancelled };
 }
 
@@ -59,5 +59,26 @@ await assert.rejects(run([event(stop), 'data: [DONE]\n\n']), /空|译文/);
 assert.equal((await run([], { json: { choices: [{ message: { content: 'JSON response' }, finish_reason: 'stop' }] } })).result.text,
   'JSON response');
 await assert.rejects(run([], { json: { choices: [{ message: { content: 'truncated' }, finish_reason: 'length' }] } }), /截断|length/);
+const repeatedSource = 'chick '.repeat(50);
+const repeatedTranslation = '小鸡'.repeat(50);
+const legitimate = await run([event(delta(repeatedTranslation)), event(stop)], { sourceText: repeatedSource });
+assert.equal(legitimate.result.text, repeatedTranslation,
+  'The real chatStream adapter forwards original repetition context to the transport');
+assert.equal(legitimate.output, repeatedTranslation);
+assert.equal(legitimate.cancelled, true);
+const repetitionError = { name: 'TranslationRepetitionError', code: 'repetitive_output', message: /异常重复.*重试/ };
+await assert.rejects(run([event(delta(repeatedTranslation)), event(stop)]), repetitionError,
+  'The adapter still protects translations when no original repetition context is supplied');
+await assert.rejects(run([event(delta('小鸡'.repeat(200))), event(stop)], { sourceText: repeatedSource }), repetitionError,
+  'Forwarding the original context does not disable the runaway guard');
+await assert.rejects(run([], { sourceText: repeatedSource,
+  json: { choices: [{ message: { content: '小鸡'.repeat(200) }, finish_reason: 'stop' }] } }), repetitionError,
+  'The adapter propagates repetition failures from the complete JSON branch');
+const splitEmoji = (count) => Array.from({ length: count }, () => event(delta('\ud83d')) + event(delta('\ude42')));
+const normalEmoji = await run([...splitEmoji(3), event(stop)]);
+assert.equal(normalEmoji.result.text, '🙂🙂🙂', 'Separate surrogate halves in SSE deltas preserve normal output');
+assert.equal(normalEmoji.output, '🙂🙂🙂');
+await assert.rejects(run([...splitEmoji(100), event(stop)]), repetitionError,
+  'A repeating emoji cannot bypass protection by splitting surrogate halves across SSE deltas');
 assert.ok(requests > 0);
-console.log('Translation stream completeness and framing checks passed.');
+console.log('Translation stream completeness, framing and repetition adapter checks passed.');

@@ -1690,6 +1690,7 @@ window.ItLiquidGlass.attach(document.getElementById('copy'), 'button');
         }]
       };
     var options = {
+      sourceText: text,
       onDelta: function (delta) {
         if (revision !== requestRevision || dismissed) return;
         queueOutput(delta, revision);

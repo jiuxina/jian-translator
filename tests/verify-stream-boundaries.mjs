@@ -42,7 +42,7 @@ function fixture(fetcher) {
   };
 }
 function streaming(parts, { hold = false } = {}) {
-  const queue = parts.map((part) => encoder.encode(part));
+  const queue = parts.map((part) => typeof part === 'string' ? encoder.encode(part) : part);
   const pendingRead = deferred();
   let cancels = 0, reads = 0;
   return {
@@ -192,6 +192,160 @@ test('JSON completion succeeds without SSE DONE but rejects filtered text', asyn
     json: async () => ({ choices: [{ message: { content: 'hidden' }, finish_reason: 'content_filter' }] }) }));
   await assert.rejects(filtered.request(), /正常完成|content_filter/);
   assert.deepEqual(filtered.output, []);
+});
+
+const repetitionError = {
+  name: 'TranslationRepetitionError',
+  code: 'repetitive_output',
+  message: '检测到译文异常重复，已停止输出，请重试',
+};
+
+test('a live Chinese word loop stops early and cleans up the transport', async () => {
+  const parts = [event(delta('这是一只')),
+    ...Array.from({ length: 100 }, () => event(delta('小鸡'))),
+    event(delta('must not arrive')), event(stop), 'data: [DONE]\n\n'];
+  const stream = streaming(parts);
+  const test = fixture(async () => stream.response);
+  await assert.rejects(test.request({ sourceText: 'This is a chick.' }), repetitionError);
+  assert.ok(test.output.join('').startsWith('这是一只'));
+  assert.ok(test.output.join('').length < 80, 'The preview stays bounded before the runaway stream is stopped');
+  assert.ok(stream.reads < parts.length, 'Detection stops reading without waiting for the provider to finish');
+  assert.equal(stream.cancels, 1);
+  assert.equal(test.requests.length, 1, 'A rejected translation is not retried automatically');
+  assert.equal(test.requests[0].options.signal.aborted, true);
+  assert.equal(test.timers.size, 0);
+  stream.pendingRead.resolve({ done: false, value: encoder.encode(event(delta('late content'))) });
+  await flush();
+  assert.ok(!test.output.join('').includes('late content'));
+});
+
+test('single characters, English words, emoji and whole sentences cannot loop indefinitely', async () => {
+  const patterns = ['鸡', 'chick ', '🙂', '这是一只快乐的小鸡，正在草地上散步。\n'];
+  for (const pattern of patterns) {
+    const stream = streaming([event(delta(pattern.repeat(100))), event(stop)]);
+    const test = fixture(async () => stream.response);
+    await assert.rejects(test.request(), repetitionError, `Runaway unit: ${pattern}`);
+    assert.deepEqual(test.output, [], 'An offending single delta is rejected before rendering');
+    assert.equal(stream.cancels, 1);
+  }
+});
+
+test('a long periodic sentence is detected without requiring a short repeated word', async () => {
+  const sentence = Array.from({ length: 512 }, (_, index) => String.fromCharCode(0x4e00 + index)).join('');
+  const stream = streaming([event(delta(sentence.repeat(9))), event(stop)]);
+  const test = fixture(async () => stream.response);
+  await assert.rejects(test.request(), repetitionError);
+  assert.deepEqual(test.output, []);
+});
+
+test('repetition inside a large delta is caught even when different text follows it', async () => {
+  const stream = streaming([event(delta('正常开头。' + '小鸡'.repeat(100) + '这是不同的结尾。')) + event(stop)]);
+  const test = fixture(async () => stream.response);
+  await assert.rejects(test.request(), repetitionError);
+  assert.deepEqual(test.output, [], 'A safe-looking suffix cannot hide an earlier loop in the same delta');
+  assert.equal(stream.reads, 1);
+});
+
+test('loop detection survives SSE and UTF-8 network boundaries', async () => {
+  const wire = Array.from({ length: 50 }, () => event(delta('小')) + event(delta('鸡🙂'))).join('') + event(stop);
+  const stream = streaming(Array.from(encoder.encode(wire), byte => Uint8Array.of(byte)));
+  const test = fixture(async () => stream.response);
+  await assert.rejects(test.request(), repetitionError);
+  assert.ok(test.output.join('').length < 100);
+  assert.equal(stream.cancels, 1);
+  assert.equal(test.timers.size, 0);
+});
+
+test('a complete JSON response with a runaway loop is rejected before preview or success', async () => {
+  const test = fixture(async () => ({ ok: true, headers: { get: () => 'application/json' },
+    json: async () => ({ choices: [{ message: { content: '小鸡'.repeat(100) }, finish_reason: 'stop' }] }) }));
+  await assert.rejects(test.request(), repetitionError);
+  assert.deepEqual(test.output, []);
+  assert.equal(test.requests[0].options.signal.aborted, true);
+  assert.equal(test.timers.size, 0);
+});
+
+test('both sustained repetition and enough output are required before stopping', async () => {
+  for (const text of ['小鸡'.repeat(31), 'abcdefghijklmnop'.repeat(7)]) {
+    const stream = streaming([event(delta(text)), event(stop)]);
+    const test = fixture(async () => stream.response);
+    assert.equal((await test.request()).text, text, 'Short repetition and limited repeated passages remain intact');
+  }
+  for (const text of ['小鸡'.repeat(32), 'abcdefghijklmnop'.repeat(8)]) {
+    const stream = streaming([event(delta(text)), event(stop)]);
+    const test = fixture(async () => stream.response);
+    await assert.rejects(test.request(), repetitionError);
+  }
+});
+
+test('normal emphasis, formatting and separated repeated vocabulary preserve every character', async () => {
+  const texts = [
+    '不不不，这是一只小鸡。Ha ha ha! Go, go, go! 🙂🙂🙂',
+    '---\n'.repeat(100) + '表格结束。' + ' \t\n'.repeat(100),
+    '，。！？；：、—'.repeat(100),
+    Array.from({ length: 160 }, (_, index) => `第${index}行：小鸡在第${index}号草地。`).join('\n'),
+    Array.from({ length: 1200 }, (_, index) => `item-${index}: value ${index + 17}`).join('\n'),
+  ];
+  for (const text of texts) {
+    const stream = streaming([event(delta(text)), event(stop)]);
+    const test = fixture(async () => stream.response);
+    assert.equal((await test.request()).text, text);
+    assert.equal(test.output.join(''), text);
+  }
+});
+
+test('source repetition can justify repeated translated wording but cannot allow unbounded output', async () => {
+  const sourceText = 'chick '.repeat(50);
+  const legitimate = '小鸡'.repeat(50);
+  const stream = streaming([event(delta(legitimate)), event(stop)]);
+  const test = fixture(async () => stream.response);
+  assert.equal((await test.request({ sourceText })).text, legitimate,
+    'The original repetition count applies even when the translated unit has a different length');
+  const runawayStream = streaming([event(delta(legitimate)), event(delta('小鸡'.repeat(200))), event(stop)]);
+  const runaway = fixture(async () => runawayStream.response);
+  await assert.rejects(runaway.request({ sourceText }), repetitionError);
+  assert.equal(runaway.output.join(''), legitimate, 'Only the justified prefix was allowed to reach the renderer');
+  assert.equal(runawayStream.cancels, 1);
+});
+
+test('format-only source repetition does not disable meaningful output protection', async () => {
+  const stream = streaming([event(delta('鸡'.repeat(200))), event(stop)]);
+  const test = fixture(async () => stream.response);
+  await assert.rejects(test.request({ sourceText: '---\n'.repeat(500) }), repetitionError);
+});
+
+test('source analysis is bounded and late repetition cannot disable output protection', async () => {
+  const stream = streaming([event(delta('小鸡'.repeat(100))), event(stop)]);
+  const test = fixture(async () => stream.response);
+  const sourceText = ' '.repeat(16000) + 'chick '.repeat(20000);
+  await assert.rejects(test.request({ sourceText }), repetitionError,
+    'Repetition beyond the source analysis budget must not exempt runaway output');
+  assert.deepEqual(test.output, []);
+  assert.equal(stream.cancels, 1);
+  assert.equal(test.timers.size, 0);
+});
+
+test('requests keep independent repetition state and can recover after a rejected translation', async () => {
+  const streams = [
+    streaming([event(delta('小鸡'.repeat(50))), event(stop)]),
+    streaming([event(delta('小鸡'.repeat(100))), event(stop)]),
+    streaming([event(delta('重新翻译成功。')), event(stop)]),
+  ];
+  let index = 0;
+  const test = fixture(async () => streams[index++].response);
+  assert.equal((await test.request({ sourceText: 'chick '.repeat(50) })).text, '小鸡'.repeat(50));
+  await assert.rejects(test.request(), repetitionError, 'An earlier source allowance cannot leak into the next request');
+  assert.equal((await test.request()).text, '重新翻译成功。');
+  assert.equal(test.requests.length, 3);
+  assert.equal(test.timers.size, 0);
+});
+
+test('missing or non-string source context is optional and never breaks normal translations', async () => {
+  for (const sourceText of [undefined, null, 42, { text: 'synthetic' }]) {
+    const stream = streaming([event(delta('正常译文。')), event(stop)]);
+    const test = fixture(async () => stream.response);
+    assert.equal((await test.request({ sourceText })).text, '正常译文。');
+  }
 });
 
 const failures = [];
