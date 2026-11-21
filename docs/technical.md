@@ -28,7 +28,7 @@
 Windows、macOS、Android 与网页共用的翻译界面。`web/` 是界面、主题和交互的源码；
 Windows 通过 Pake/Tauri 加载本地页面，macOS 使用 Chromium 桌面壳，Android 使用 WebView。
 
-当前源码版本为 `2.4.4`；既有发布包 `output/笺-2.1.0.exe`、`output/笺-2.1.0.msi`、
+当前源码版本为 `2.4.5`；既有发布包 `output/笺-2.1.0.exe`、`output/笺-2.1.0.msi`、
 `output/笺-2.1.0.apk` 保留不覆盖。新发布包使用版本化文件名，校验值见 `output/SHA256SUMS.txt`。
 电脑点击左上角“笺”、手机点击底栏右侧齿轮打开菜单，再进入“设置”即可调整外观与翻译偏好。
 原文与译文使用 16px 桌面、15.5px 窄屏的基准字号和 1.8 倍行高，并继续乘以既有
@@ -90,7 +90,7 @@ Tao 无边框阴影预留区曾在页面四边露出原生白边；当前普通�
 `output/笺-2.2.0-液态玻璃.msi`、`output/笺-2.2.0-液态玻璃.apk`；
 这些历史 Android 包使用 versionCode `5` / versionName `2.2.0`，校验值见 `output/SHA256SUMS.txt`。
 历史 2.3.0 发布说明见 [v2.3.0](releases/v2.3.0.md)，2026-11-16 的版本升级阶段未重新生成本地安装包。
-本轮 2.4.4 发布说明见 [v2.4.4](releases/v2.4.4.md)；维护者推送最终提交及 `v2.4.4` 标签后，
+本轮 2.4.5 发布说明见 [v2.4.5](releases/v2.4.5.md)；维护者推送最终提交及 `v2.4.5` 标签后，
 发布工作流构建三端附件并创建正式 Release。
 2026-11-17 的界面连贯优化按用户要求以原身份重建 Release 包，
 交付目标为 `output/笺-2.3.0-release.apk`，版本 `2.3.0` / code `6`，
@@ -223,7 +223,7 @@ Git Bash 安装位置因机器而异，使用本机实际路径。默认构建�
 .\gradlew.bat -g ..\.build\gradle-home :app:assembleRelease --offline --console=plain
 ```
 
-当前版本为 Android versionCode `11` / versionName `2.4.4`，Windows 与 macOS 构建版本均为 `2.4.4`。
+当前版本为 Android versionCode `12` / versionName `2.4.5`，Windows 与 macOS 构建版本均为 `2.4.5`。
 
 ## 自动发布
 
