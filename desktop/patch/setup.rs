@@ -50,6 +50,7 @@ impl Default for AutostartStatus {
 }
 
 const DEFAULT_SELECTION_SHORTCUT: &str = "Ctrl+Alt+T";
+const DEFAULT_CLIPBOARD_SHORTCUT: &str = "Ctrl+Alt+V";
 const APP_WINDOW_LABEL: &str = "pake";
 const POPUP_LABEL: &str = "pake-popup";
 // 窗口比卡片大一圈，给 CSS 阴影留出渲染空间（否则阴影会被窗口边界裁掉）
@@ -63,6 +64,7 @@ const POPUP_CARD_HEIGHT: f64 = 238.0;
 pub struct DesktopSettings {
     pub selection_shortcut: String,
     pub activation_shortcut: String,
+    pub clipboard_shortcut: String,
     pub open_main_window: bool,
     pub target_lang: String,
     pub auto_start: bool,
@@ -77,6 +79,7 @@ impl Default for DesktopSettings {
         Self {
             selection_shortcut: DEFAULT_SELECTION_SHORTCUT.to_string(),
             activation_shortcut: "Ctrl+Alt+I".to_string(),
+            clipboard_shortcut: DEFAULT_CLIPBOARD_SHORTCUT.to_string(),
             open_main_window: false,
             target_lang: "auto".to_string(),
             auto_start: false,
@@ -131,21 +134,42 @@ pub fn start_to_tray_enabled(cli_default: bool, _identifier: &str) -> bool {
 }
 
 fn load_settings(app: &AppHandle, cli_activation: &str) -> DesktopSettings {
-    let saved = settings_file(app)
-        .and_then(|path| fs::read_to_string(path).ok())
-        .and_then(|text| serde_json::from_str::<DesktopSettings>(&text).ok());
-
-    let mut settings = saved.unwrap_or_default();
+    let saved = settings_file(app).and_then(|path| fs::read_to_string(path).ok());
+    let has_clipboard_shortcut = saved.as_ref()
+        .and_then(|text| serde_json::from_str::<serde_json::Value>(text).ok())
+        .is_some_and(|value| value.get("clipboard_shortcut").is_some());
+    let mut settings = saved
+        .and_then(|text| serde_json::from_str::<DesktopSettings>(&text).ok())
+        .unwrap_or_default();
     if settings.selection_shortcut.trim().is_empty() {
         settings.selection_shortcut = DEFAULT_SELECTION_SHORTCUT.to_string();
     }
     if settings.activation_shortcut.trim().is_empty() && !cli_activation.is_empty() {
         settings.activation_shortcut = cli_activation.to_string();
     }
+    if !has_clipboard_shortcut || settings.clipboard_shortcut.trim().is_empty() {
+        settings.clipboard_shortcut = default_clipboard_shortcut(&settings);
+    }
     if settings.target_lang.is_empty() {
         settings.target_lang = "auto".to_string();
     }
     settings
+}
+
+fn default_clipboard_shortcut(settings: &DesktopSettings) -> String {
+    let occupied = [&settings.activation_shortcut, &settings.selection_shortcut]
+        .into_iter()
+        .filter_map(|value| Shortcut::from_str(value.trim()).ok())
+        .collect::<Vec<_>>();
+    [DEFAULT_CLIPBOARD_SHORTCUT, "Ctrl+Alt+Shift+V", "Ctrl+Alt+Shift+B"]
+        .into_iter()
+        .find(|candidate| {
+            Shortcut::from_str(candidate)
+                .ok()
+                .is_some_and(|parsed| !occupied.iter().any(|used| used == &parsed))
+        })
+        .unwrap_or(DEFAULT_CLIPBOARD_SHORTCUT)
+        .to_string()
 }
 
 fn atomic_replace(source: &std::path::Path, destination: &std::path::Path) -> std::io::Result<()> {
@@ -252,6 +276,14 @@ fn register_shortcuts(app: &AppHandle, settings: &DesktopSettings) -> Vec<String
             ));
         }
     }
+    if let Some(shortcut) = parse_shortcut(&settings.clipboard_shortcut) {
+        if let Err(error) = manager.register(shortcut) {
+            errors.push(format!(
+                "剪贴板翻译快捷键「{}」注册失败：{error}",
+                settings.clipboard_shortcut
+            ));
+        }
+    }
     errors
 }
 
@@ -261,6 +293,9 @@ fn unregister_shortcuts(app: &AppHandle, settings: &DesktopSettings) {
         let _ = manager.unregister(shortcut);
     }
     if let Some(shortcut) = parse_shortcut(&settings.selection_shortcut) {
+        let _ = manager.unregister(shortcut);
+    }
+    if let Some(shortcut) = parse_shortcut(&settings.clipboard_shortcut) {
         let _ = manager.unregister(shortcut);
     }
 }
@@ -1990,6 +2025,11 @@ fn read_clipboard_text() -> String {
     }
 }
 
+#[cfg(not(target_os = "windows"))]
+fn read_clipboard_text() -> String {
+    String::new()
+}
+
 #[tauri::command(async)]
 pub fn it_write_clipboard_text(window: WebviewWindow, text: String) -> Result<(), String> {
     let url = window
@@ -2318,6 +2358,62 @@ fn run_selection_translate(
     }
 }
 
+fn run_clipboard_translate(app: AppHandle, startup_revealed: Arc<AtomicBool>) {
+    cancel_startup_reveal(&startup_revealed);
+    let generation = next_popup_generation();
+    hide_popup(&app);
+    let show_app = app.clone();
+    let _ = app.run_on_main_thread(move || {
+        if !popup_request_is_current(generation) {
+            return;
+        }
+        if let Some(window) = show_app.get_webview_window(APP_WINDOW_LABEL) {
+            let _ = window.unminimize();
+            let _ = window.show();
+            let _ = window.set_focus();
+        }
+    });
+    std::thread::spawn(move || {
+        if !popup_request_is_current(generation) {
+            return;
+        }
+        let Ok(_transaction) = CLIPBOARD_TRANSACTION.lock() else {
+            return;
+        };
+        let text = read_clipboard_text();
+        drop(_transaction);
+        if !popup_request_is_current(generation) {
+            return;
+        }
+        let id = POPUP_SEQ.fetch_add(1, Ordering::Relaxed) + 1;
+        let text = serde_json::to_string(&text).unwrap_or_else(|_| "\"\"".to_string());
+        let script = format!(
+            "(function(t,id){{ \
+             if(String(window.__itClipboardTranslationAccepted)===String(id))return; \
+             if(typeof window.__itTranslateClipboard==='function') \
+             {{ window.__itTranslateClipboard(t,id); }} \
+             else {{ window.__itPendingSelection={{text:t,id:id,kind:'clipboard'}}; }} }} )({text},{id})"
+        );
+        let callback_app = app.clone();
+        let _ = app.run_on_main_thread(move || {
+            if let Some(window) = callback_app.get_webview_window(APP_WINDOW_LABEL) {
+                for delay in [0u64, 250, 700, 1500] {
+                    let window = window.clone();
+                    let script = script.clone();
+                    std::thread::spawn(move || {
+                        if delay > 0 {
+                            std::thread::sleep(Duration::from_millis(delay));
+                        }
+                        if popup_request_is_current(generation) {
+                            let _ = window.eval(&script);
+                        }
+                    });
+                }
+            }
+        });
+    });
+}
+
 #[tauri::command]
 pub fn it_get_settings() -> DesktopSettings {
     current_settings()
@@ -2379,11 +2475,23 @@ fn rollback_settings_changes(
 pub fn it_save_settings(app: AppHandle, settings: DesktopSettings) -> Result<Vec<String>, String> {
     let activation = settings.activation_shortcut.trim();
     let selection = settings.selection_shortcut.trim();
+    let clipboard = settings.clipboard_shortcut.trim();
     if !activation.is_empty() && parse_shortcut(activation).is_none() {
         return Err(format!("无法识别快捷键「{activation}」"));
     }
     if selection.is_empty() || parse_shortcut(selection).is_none() {
         return Err(format!("无法识别快捷键「{selection}」"));
+    }
+    if clipboard.is_empty() || parse_shortcut(clipboard).is_none() {
+        return Err(format!("无法识别快捷键「{clipboard}」"));
+    }
+    let shortcuts = [activation, selection, clipboard]
+        .into_iter()
+        .filter(|shortcut| !shortcut.is_empty())
+        .filter_map(|shortcut| Shortcut::from_str(shortcut).ok())
+        .collect::<Vec<_>>();
+    if shortcuts.iter().enumerate().any(|(index, shortcut)| shortcuts[..index].contains(shortcut)) {
+        return Err("桌面快捷键不能重复".to_string());
     }
 
     let previous = current_settings();
@@ -2391,6 +2499,7 @@ pub fn it_save_settings(app: AppHandle, settings: DesktopSettings) -> Result<Vec
     let next = DesktopSettings {
         activation_shortcut: activation.to_string(),
         selection_shortcut: selection.to_string(),
+        clipboard_shortcut: clipboard.to_string(),
         open_main_window: settings.open_main_window,
         target_lang: if settings.target_lang.is_empty() {
             "auto".to_string()
@@ -2405,7 +2514,8 @@ pub fn it_save_settings(app: AppHandle, settings: DesktopSettings) -> Result<Vec
     };
 
     let hotkeys_changed = next.activation_shortcut != previous.activation_shortcut
-        || next.selection_shortcut != previous.selection_shortcut;
+        || next.selection_shortcut != previous.selection_shortcut
+        || next.clipboard_shortcut != previous.clipboard_shortcut;
     if hotkeys_changed {
         unregister_shortcuts(&app, &previous);
         let errors = register_shortcuts(&app, &next);
@@ -2603,12 +2713,14 @@ pub fn set_global_shortcut(
     if !enhanced {
         // 其它 Pake 应用保持原行为：只注册 CLI 传入的显示快捷键
         settings.selection_shortcut.clear();
+        settings.clipboard_shortcut.clear();
         settings.activation_shortcut = shortcut;
     }
     store_settings(settings.clone());
 
     if settings.activation_shortcut.trim().is_empty()
         && settings.selection_shortcut.trim().is_empty()
+        && settings.clipboard_shortcut.trim().is_empty()
     {
         return Ok(());
     }
@@ -2649,6 +2761,12 @@ pub fn set_global_shortcut(
                         if hotkey.eq(event) {
                             cancel_startup_reveal(&startup_revealed);
                             toggle_all_app_windows(app, _init_fullscreen);
+                            return;
+                        }
+                    }
+                    if let Some(hotkey) = parse_shortcut(&settings.clipboard_shortcut) {
+                        if hotkey.eq(event) {
+                            run_clipboard_translate((*app).clone(), startup_revealed.clone());
                         }
                     }
                 }

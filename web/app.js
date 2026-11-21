@@ -2482,6 +2482,17 @@
       return true;
     };
 
+    window.__itTranslateClipboard = function (text, requestId) {
+      text = String(text == null ? '' : text);
+      if (requestId != null) {
+        requestId = String(requestId);
+        if (window.__itClipboardTranslationAccepted === requestId) return true;
+        window.__itClipboardTranslationAccepted = requestId;
+      }
+      if (!text.trim()) { toast('剪贴板是空的'); return true; }
+      return window.__itTranslateSelection(text, requestId);
+    };
+
     /* 安卓相机拍完回填后自动翻译 */
     window.__itAutoTranslateImage = function () { setTimeout(runText, 80); };
 
@@ -2498,7 +2509,10 @@
         } catch (e) {}
       }
       if (pending) {
-        if (typeof pending === 'object') window.__itTranslateSelection(pending.text, pending.id);
+        if (typeof pending === 'object') {
+          if (pending.kind === 'clipboard') window.__itTranslateClipboard(pending.text, pending.id);
+          else window.__itTranslateSelection(pending.text, pending.id);
+        }
         else {
           try {
             var parsed = JSON.parse(pending);
@@ -3212,6 +3226,7 @@
   var DEFAULT_SETTINGS = {
     selection_shortcut: Bridge.isMac ? 'Cmd+Alt+T' : 'Ctrl+Alt+T',
     activation_shortcut: Bridge.isMac ? 'Cmd+Alt+I' : 'Ctrl+Alt+I',
+    clipboard_shortcut: Bridge.isMac ? 'Cmd+Alt+V' : 'Ctrl+Alt+V',
     open_main_window: false, target_lang: 'auto', auto_start: false, start_to_tray: false,
     preferences: copyObject(DEFAULT_PREFERENCES)
   };
@@ -3235,7 +3250,7 @@
   function settingsFromSaved(saved, localPreferences) {
     var result = copyObject(DEFAULT_SETTINGS);
     if (saved && typeof saved === 'object') {
-      ['selection_shortcut', 'activation_shortcut', 'open_main_window', 'target_lang',
+      ['selection_shortcut', 'activation_shortcut', 'clipboard_shortcut', 'open_main_window', 'target_lang',
         'auto_start', 'start_to_tray'].forEach(function (key) {
         if (saved[key] !== undefined) result[key] = saved[key];
       });
@@ -3440,6 +3455,7 @@
               <h2>电脑功能</h2>
               <label class="it-set-row"><span>划词翻译快捷键</span><input type="text" id="it-set-selection" readonly placeholder="点击后按组合键"></label>
               <label class="it-set-row"><span>显示 / 隐藏窗口</span><input type="text" id="it-set-activation" readonly placeholder="点击后按组合键"></label>
+              <label class="it-set-row"><span>剪贴板翻译快捷键</span><input type="text" id="it-set-clipboard" readonly placeholder="点击后按组合键"></label>
               <label class="it-set-row"><span>划词结果显示</span><select id="it-set-mode"><option value="popup">鼠标旁悬浮窗</option><option value="main">打开主窗口</option></select></label>
               <label class="it-set-row"><span>悬浮窗目标语言</span><select id="it-set-lang"><option value="auto">自动判断</option><option value="zh">中文</option><option value="en">英文</option></select></label>
               <label class="it-set-row"><span>开机自动启动</span><input type="checkbox" class="it-set-check" id="it-set-autostart"></label>
@@ -4277,6 +4293,7 @@
       modal.querySelectorAll('[data-pref-output]').forEach(updatePreferenceOutput);
       $('it-set-selection').value = settingsState.selection_shortcut || '';
       $('it-set-activation').value = settingsState.activation_shortcut || '未设置';
+      $('it-set-clipboard').value = settingsState.clipboard_shortcut || '';
       $('it-set-mode').value = settingsState.open_main_window ? 'main' : 'popup';
       $('it-set-lang').value = settingsState.target_lang || 'auto';
       $('it-set-autostart').checked = !!settingsState.auto_start;
@@ -4676,6 +4693,7 @@
     }, { passive: true, capture: true });
     on($('it-set-selection'), 'click', function () { startRecord(this, 'selection_shortcut'); });
     on($('it-set-activation'), 'click', function () { startRecord(this, 'activation_shortcut'); });
+    on($('it-set-clipboard'), 'click', function () { startRecord(this, 'clipboard_shortcut'); });
     on($('it-set-mode'), 'change', function () {
       settingsState.open_main_window = this.value === 'main'; queueSettingsPersistence(true);
     });
@@ -4780,6 +4798,11 @@
         } else if (action && action.type === 'translate-selection' && typeof action.text === 'string' &&
             window.__itTranslateSelection) {
           window.__itTranslateSelection(action.text);
+        } else if (action && action.type === 'translate-clipboard' &&
+            window.__itTranslateClipboard) {
+          window.__itTranslateClipboard(action.text, action.id);
+        } else if (action && action.type === 'clipboard-translation-error') {
+          toast('读取剪贴板失败', true);
         }
       });
     }

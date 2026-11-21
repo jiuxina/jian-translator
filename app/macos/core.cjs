@@ -14,6 +14,7 @@ function defaultSettings() {
   return {
     selection_shortcut: 'Cmd+Alt+T',
     activation_shortcut: 'Cmd+Alt+I',
+    clipboard_shortcut: 'Cmd+Alt+V',
     open_main_window: false,
     target_lang: 'auto',
     auto_start: false,
@@ -32,16 +33,24 @@ function normalizeSettings(input) {
   }
   const defaults = defaultSettings();
   const result = { ...defaults };
-  for (const key of ['selection_shortcut', 'activation_shortcut']) {
+  for (const key of ['selection_shortcut', 'activation_shortcut', 'clipboard_shortcut']) {
     const value = input[key] === undefined ? defaults[key] : input[key];
     if (typeof value !== 'string' || value.length > 120) {
       throw new Error('快捷键格式无效');
     }
     result[key] = value.trim();
   }
-  if (result.selection_shortcut && result.activation_shortcut &&
-      result.selection_shortcut.toLowerCase() === result.activation_shortcut.toLowerCase()) {
-    throw new Error('划词翻译与显示窗口不能使用相同快捷键');
+  if (input.clipboard_shortcut === undefined) {
+    const occupied = new Set([result.selection_shortcut, result.activation_shortcut]
+      .filter(Boolean).map(value => canonicalShortcut(value).toLowerCase()));
+    result.clipboard_shortcut = [defaults.clipboard_shortcut,
+      'Cmd+Ctrl+Alt+V', 'Cmd+Ctrl+Alt+B']
+      .find(value => !occupied.has(canonicalShortcut(value).toLowerCase()));
+  }
+  const shortcuts = [result.selection_shortcut, result.activation_shortcut, result.clipboard_shortcut]
+    .filter(Boolean).map(value => canonicalShortcut(value).toLowerCase());
+  if (new Set(shortcuts).size !== shortcuts.length) {
+    throw new Error('桌面快捷键不能重复');
   }
   for (const key of ['open_main_window', 'auto_start', 'start_to_tray']) {
     if (input[key] !== undefined && typeof input[key] !== 'boolean') {

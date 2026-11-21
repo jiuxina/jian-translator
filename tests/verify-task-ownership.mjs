@@ -7,14 +7,14 @@ const source = new TextDecoder('utf-8', { fatal: true }).decode(
 function section(from, to) { return source.slice(source.indexOf(from), source.indexOf(to, source.indexOf(from))); }
 const helpers = source.includes('  /* ---------------- Translation tasks')
   ? section('  /* ---------------- Translation tasks', '  function runText()') : '';
-function fixture() {
+function fixture(initialWindow = {}) {
   const elements = new Map(), handlers = new Map(), pending = [], readers = [], copied = [];
   const el = (id) => {
     if (!elements.has(id)) elements.set(id, { id, value: '', textContent: '', dataset: {}, style: {}, hidden: false,
       classList: { add() {}, remove() {}, toggle() {} }, click() {} });
     return elements.get(id);
   };
-  const context = vm.createContext({ window: {}, state: { model: { text: 'text', doc: 'doc', syllable: 'syl' },
+  const context = vm.createContext({ window: initialWindow, state: { model: { text: 'text', doc: 'doc', syllable: 'syl' },
     src: 'auto', tgt: 'zh', image: null, running: false, controller: null },
     document: { createElement: () => ({ remove() {} }), body: { appendChild() {} } },
     performance, AbortController, MAX_SRC: 8000, imageSeq: 0, docEditRevision: 0, docImportSequence: 0,
@@ -83,6 +83,29 @@ const flush = async () => { for (let i = 0; i < 10; i++) await Promise.resolve()
   test.context.window.__itTranslateSelection('selection', 'request-1');
   assert.equal(test.el('src').value, 'my edit', 'Duplicate selection delivery cannot overwrite input');
   assert.equal(test.pending.length, 1, 'A native request is translated once');
+}
+{
+  const test = fixture();
+  test.context.state.image = 'synthetic old image';
+  test.context.window.__itTranslateClipboard('clipboard content', 'clipboard-1');
+  assert.equal(test.el('src').value, 'clipboard content', 'The shortcut fills the text input');
+  assert.equal(test.context.state.image, null, 'A clipboard text request clears the previous image');
+  assert.equal(test.pending.length, 1, 'The shortcut starts translation without a second action');
+  assert.equal(test.pending[0].payload.prompt.text, 'clipboard content');
+  test.el('src').value = 'newer manual edit';
+  test.context.window.__itTranslateClipboard('clipboard content', 'clipboard-1');
+  assert.equal(test.el('src').value, 'newer manual edit', 'A retried clipboard request preserves newer input');
+  assert.equal(test.pending.length, 1, 'A retried clipboard request never starts another translation');
+  test.context.window.__itTranslateClipboard('   ', 'clipboard-empty');
+  assert.equal(test.el('src').value, 'newer manual edit', 'An empty clipboard preserves the current input');
+  assert.equal(test.pending.length, 1, 'An empty clipboard never submits a translation');
+}
+{
+  const test = fixture({ __itPendingSelection: {
+    text: 'early clipboard content', id: 'clipboard-startup', kind: 'clipboard'
+  } });
+  assert.equal(test.el('src').value, 'early clipboard content', 'A startup shortcut is consumed when the pane is ready');
+  assert.equal(test.pending.length, 1, 'A startup clipboard action starts exactly one translation');
 }
 {
   const test = fixture();

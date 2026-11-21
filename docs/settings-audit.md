@@ -21,7 +21,7 @@
 | 动效 | `appearance.motion/ambientLight` | 界面动画和环境柔光，与液态玻璃光学参数互相独立。 |
 | 翻译偏好 | `translation.defaultTab/sourceLanguage/targetLanguage/defaultModels.{text,syllable,doc}/rememberLanguages/rememberModels` | 配置下次启动默认页面、语言和各页模型；已启用的记忆项可覆盖相应默认值。 |
 | 更新 | `updates.autoCheck` | 默认启用；修改后即时应用并自动保存，启动自动检查每 24 小时最多一次。手动检查独立于开关；只比较正式发布并链接到仓库发布页。 |
-| 电脑功能 | `selection_shortcut/activation_shortcut/open_main_window/target_lang/start_to_tray`；`popup.backgroundData` | Windows/macOS 原生快捷键、划词结果显示、启动到托盘、浮窗目标语言和独立背景。首次启动默认显示主窗口且不开机自启；两项都可由用户打开。Windows 自启动是独立系统状态，不进入普通偏好快照；macOS 登录项仍由桌面设置保存。 |
+| 电脑功能 | `selection_shortcut/activation_shortcut/clipboard_shortcut/open_main_window/target_lang/start_to_tray`；`popup.backgroundData` | Windows/macOS 原生快捷键、划词结果显示、剪贴板文本填入主界面并自动翻译、启动到托盘、浮窗目标语言和独立背景。首次启动默认显示主窗口且不开机自启；两项都可由用户打开。Windows 自启动是独立系统状态，不进入普通偏好快照；macOS 登录项仍由桌面设置保存。 |
 
 偏好版本为 `3`。`appearance.material`、`appearance.glassStrength`、`appearance.cardReveal` 与
 `popup.cardReveal` 不再参与归一化或渲染；旧配置中的这些键会被丢弃，液态玻璃使用新默认参数，

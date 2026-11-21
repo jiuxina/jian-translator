@@ -29,6 +29,7 @@ let tray = null;
 let quitting = false;
 let settings = defaultSettings();
 let hotkeysEnabled = true;
+let clipboardTranslationSequence = 0;
 let saving = false;
 let captureRunning = false;
 let activeSelectionOperation = null;
@@ -119,8 +120,25 @@ function shortcutHandlers(next) {
     }],
     [canonicalShortcut(next.selection_shortcut), () => {
       if (hotkeysEnabled) void translateSelection();
+    }],
+    [canonicalShortcut(next.clipboard_shortcut), () => {
+      if (hotkeysEnabled) translateClipboard();
     }]
   ].filter(([accelerator]) => accelerator);
+}
+
+function translateClipboard() {
+  cancelSelectionCapture(activeSelectionOperation);
+  if (popupWindow && !popupWindow.isDestroyed() && popupWindow.isVisible()) closePopup(popupWindow);
+  showMain();
+  try {
+    notifyAction({
+      type: 'translate-clipboard', text: clipboard.readText(),
+      id: ++clipboardTranslationSequence
+    });
+  } catch {
+    notifyAction({ type: 'clipboard-translation-error' });
+  }
 }
 
 function registerShortcuts(next) {
@@ -146,7 +164,8 @@ async function saveSettings(input) {
   try {
     const next = normalizeSettings(input);
     shortcutsChanged = next.selection_shortcut !== previous.selection_shortcut ||
-      next.activation_shortcut !== previous.activation_shortcut;
+      next.activation_shortcut !== previous.activation_shortcut ||
+      next.clipboard_shortcut !== previous.clipboard_shortcut;
     if (shortcutsChanged) {
       cancelSelectionCapture(activeSelectionOperation);
       globalShortcut.unregisterAll();
