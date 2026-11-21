@@ -21,7 +21,7 @@
 | 动效 | `appearance.motion/ambientLight` | 界面动画和环境柔光，与液态玻璃光学参数互相独立。 |
 | 翻译偏好 | `translation.defaultTab/sourceLanguage/targetLanguage/defaultModels.{text,syllable,doc}/rememberLanguages/rememberModels` | 配置下次启动默认页面、语言和各页模型；已启用的记忆项可覆盖相应默认值。 |
 | 更新 | `updates.autoCheck` | 默认启用；修改后即时应用并自动保存，启动自动检查每 24 小时最多一次。手动检查独立于开关；只比较正式发布并链接到仓库发布页。 |
-| 电脑功能 | `selection_shortcut/activation_shortcut/clipboard_shortcut/open_main_window/target_lang/start_to_tray`；`popup.backgroundData` | Windows/macOS 原生快捷键、划词结果显示、剪贴板文本填入主界面并自动翻译、启动到托盘、浮窗目标语言和独立背景。首次启动默认显示主窗口且不开机自启；两项都可由用户打开。Windows 自启动是独立系统状态，不进入普通偏好快照；macOS 登录项仍由桌面设置保存。 |
+| 电脑功能 | `selection_shortcut/activation_shortcut/clipboard_shortcut/open_main_window/target_lang/start_to_tray`；`popup.backgroundData` | Windows/macOS 原生快捷键、划词结果显示、剪贴板文字或图片填入主界面并自动翻译、启动到托盘、浮窗目标语言和独立背景。首次启动默认显示主窗口且不开机自启；两项都可由用户打开。Windows 自启动是独立系统状态，不进入普通偏好快照；macOS 登录项仍由桌面设置保存。 |
 
 偏好版本为 `3`。`appearance.material`、`appearance.glassStrength`、`appearance.cardReveal` 与
 `popup.cardReveal` 不再参与归一化或渲染；旧配置中的这些键会被丢弃，液态玻璃使用新默认参数，
@@ -56,6 +56,7 @@ Tab 滑块使用透明材质，保留原有静止外观。该材质选择由组�
 - `popup.backgroundData` 非空时替换浮窗的背景图片；清空后浮窗继续跟随 `background.data`。主背景图片未选择时，浮窗独立图片仍可使用共享壁纸淡化、模糊和填充值。
 - `rememberLanguages` 和 `rememberModels` 分别使最近一次有效语言或模型覆盖对应默认项；`defaultTab=last` 单独决定页面恢复行为。
 - `open_main_window` 决定划词结果出现位置。浮窗路径使用 `target_lang` 并固定调用轻量模型；主窗口路径沿用主界面的语言与文本模型，因此两类语言/模型选项并非重复。
+- `clipboard_shortcut` 始终将内容交给主窗口，不受 `open_main_window` 或浮窗语言设置影响。文字沿用主界面语言与模型，图片优先于同一剪贴板中的文字，并使用共用视觉翻译流程；两类内容共用一个快捷键设置。
 - Windows 自启动使用共用的 HKCU Run 值。界面显示系统中登记的完整目标路径；只有明确执行“设为当前版本”才写入当前 exe，任一版本关闭开关都会删除全局启动项。普通设置保存、默认值恢复及旧设置缓存都不改变注册表。多版本切换需退出现有实例后再启动目标版本。
 - `auto_start` 与 `start_to_tray` 的新安装默认均为关闭；安装包不会注入 `--start-to-tray`。已有设置文件中的显式 `true` 仍优先于默认值。
 - macOS 的 `auto_start` 仍由登录项服务处理；Windows 不再把旧 `desktop-settings.json` 中的 `auto_start` 当成系统状态。

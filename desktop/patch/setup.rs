@@ -1989,11 +1989,11 @@ pub fn it_list_system_fonts(window: WebviewWindow) -> Result<Vec<String>, String
 #[cfg(target_os = "windows")]
 fn read_clipboard_text() -> String {
     use windows_sys::Win32::System::DataExchange::{
-        CloseClipboard, GetClipboardData, IsClipboardFormatAvailable, OpenClipboard,
+        CloseClipboard, IsClipboardFormatAvailable, OpenClipboard,
     };
-    use windows_sys::Win32::System::Memory::{GlobalLock, GlobalSize, GlobalUnlock};
     use windows_sys::Win32::System::Ole::CF_UNICODETEXT;
 
+    // SAFETY: this scope owns the opened clipboard until CloseClipboard.
     unsafe {
         if IsClipboardFormatAvailable(CF_UNICODETEXT as u32) == 0 {
             return String::new();
@@ -2001,6 +2001,20 @@ fn read_clipboard_text() -> String {
         if OpenClipboard(std::ptr::null_mut()) == 0 {
             return String::new();
         }
+        let text = read_open_clipboard_text();
+        let _ = CloseClipboard();
+        text
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn read_open_clipboard_text() -> String {
+    use windows_sys::Win32::System::DataExchange::GetClipboardData;
+    use windows_sys::Win32::System::Memory::{GlobalLock, GlobalSize, GlobalUnlock};
+    use windows_sys::Win32::System::Ole::CF_UNICODETEXT;
+
+    // SAFETY: callers hold the clipboard open; the borrowed HGLOBAL is never freed.
+    unsafe {
         let handle = GetClipboardData(CF_UNICODETEXT as u32);
         let mut text = String::new();
         if !handle.is_null() {
@@ -2020,7 +2034,6 @@ fn read_clipboard_text() -> String {
                 }
             }
         }
-        let _ = CloseClipboard();
         text
     }
 }
@@ -2028,6 +2041,178 @@ fn read_clipboard_text() -> String {
 #[cfg(not(target_os = "windows"))]
 fn read_clipboard_text() -> String {
     String::new()
+}
+
+const MAX_CLIPBOARD_IMAGE_BYTES: usize = 32 * 1024 * 1024;
+const MAX_CLIPBOARD_IMAGE_DIMENSION: i32 = 16_384;
+
+fn clipboard_image_layout(width: i32, height: i32) -> Result<(usize, usize), String> {
+    if width <= 0 || height <= 0 || width > MAX_CLIPBOARD_IMAGE_DIMENSION
+        || height > MAX_CLIPBOARD_IMAGE_DIMENSION
+    {
+        return Err("剪贴板图片尺寸无效或过大".to_string());
+    }
+    let stride = (width as usize).checked_mul(3)
+        .and_then(|bytes| bytes.checked_add(3))
+        .map(|bytes| bytes & !3)
+        .ok_or_else(|| "剪贴板图片尺寸过大".to_string())?;
+    let length = stride.checked_mul(height as usize)
+        .filter(|length| *length <= MAX_CLIPBOARD_IMAGE_BYTES - 54)
+        .ok_or_else(|| "剪贴板图片过大，请缩小后重试".to_string())?;
+    Ok((stride, length))
+}
+
+fn clipboard_image_base64(bytes: &[u8]) -> String {
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut encoded = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for chunk in bytes.chunks(3) {
+        let value = ((chunk[0] as u32) << 16)
+            | ((chunk.get(1).copied().unwrap_or(0) as u32) << 8)
+            | chunk.get(2).copied().unwrap_or(0) as u32;
+        encoded.push(ALPHABET[((value >> 18) & 63) as usize] as char);
+        encoded.push(ALPHABET[((value >> 12) & 63) as usize] as char);
+        encoded.push(if chunk.len() > 1 { ALPHABET[((value >> 6) & 63) as usize] as char } else { '=' });
+        encoded.push(if chunk.len() > 2 { ALPHABET[(value & 63) as usize] as char } else { '=' });
+    }
+    encoded
+}
+
+fn clipboard_bitmap_file(width: i32, height: i32, pixels: &[u8]) -> Result<Vec<u8>, String> {
+    let (_, length) = clipboard_image_layout(width, height)?;
+    if pixels.len() != length {
+        return Err("剪贴板位图数据不完整".to_string());
+    }
+    let mut bmp = vec![0u8; 54];
+    bmp[..2].copy_from_slice(b"BM");
+    bmp[2..6].copy_from_slice(&((length + 54) as u32).to_le_bytes());
+    bmp[10..14].copy_from_slice(&54u32.to_le_bytes());
+    bmp[14..18].copy_from_slice(&40u32.to_le_bytes());
+    bmp[18..22].copy_from_slice(&width.to_le_bytes());
+    // A negative height matches the top-down pixels requested from GetDIBits.
+    bmp[22..26].copy_from_slice(&(-height).to_le_bytes());
+    bmp[26..28].copy_from_slice(&1u16.to_le_bytes());
+    bmp[28..30].copy_from_slice(&24u16.to_le_bytes());
+    bmp[34..38].copy_from_slice(&(length as u32).to_le_bytes());
+    bmp.extend_from_slice(pixels);
+    Ok(bmp)
+}
+
+fn clipboard_png_data_url(bytes: &[u8]) -> Result<String, String> {
+    if bytes.len() < 33 || bytes.len() > MAX_CLIPBOARD_IMAGE_BYTES
+        || !bytes.starts_with(b"\x89PNG\r\n\x1a\n")
+        || bytes[8..12] != 13u32.to_be_bytes() || &bytes[12..16] != b"IHDR"
+    {
+        return Err("剪贴板 PNG 图片无效或过大".to_string());
+    }
+    let width = u32::from_be_bytes(bytes[16..20].try_into().unwrap());
+    let height = u32::from_be_bytes(bytes[20..24].try_into().unwrap());
+    if width > i32::MAX as u32 || height > i32::MAX as u32 {
+        return Err("剪贴板图片尺寸过大".to_string());
+    }
+    clipboard_image_layout(width as i32, height as i32)?;
+    Ok(format!("data:image/png;base64,{}", clipboard_image_base64(bytes)))
+}
+
+#[cfg(target_os = "windows")]
+fn read_open_clipboard_png(format: u32) -> Result<String, String> {
+    use windows_sys::Win32::System::DataExchange::GetClipboardData;
+    use windows_sys::Win32::System::Memory::{GlobalLock, GlobalSize, GlobalUnlock};
+    // SAFETY: the caller owns the open clipboard. Only a bounded locked allocation is copied.
+    unsafe {
+        let handle = GetClipboardData(format);
+        if handle.is_null() { return Err("无法读取剪贴板图片".to_string()); }
+        let length = GlobalSize(handle);
+        if length == 0 || length > MAX_CLIPBOARD_IMAGE_BYTES {
+            return Err("剪贴板图片为空或过大".to_string());
+        }
+        let pointer = GlobalLock(handle);
+        if pointer.is_null() { return Err("无法读取剪贴板图片".to_string()); }
+        let bytes = std::slice::from_raw_parts(pointer as *const u8, length).to_vec();
+        let _ = GlobalUnlock(handle);
+        clipboard_png_data_url(&bytes)
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn read_open_clipboard_bitmap() -> Result<String, String> {
+    use windows_sys::Win32::Graphics::Gdi::{
+        GetDC, GetDIBits, GetObjectW, ReleaseDC, BITMAP, BITMAPINFO, BI_RGB, DIB_RGB_COLORS,
+    };
+    use windows_sys::Win32::System::DataExchange::GetClipboardData;
+    use windows_sys::Win32::System::Ole::CF_BITMAP;
+    // SAFETY: the caller holds the clipboard open. The returned HBITMAP is borrowed;
+    // Windows owns it, so it must not be selected into a DC or deleted here.
+    unsafe {
+        let bitmap = GetClipboardData(CF_BITMAP as u32);
+        if bitmap.is_null() { return Err("无法读取剪贴板位图".to_string()); }
+        let mut details: BITMAP = std::mem::zeroed();
+        if GetObjectW(bitmap, std::mem::size_of::<BITMAP>() as i32, &mut details as *mut _ as _) == 0 {
+            return Err("无法读取剪贴板位图尺寸".to_string());
+        }
+        let (_, length) = clipboard_image_layout(details.bmWidth, details.bmHeight)?;
+        let mut pixels = vec![0u8; length];
+        let mut info: BITMAPINFO = std::mem::zeroed();
+        info.bmiHeader.biSize = std::mem::size_of_val(&info.bmiHeader) as u32;
+        info.bmiHeader.biWidth = details.bmWidth;
+        info.bmiHeader.biHeight = -details.bmHeight;
+        info.bmiHeader.biPlanes = 1;
+        info.bmiHeader.biBitCount = 24;
+        info.bmiHeader.biCompression = BI_RGB;
+        info.bmiHeader.biSizeImage = length as u32;
+        let dc = GetDC(std::ptr::null_mut());
+        if dc.is_null() { return Err("无法转换剪贴板位图".to_string()); }
+        let lines = GetDIBits(dc, bitmap, 0, details.bmHeight as u32,
+            pixels.as_mut_ptr() as _, &mut info, DIB_RGB_COLORS);
+        let _ = ReleaseDC(std::ptr::null_mut(), dc);
+        if lines != details.bmHeight { return Err("剪贴板位图数据不完整".to_string()); }
+        let bmp = clipboard_bitmap_file(details.bmWidth, details.bmHeight, &pixels)?;
+        Ok(format!("data:image/bmp;base64,{}", clipboard_image_base64(&bmp)))
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn read_clipboard_content() -> Result<serde_json::Value, String> {
+    use windows_sys::Win32::System::DataExchange::{
+        CloseClipboard, IsClipboardFormatAvailable, OpenClipboard, RegisterClipboardFormatW,
+    };
+    use windows_sys::Win32::System::Ole::{CF_BITMAP, CF_DIB, CF_DIBV5};
+    struct OpenClipboardGuard;
+    impl Drop for OpenClipboardGuard {
+        fn drop(&mut self) {
+            // SAFETY: this guard is created only after successfully opening the clipboard.
+            unsafe { CloseClipboard(); }
+        }
+    }
+    // SAFETY: the guard releases this thread's clipboard access on every return path.
+    unsafe {
+        let opened = (0..8).any(|_| {
+            if OpenClipboard(std::ptr::null_mut()) != 0 { true }
+            else { std::thread::sleep(Duration::from_millis(12)); false }
+        });
+        if !opened { return Err("系统剪贴板正被占用，请重试".to_string()); }
+        let _guard = OpenClipboardGuard;
+        let png_format = RegisterClipboardFormatW([80u16, 78, 71, 0].as_ptr());
+        let png = if png_format != 0 && IsClipboardFormatAvailable(png_format) != 0 {
+            Some(read_open_clipboard_png(png_format))
+        } else { None };
+        if let Some(Ok(image)) = png.as_ref() {
+            return Ok(serde_json::json!({ "text": "", "image": image }));
+        }
+        // Windows synthesizes CF_BITMAP from the standard DIB/DIBV5 clipboard formats.
+        if [CF_BITMAP, CF_DIB, CF_DIBV5].into_iter()
+            .any(|format| IsClipboardFormatAvailable(format as u32) != 0)
+        {
+            return read_open_clipboard_bitmap()
+                .map(|image| serde_json::json!({ "text": "", "image": image }));
+        }
+        if let Some(Err(error)) = png { return Err(error); }
+        Ok(serde_json::json!({ "text": read_open_clipboard_text(), "image": "" }))
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn read_clipboard_content() -> Result<serde_json::Value, String> {
+    Err("当前桌面平台不支持剪贴板读取".to_string())
 }
 
 #[tauri::command(async)]
@@ -2361,6 +2546,7 @@ fn run_selection_translate(
 fn run_clipboard_translate(app: AppHandle, startup_revealed: Arc<AtomicBool>) {
     cancel_startup_reveal(&startup_revealed);
     let generation = next_popup_generation();
+    let id = POPUP_SEQ.fetch_add(1, Ordering::Relaxed) + 1;
     hide_popup(&app);
     let show_app = app.clone();
     let _ = app.run_on_main_thread(move || {
@@ -2371,29 +2557,36 @@ fn run_clipboard_translate(app: AppHandle, startup_revealed: Arc<AtomicBool>) {
             let _ = window.unminimize();
             let _ = window.show();
             let _ = window.set_focus();
+            let _ = window.eval(&format!(
+                "(function(id){{ if(typeof window.__itBeginClipboardTranslation==='function') \
+                 window.__itBeginClipboardTranslation(id); else window.__itPendingClipboardStart=id; }})({id})"
+            ));
+            read_clipboard_for_translation(show_app, id, generation);
         }
     });
+}
+
+fn read_clipboard_for_translation(app: AppHandle, id: u64, generation: u64) {
     std::thread::spawn(move || {
         if !popup_request_is_current(generation) {
             return;
         }
-        let Ok(_transaction) = CLIPBOARD_TRANSACTION.lock() else {
-            return;
-        };
-        let text = read_clipboard_text();
-        drop(_transaction);
+        let content = CLIPBOARD_TRANSACTION.lock()
+            .map_err(|_| "剪贴板读取暂时不可用，请重试".to_string())
+            .and_then(|_transaction| read_clipboard_content())
+            .unwrap_or_else(|error| serde_json::json!({ "error": error }));
         if !popup_request_is_current(generation) {
             return;
         }
-        let id = POPUP_SEQ.fetch_add(1, Ordering::Relaxed) + 1;
-        let text = serde_json::to_string(&text).unwrap_or_else(|_| "\"\"".to_string());
+        let payload = content.to_string();
         let script = format!(
-            "(function(t,id){{ \
+            "(function(payload,id){{ \
              if(String(window.__itClipboardTranslationAccepted)===String(id))return; \
              if(typeof window.__itTranslateClipboard==='function') \
-             {{ window.__itTranslateClipboard(t,id); }} \
-             else {{ window.__itPendingSelection={{text:t,id:id,kind:'clipboard'}}; }} }} )({text},{id})"
+             {{ window.__itTranslateClipboard(payload,id); }} \
+             else {{ payload.id=id;payload.kind='clipboard';window.__itPendingSelection=payload; }} }})({payload},{id})"
         );
+        let script = Arc::new(script);
         let callback_app = app.clone();
         let _ = app.run_on_main_thread(move || {
             if let Some(window) = callback_app.get_webview_window(APP_WINDOW_LABEL) {

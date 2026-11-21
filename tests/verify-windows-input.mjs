@@ -10,8 +10,16 @@ assert.match(source, /fn default_clipboard_shortcut\([\s\S]*?Shortcut::from_str\
   'Legacy settings select a clipboard shortcut distinct from existing bindings');
 assert.match(source, /if !popup_request_is_current\(generation\)\s*\{\s*return;\s*\}\s*if let Some\(window\) = show_app/,
   'A superseded shortcut cannot later reveal or focus the window');
-assert.match(source, /fn run_clipboard_translate\([\s\S]*?window\.show\(\)[\s\S]*?read_clipboard_text\(\)[\s\S]*?window\.eval\(&script\)/,
-  'The explicit shortcut reads text, reveals the main window and delivers through the webview');
+assert.match(source, /fn run_clipboard_translate\([\s\S]*?window\.show\(\)[\s\S]*?read_clipboard_content\(\)[\s\S]*?window\.eval\(&script\)/,
+  'The explicit shortcut reads image or text, reveals the main window and delivers through the webview');
+assert.match(source, /RegisterClipboardFormatW\(\[80u16, 78, 71, 0\]\.as_ptr\(\)\)/,
+  'Windows reads the registered PNG format before standard bitmap fallback');
+assert.match(source, /\[CF_BITMAP, CF_DIB, CF_DIBV5\]/,
+  'Standard Windows bitmap formats are accepted');
+assert.match(source, /let lines = GetDIBits\(/,
+  'System conversion produces a standard 24-bit bitmap');
+assert.match(source, /impl Drop for OpenClipboardGuard/,
+  'The image snapshot closes clipboard access on every error path');
 assert.match(source, /window\.__itTranslateClipboard/);
 assert.match(source, /clipboard_shortcut\)\s*\{\s*if hotkey\.eq\(event\)\s*\{\s*run_clipboard_translate/,
   'The native clipboard read is reached from the registered shortcut handler');
@@ -54,24 +62,25 @@ for (let retry = 0; retry < 4; retry++) vm.runInContext(selectionEval, context);
 assert.equal(calls, 1, 'Acknowledged retry never re-enters the translation handler');
 assert.equal(context.window.input, 'newer manual edit', 'Acknowledged retry preserves newer manual input');
 
-const clipboardDeliveryStart = source.indexOf('"(function(t,id){{', source.indexOf('fn run_clipboard_translate('));
+const clipboardDeliveryStart = source.indexOf('"(function(payload,id){{', source.indexOf('fn run_clipboard_translate('));
 const clipboardDeliveryEnd = source.indexOf('\n        );', clipboardDeliveryStart);
 assert.ok(clipboardDeliveryStart >= 0 && clipboardDeliveryEnd > clipboardDeliveryStart,
   'Native clipboard delivery script is extractable');
 const clipboardDeliveryLiteral = source.slice(clipboardDeliveryStart, clipboardDeliveryEnd).trim();
 const clipboardDelivery = JSON.parse(clipboardDeliveryLiteral.replace(/\\\n\s*/g, ''))
   .replaceAll('{{', '{').replaceAll('}}', '}')
-  .replace('{text}', JSON.stringify('synthetic clipboard')).replace('{id}', '43');
+  .replace('{payload}', JSON.stringify({ text: '', image: 'data:image/png;base64,c3ludGhldGlj' }))
+  .replace('{id}', '43');
 const deliveryContext = vm.createContext({ window: {} });
 vm.runInContext(clipboardDelivery, deliveryContext);
 assert.deepEqual(JSON.parse(JSON.stringify(deliveryContext.window.__itPendingSelection)), {
-  text: 'synthetic clipboard', id: 43, kind: 'clipboard'
+  text: '', image: 'data:image/png;base64,c3ludGhldGlj', id: 43, kind: 'clipboard'
 });
 let clipboardDeliveryCalls = 0;
-deliveryContext.window.__itTranslateClipboard = (text, id) => {
+deliveryContext.window.__itTranslateClipboard = (payload, id) => {
   clipboardDeliveryCalls++;
   deliveryContext.window.__itClipboardTranslationAccepted = String(id);
-  deliveryContext.window.input = text;
+  deliveryContext.window.input = payload;
 };
 vm.runInContext(clipboardDelivery, deliveryContext);
 deliveryContext.window.input = 'newer clipboard edit';
@@ -81,7 +90,7 @@ assert.equal(deliveryContext.window.input, 'newer clipboard edit');
 
 const appSource = new TextDecoder('utf-8', { fatal: true }).decode(
   await readFile(new URL('../web/app.js', import.meta.url))).replace(/\r\n/g, '\n');
-const clipboardHandlerStart = appSource.indexOf('window.__itTranslateClipboard = function');
+const clipboardHandlerStart = appSource.indexOf('var clipboardTranslationRevision = 0;');
 const clipboardHandlerEnd = appSource.indexOf('function consumePendingSelection()', clipboardHandlerStart);
 assert.ok(clipboardHandlerStart >= 0 && clipboardHandlerEnd > clipboardHandlerStart,
   'The clipboard callback can be exercised independently');
@@ -89,7 +98,8 @@ const clipboardCalls = [];
 const notices = [];
 const appContext = vm.createContext({
   window: { __itTranslateSelection: (text, id) => clipboardCalls.push([text, id]) },
-  toast: message => notices.push(message), String
+  toast: message => notices.push(message), String,
+  textEditRevision: 0, imageSeq: 0, imageImportRevision: 0
 });
 vm.runInContext(appSource.slice(clipboardHandlerStart, clipboardHandlerEnd), appContext);
 appContext.window.__itTranslateClipboard(' synthetic clipboard ', 7);

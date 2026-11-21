@@ -393,22 +393,27 @@
   /* 供 Android 原生回填图片 */
   window.__itOnImage = function () {};
 
-  function shrinkImage(dataUrl, done) {
+  function shrinkImage(dataUrl, done, failed) {
+    function fail() {
+      if (failed) failed();
+      else done(dataUrl);
+    }
     var img = new Image();
     img.onload = function () {
       try {
+        if (!img.width || !img.height) { fail(); return; }
         var scale = Math.min(1, 1600 / Math.max(img.width, img.height));
         var canvas = document.createElement('canvas');
-        canvas.width = Math.round(img.width * scale);
-        canvas.height = Math.round(img.height * scale);
+        canvas.width = Math.max(1, Math.round(img.width * scale));
+        canvas.height = Math.max(1, Math.round(img.height * scale));
         var context = canvas.getContext('2d');
         context.fillStyle = '#FFFFFF';
         context.fillRect(0, 0, canvas.width, canvas.height);
         context.drawImage(img, 0, 0, canvas.width, canvas.height);
         done(canvas.toDataURL('image/jpeg', 0.85));
-      } catch (e) { done(dataUrl); }
+      } catch (e) { fail(); }
     };
-    img.onerror = function () { done(dataUrl); };
+    img.onerror = fail;
     img.src = dataUrl;
   }
 
@@ -2012,7 +2017,9 @@
   }
 
   var imageSeq = 0;
+  var imageImportRevision = 0;
   function setImage(dataUrl) {
+    imageImportRevision++;
     var pendingImport = readPendingTransfer('it-image-import');
     if (pendingImport && pendingImport.purpose === 'translation') removePendingTransfer('it-image-import');
     state.image = dataUrl || null;
@@ -2365,17 +2372,17 @@
     on($('src'), 'input', function () { textEditRevision++; refreshCount(); });
     bindCancel('text', 'out-text', 'meta-text');
     function importPastedImage(file, expectedRevision) {
-      if (expectedRevision != null && expectedRevision !== imageSeq) return;
-      var revision = ++imageSeq;
+      if (expectedRevision != null && expectedRevision !== imageImportRevision) return;
+      var revision = ++imageImportRevision;
       var pending = readPendingTransfer('it-image-import');
       if (pending && pending.purpose === 'translation') removePendingTransfer('it-image-import');
       var reader = new FileReader();
       reader.onload = function (event) {
         shrinkImage(event.target.result, function (dataUrl) {
-          if (revision === imageSeq) setImage(dataUrl);
+          if (revision === imageImportRevision) setImage(dataUrl);
         });
       };
-      reader.onerror = function () { if (revision === imageSeq) toast('读取图片失败', true); };
+      reader.onerror = function () { if (revision === imageImportRevision) toast('读取图片失败', true); };
       reader.readAsDataURL(file);
     }
     on($('src'), 'paste', function (event) {
@@ -2388,19 +2395,21 @@
     });
 
     on($('btn-pick-img'), 'click', function () {
-      var requestedImageSeq = imageSeq;
+      clipboardTranslationRevision++;
+      var requestedImageRevision = ++imageImportRevision;
       Bridge.pickImage(function (dataUrl) {
         // A background native import must not undo a later clear, delete or paste.
-        if (imageSeq === requestedImageSeq) setImage(dataUrl);
+        if (imageImportRevision === requestedImageRevision) setImage(dataUrl);
       });
     });
 
     on($('img-del'), 'click', function () { setImage(null); });
 
     on($('btn-paste'), 'click', function () {
-      var imageRevision = imageSeq;
+      clipboardTranslationRevision++;
+      var imageRevision = ++imageImportRevision;
       var textRevision = textEditRevision;
-      function stillCurrent() { return imageRevision === imageSeq && textRevision === textEditRevision; }
+      function stillCurrent() { return imageRevision === imageImportRevision && textRevision === textEditRevision; }
       if (!Bridge.isMac && navigator.clipboard && navigator.clipboard.read) {
         navigator.clipboard.read().then(function (items) {
           if (!stillCurrent()) return;
@@ -2453,6 +2462,7 @@
     on($('btn-copy'), 'click', function () { copyResult('text'); });
 
     on($('instruct'), 'input', function () {
+      textEditRevision++;
       $('instruct-badge').hidden = !this.value.trim();
     });
 
@@ -2482,13 +2492,64 @@
       return true;
     };
 
-    window.__itTranslateClipboard = function (text, requestId) {
-      text = String(text == null ? '' : text);
+    var clipboardTranslationRevision = 0;
+    var acceptedClipboardRequests = new Set();
+    var clipboardReadRequest = null;
+    var clipboardStarts = new Set();
+    window.__itBeginClipboardTranslation = function (requestId) {
+      if (requestId == null) return false;
+      requestId = String(requestId);
+      if (clipboardStarts.has(requestId)) return true;
+      clipboardStarts.add(requestId);
+      if (clipboardStarts.size > 128) clipboardStarts.delete(clipboardStarts.values().next().value);
+      clipboardTranslationRevision++;
+      clipboardReadRequest = { id: requestId, revision: clipboardTranslationRevision,
+        textRevision: textEditRevision, imageRevision: imageImportRevision };
+      return true;
+    };
+    window.__itTranslateClipboard = function (content, requestId) {
       if (requestId != null) {
         requestId = String(requestId);
-        if (window.__itClipboardTranslationAccepted === requestId) return true;
+        if (acceptedClipboardRequests.has(requestId)) return true;
+        acceptedClipboardRequests.add(requestId);
+        if (acceptedClipboardRequests.size > 128) acceptedClipboardRequests.delete(acceptedClipboardRequests.values().next().value);
         window.__itClipboardTranslationAccepted = requestId;
+        if (!clipboardStarts.has(requestId)) window.__itBeginClipboardTranslation(requestId);
+        if (clipboardReadRequest && (clipboardReadRequest.id !== requestId ||
+            clipboardReadRequest.revision !== clipboardTranslationRevision ||
+            clipboardReadRequest.textRevision !== textEditRevision || clipboardReadRequest.imageRevision !== imageImportRevision)) return true;
       }
+      var revision = ++clipboardTranslationRevision;
+      var payload = content && typeof content === 'object' ? content : { text: content };
+      if (payload.error) { toast(String(payload.error), true); return true; }
+      var image = typeof payload.image === 'string' ? payload.image : '';
+      if (image) {
+        if (!/^data:image\/[a-z0-9.+-]+;base64,/i.test(image)) { toast('剪贴板图片格式无效', true); return true; }
+        var textRevision = textEditRevision;
+        var imageRevision = ++imageImportRevision;
+        var completed = false;
+        function current() {
+          return !completed && revision === clipboardTranslationRevision &&
+            textRevision === textEditRevision && imageRevision === imageImportRevision;
+        }
+        shrinkImage(image, function (dataUrl) {
+          if (!current()) return;
+          completed = true;
+          cancelTask('text', true);
+          textEditRevision++;
+          switchTab('text');
+          $('src').value = '';
+          refreshCount();
+          setImage(dataUrl);
+          runText();
+        }, function () {
+          if (!current()) return;
+          completed = true;
+          toast('读取剪贴板图片失败', true);
+        });
+        return true;
+      }
+      var text = String(payload.text == null ? '' : payload.text);
       if (!text.trim()) { toast('剪贴板是空的'); return true; }
       return window.__itTranslateSelection(text, requestId);
     };
@@ -2510,7 +2571,7 @@
       }
       if (pending) {
         if (typeof pending === 'object') {
-          if (pending.kind === 'clipboard') window.__itTranslateClipboard(pending.text, pending.id);
+          if (pending.kind === 'clipboard') window.__itTranslateClipboard(pending, pending.id);
           else window.__itTranslateSelection(pending.text, pending.id);
         }
         else {
@@ -2521,6 +2582,10 @@
           window.__itTranslateSelection(pending);
         }
       }
+    }
+    if (window.__itPendingClipboardStart != null) {
+      window.__itBeginClipboardTranslation(window.__itPendingClipboardStart);
+      delete window.__itPendingClipboardStart;
     }
     consumePendingSelection();
   }
@@ -4798,9 +4863,12 @@
         } else if (action && action.type === 'translate-selection' && typeof action.text === 'string' &&
             window.__itTranslateSelection) {
           window.__itTranslateSelection(action.text);
+        } else if (action && action.type === 'clipboard-translation-start' &&
+            window.__itBeginClipboardTranslation) {
+          window.__itBeginClipboardTranslation(action.id);
         } else if (action && action.type === 'translate-clipboard' &&
             window.__itTranslateClipboard) {
-          window.__itTranslateClipboard(action.text, action.id);
+          window.__itTranslateClipboard(action, action.id);
         } else if (action && action.type === 'clipboard-translation-error') {
           toast('读取剪贴板失败', true);
         }

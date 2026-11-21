@@ -71,34 +71,141 @@ const mainSource = await readFile('app/macos/main.cjs', 'utf8');
 const hotkeyStart = mainSource.indexOf('function shortcutHandlers(');
 const hotkeyEnd = mainSource.indexOf('\nfunction registerShortcuts(', hotkeyStart);
 assert.ok(hotkeyStart >= 0 && hotkeyEnd > hotkeyStart, 'Clipboard shortcut logic is independently testable');
-const hotkeyContext = vm.createContext({
-  canonicalShortcut: core.canonicalShortcut,
-  clipboard: { readText: () => { hotkeyContext.reads++; return 'synthetic clipboard'; } },
-  hotkeysEnabled: true,
-  showMain: () => { hotkeyContext.shown++; },
-  notifyAction: action => hotkeyContext.actions.push(action),
-  translateSelection() {},
-  cancelSelectionCapture() {}, activeSelectionOperation: null, popupWindow: null,
-  clipboardTranslationSequence: 0,
-  reads: 0, shown: 0, actions: [],
-  JSON, globalShortcut: { register() {}, unregister() {} }
-});
-vm.runInContext(`${mainSource.slice(hotkeyStart, hotkeyEnd)}\nglobalThis.handlers = shortcutHandlers({
-  activation_shortcut: 'Cmd+Alt+I', selection_shortcut: 'Cmd+Alt+T', clipboard_shortcut: 'Cmd+Alt+V'
-});`, hotkeyContext);
-const clipboardHandler = hotkeyContext.handlers.find(([accelerator]) => accelerator === 'Cmd+Alt+V')[1];
-clipboardHandler();
-assert.equal(hotkeyContext.reads, 1, 'The shortcut reads synthetic clipboard text only when invoked');
-assert.equal(hotkeyContext.shown, 1, 'The clipboard shortcut shows the main window');
-assert.deepEqual(JSON.parse(JSON.stringify(hotkeyContext.actions[0])), {
-  type: 'translate-clipboard', text: 'synthetic clipboard', id: 1
-});
-hotkeyContext.hotkeysEnabled = false;
-clipboardHandler();
-assert.equal(hotkeyContext.reads, 1, 'Disabled hotkeys do not read clipboard contents');
-hotkeyContext.hotkeysEnabled = true;
-hotkeyContext.clipboard.readText = () => { throw new Error('synthetic read failure'); };
-clipboardHandler();
-assert.equal(hotkeyContext.actions.at(-1).type, 'clipboard-translation-error',
-  'A clipboard read failure is reported to the visible main window');
+function clipboardFixture() {
+  const context = vm.createContext({
+    canonicalShortcut: core.canonicalShortcut,
+    clipboard: {
+      read: async () => {
+        context.reads++;
+        return [{ types: ['text/plain'], getType: async () => new Blob(['synthetic clipboard']) }];
+      },
+      readText: async () => { context.textReads++; return 'synthetic clipboard'; }
+    },
+    hotkeysEnabled: true,
+    mainWindow: null,
+    showMain: () => { context.shown++; },
+    notifyAction: action => context.actions.push(action),
+    translateSelection() {},
+    cancelSelectionCapture() {}, activeSelectionOperation: null, popupWindow: null,
+    clipboardTranslationSequence: 0,
+    reads: 0, textReads: 0, shown: 0, actions: [],
+    Buffer, JSON, globalShortcut: { register() {}, unregister() {} }
+  });
+  vm.runInContext(`${mainSource.slice(hotkeyStart, hotkeyEnd)}\nglobalThis.handlers = shortcutHandlers({
+    activation_shortcut: 'Cmd+Alt+I', selection_shortcut: 'Cmd+Alt+T', clipboard_shortcut: 'Cmd+Alt+V'
+  });`, context);
+  return {
+    context,
+    trigger: key => context.handlers.find(([accelerator]) => accelerator === key)[1](),
+    actions: () => JSON.parse(JSON.stringify(context.actions.filter(action => action.type !== 'clipboard-translation-start')))
+  };
+}
+function deferred() {
+  let resolve, reject;
+  const promise = new Promise((done, fail) => { resolve = done; reject = fail; });
+  return { promise, resolve, reject };
+}
+{
+  const test = clipboardFixture();
+  assert.equal(test.context.reads, 0, 'Registering shortcuts never reads the clipboard');
+  await test.trigger('Cmd+Alt+V');
+  assert.equal(test.context.reads, 1, 'The shortcut reads a clipboard snapshot only when invoked');
+  assert.equal(test.context.shown, 1, 'The clipboard shortcut immediately shows the main window');
+  assert.deepEqual(test.actions(), [{
+    type: 'translate-clipboard', text: 'synthetic clipboard', image: '', id: 1
+  }]);
+  test.context.hotkeysEnabled = false;
+  await test.trigger('Cmd+Alt+V');
+  assert.equal(test.context.reads, 1, 'Disabled hotkeys never read clipboard contents');
+}
+{
+  const test = clipboardFixture();
+  test.context.clipboard.read = async () => [{
+    types: ['text/plain', 'image/png'],
+    getType: async type => {
+      assert.equal(type, 'image/png', 'Images take precedence over text in one clipboard snapshot');
+      return new Blob(['synthetic png'], { type });
+    }
+  }];
+  await test.trigger('Cmd+Alt+V');
+  assert.deepEqual(test.actions(), [{ type: 'translate-clipboard', text: '',
+    image: `data:image/png;base64,${Buffer.from('synthetic png').toString('base64')}`, id: 1 }]);
+  assert.equal(test.context.textReads, 0, 'Image translation never reads unrelated clipboard text');
+}
+{
+  const test = clipboardFixture();
+  test.context.clipboard.read = async () => [{
+    types: ['text/plain'], getType: async () => new Blob(['snapshot text'], { type: 'text/plain' })
+  }];
+  await test.trigger('Cmd+Alt+V');
+  assert.equal(test.actions()[0].text, 'snapshot text');
+  assert.equal(test.context.textReads, 0, 'Plain text uses the same clipboard snapshot');
+}
+{
+  const test = clipboardFixture();
+  test.context.clipboard.read = async () => [];
+  await test.trigger('Cmd+Alt+V');
+  assert.deepEqual(test.actions(), [{ type: 'translate-clipboard', text: '', image: '', id: 1 }],
+    'An empty clipboard is delivered as empty content for the existing UI notice');
+}
+{
+  const test = clipboardFixture();
+  const oldRead = deferred();
+  test.context.clipboard.read = () => oldRead.promise;
+  const older = test.trigger('Cmd+Alt+V');
+  assert.equal(test.context.actions[0].type, 'clipboard-translation-start',
+    'The frontend observes the request before asynchronous clipboard access finishes');
+  test.context.clipboard.read = async () => [];
+  await test.trigger('Cmd+Alt+V');
+  oldRead.resolve([]);
+  await older;
+  assert.deepEqual(test.actions().map(action => action.id), [2], 'A newer clipboard shortcut discards the previous read');
+  assert.equal(test.context.shown, 2, 'Late clipboard completion never reveals the window again');
+}
+{
+  const test = clipboardFixture();
+  const oldBytes = deferred();
+  const started = deferred();
+  test.context.clipboard.read = async () => [{ types: ['image/png'], getType: async () => ({
+    size: 10, arrayBuffer() { started.resolve(); return oldBytes.promise; }
+  }) }];
+  const older = test.trigger('Cmd+Alt+V');
+  await started.promise;
+  await test.trigger('Cmd+Alt+I');
+  oldBytes.resolve(Buffer.from('stale image'));
+  await older;
+  assert.equal(test.actions().length, 0, 'Another desktop shortcut discards delayed image decoding');
+}
+{
+  const test = clipboardFixture();
+  const oldRead = deferred();
+  test.context.clipboard.read = () => oldRead.promise;
+  const pending = test.trigger('Cmd+Alt+V');
+  test.context.hotkeysEnabled = false;
+  oldRead.resolve([]);
+  await pending;
+  assert.equal(test.actions().length, 0, 'Disabling hotkeys also suppresses an already pending read');
+}
+{
+  const test = clipboardFixture();
+  test.context.clipboard.read = async () => { throw new Error('synthetic read failure'); };
+  await test.trigger('Cmd+Alt+V');
+  assert.deepEqual(test.actions(), [{ type: 'translate-clipboard', error: '读取剪贴板失败', id: 1 }]);
+  const delayedFailure = deferred();
+  test.context.clipboard.read = () => delayedFailure.promise;
+  const older = test.trigger('Cmd+Alt+V');
+  test.context.clipboard.read = async () => [];
+  await test.trigger('Cmd+Alt+V');
+  delayedFailure.reject(new Error('stale failure'));
+  await older;
+  assert.deepEqual(test.actions().map(action => action.id), [1, 3], 'A stale read failure never reports against the latest request');
+}
+{
+  const test = clipboardFixture();
+  test.context.clipboard.read = async () => [{ types: ['image/png'], getType: async () => ({
+    size: 32 * 1024 * 1024 + 1, arrayBuffer() { throw new Error('must reject before materializing an oversized image'); }
+  }) }];
+  await test.trigger('Cmd+Alt+V');
+  assert.equal(test.actions()[0].error, '读取剪贴板失败', 'Oversized clipboard images produce a visible failure');
+}
 console.log('macOS native IPC boundaries, resource paths, settings and shared popup passed.');

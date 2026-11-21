@@ -115,30 +115,57 @@ function shortcutHandlers(next) {
   return [
     [canonicalShortcut(next.activation_shortcut), () => {
       if (!hotkeysEnabled) return;
+      clipboardTranslationSequence++;
       if (mainWindow && mainWindow.isVisible() && mainWindow.isFocused()) mainWindow.hide();
       else showMain();
     }],
     [canonicalShortcut(next.selection_shortcut), () => {
-      if (hotkeysEnabled) void translateSelection();
+      if (!hotkeysEnabled) return;
+      clipboardTranslationSequence++;
+      void translateSelection();
     }],
     [canonicalShortcut(next.clipboard_shortcut), () => {
-      if (hotkeysEnabled) translateClipboard();
+      if (hotkeysEnabled) return translateClipboard();
     }]
   ].filter(([accelerator]) => accelerator);
 }
 
-function translateClipboard() {
+async function translateClipboard() {
+  const id = ++clipboardTranslationSequence;
   cancelSelectionCapture(activeSelectionOperation);
   if (popupWindow && !popupWindow.isDestroyed() && popupWindow.isVisible()) closePopup(popupWindow);
   showMain();
+  notifyAction({ type: 'clipboard-translation-start', id });
+  const isCurrent = () => id === clipboardTranslationSequence && hotkeysEnabled;
   try {
-    notifyAction({
-      type: 'translate-clipboard', text: clipboard.readText(),
-      id: ++clipboardTranslationSequence
-    });
+    const content = await readClipboardForTranslation(isCurrent);
+    if (content && isCurrent()) notifyAction({ type: 'translate-clipboard', ...content, id });
   } catch {
-    notifyAction({ type: 'clipboard-translation-error' });
+    if (isCurrent()) notifyAction({ type: 'translate-clipboard', error: '读取剪贴板失败', id });
   }
+}
+
+async function readClipboardForTranslation(isCurrent) {
+  // Electron 45 returns a ClipboardItem snapshot; all clipboard reads stay
+  // behind the explicit shortcut, and MIME payloads are materialized on demand.
+  const items = await clipboard.read();
+  if (!isCurrent()) return null;
+  for (const type of ['image/png', 'image/jpeg', 'image/webp', 'image/gif', 'image/bmp', 'image/avif']) {
+    const item = items.find(value => value.types.includes(type));
+    if (!item) continue;
+    const blob = await item.getType(type);
+    if (!isCurrent()) return null;
+    if (!blob.size || blob.size > 32 * 1024 * 1024) throw new Error('剪贴板图片为空或过大');
+    const bytes = await blob.arrayBuffer();
+    if (!isCurrent()) return null;
+    return { text: '', image: `data:${type};base64,${Buffer.from(bytes).toString('base64')}` };
+  }
+  const textItem = items.find(value => value.types.includes('text/plain'));
+  if (!textItem) return { text: '', image: '' };
+  const blob = await textItem.getType('text/plain');
+  if (!isCurrent()) return null;
+  const text = await blob.text();
+  return isCurrent() ? { text, image: '' } : null;
 }
 
 function registerShortcuts(next) {
@@ -661,6 +688,7 @@ async function handleCommand(event, command, args) {
       return saveSettings(args.settings);
     case 'it_set_hotkeys_enabled':
       if (typeof args.enabled !== 'boolean') throw new Error('快捷键状态无效');
+      if (!args.enabled) clipboardTranslationSequence++;
       hotkeysEnabled = args.enabled;
       return null;
     case 'it_list_system_fonts':

@@ -12,19 +12,24 @@ const start = source.indexOf('  function initTextPane() {');
 const end = source.indexOf('\n  /* 展开和回收', start);
 assert.ok(start >= 0 && end > start, 'Production text-pane handlers are present');
 
-function fixture() {
+function fixture(withProductionPreview = false) {
   const elements = new Map();
   const handlers = new Map();
   const pending = [];
+  const decodes = [];
+  const translations = [];
   const state = { image: 'synthetic-existing-image', controller: null };
   const element = (id) => {
-    if (!elements.has(id)) elements.set(id, { id, value: '', textContent: '', hidden: false });
+    if (!elements.has(id)) elements.set(id, { id, value: '', textContent: '', hidden: false,
+      style: {}, classList: { add() {}, toggle() {} }, setAttribute() {}, contains: () => false,
+      getBoundingClientRect: () => ({ height: 0 }), removeAttribute() {} });
     return elements.get(id);
   };
   const context = vm.createContext({
     window: {},
     state,
     imageSeq: 0,
+    imageImportRevision: 0,
     textEditRevision: 0,
     $: element,
     on: (target, type, handler) => handlers.set(`${target.id}:${type}`, handler),
@@ -33,9 +38,16 @@ function fixture() {
     setImage: (image) => {
       state.image = image || null;
       context.imageSeq++;
+      context.imageImportRevision++;
     },
+    shrinkImage: (image, done, fail) => decodes.push({ image, done, fail }),
     refreshCount() {},
-    runText() {},
+    runText: () => translations.push(state.image),
+    switchTab() {}, toast() {},
+    document: { activeElement: null },
+    getComputedStyle: () => ({ opacity: '1', marginBottom: '0px', getPropertyValue: () => '88' }),
+    stopMotion() {}, playMotion: (_box, _frames, _duration, complete) => complete(), PANEL_DURATION: 200,
+    readPendingTransfer: () => null, removePendingTransfer() {},
     stopActiveWriter() {},
     bindCancel() {},
     cancelTask() {},
@@ -43,13 +55,91 @@ function fixture() {
     outText() {},
     copyText() {},
   });
+  if (withProductionPreview) {
+    const previewStart = source.indexOf('  function setImage(');
+    const previewEnd = source.indexOf('\n  function outText(', previewStart);
+    vm.runInContext(source.slice(previewStart, previewEnd), context);
+  }
   vm.runInContext(`${source.slice(start, end)}\ninitTextPane();`, context);
   return {
     state,
     pending,
+    decodes,
+    translations,
+    clipboard: (content, id) => context.window.__itTranslateClipboard(content, id),
+    beginClipboard: id => context.window.__itBeginClipboardTranslation(id),
+    element,
     click: (id) => handlers.get(`${id}:click`)(),
     replace: (image) => context.setImage(image),
   };
+}
+
+{
+  const test = fixture();
+  test.clipboard({ image: 'data:image/png;base64,b2xk' }, 'clipboard-old');
+  test.click('btn-pick-img');
+  test.decodes[0].done('synthetic-late-clipboard-image');
+  assert.deepEqual(test.translations, [], 'Opening the image picker supersedes pending clipboard decoding');
+  test.pending[0]('synthetic-new-picked-image');
+  assert.equal(test.state.image, 'synthetic-new-picked-image', 'The newer native picker retains its callback');
+}
+{
+  const test = fixture();
+  test.beginClipboard('clipboard-read');
+  test.click('btn-pick-img');
+  test.clipboard({ image: 'data:image/png;base64,bGF0ZQ==' }, 'clipboard-read');
+  assert.equal(test.decodes.length, 0, 'Opening the image picker supersedes a pending native clipboard read');
+  test.pending[0]('synthetic-new-picked-image');
+  assert.equal(test.state.image, 'synthetic-new-picked-image');
+}
+
+{
+  const test = fixture();
+  test.clipboard({ image: 'data:image/png;base64,b2xk' }, 'clipboard-old');
+  test.clipboard({ image: 'data:image/png;base64,bmV3' }, 'clipboard-new');
+  test.decodes[0].done('synthetic-late-clipboard-image');
+  assert.deepEqual(test.translations, [], 'The earlier clipboard image cannot submit after a newer shortcut');
+  test.decodes[1].done('synthetic-new-clipboard-image');
+  assert.deepEqual(test.translations, ['synthetic-new-clipboard-image']);
+}
+{
+  const test = fixture(true);
+  test.replace('synthetic-existing-image');
+  const revealExistingPreview = test.element('img-thumb').onload;
+  assert.equal(test.element('img-preview').style.height, '0px');
+  test.clipboard({ image: 'data:image/png;base64,YnJva2Vu' }, 'failed-preview-replacement');
+  test.decodes[0].fail();
+  revealExistingPreview();
+  assert.equal(test.element('img-preview').style.height, '', 'A failed replacement cannot cancel the existing thumbnail reveal');
+  assert.equal(test.state.image, 'synthetic-existing-image');
+}
+
+const shrinkStart = source.indexOf('  function shrinkImage(');
+const shrinkEnd = source.indexOf('\n  /* ---------------- 3.', shrinkStart);
+assert.ok(shrinkStart >= 0 && shrinkEnd > shrinkStart, 'Production image preparation is extractable');
+function shrinkFixture() {
+  const images = [];
+  const context = vm.createContext({
+    Image: class { constructor() { images.push(this); } },
+    document: { createElement: () => ({
+      getContext: () => ({ fillRect() {}, drawImage() {} }),
+      toDataURL: () => 'data:image/jpeg;base64,cHJlcGFyZWQ='
+    }) }
+  });
+  vm.runInContext(source.slice(shrinkStart, shrinkEnd), context);
+  return { images, prepare: context.shrinkImage };
+}
+{
+  const test = shrinkFixture();
+  const results = [];
+  const failures = [];
+  test.prepare('data:image/png;base64,YnJva2Vu', value => results.push(value), () => failures.push(true));
+  test.images[0].onerror();
+  assert.deepEqual(results, [], 'Strict image preparation cannot promote unreadable source bytes');
+  assert.deepEqual(failures, [true], 'Strict preparation reports decode failures');
+  test.prepare('synthetic-legacy-image', value => results.push(value));
+  test.images[1].onerror();
+  assert.deepEqual(results, ['synthetic-legacy-image'], 'Existing picker imports retain their fallback behavior');
 }
 
 for (const action of ['btn-clear', 'img-del']) {
