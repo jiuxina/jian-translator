@@ -813,7 +813,7 @@ textarea.src::placeholder { color: var(--lg-ink-sub); }
 .pill.ghost { border-color: transparent; background: transparent; box-shadow: none; }
 .pill.ghost:hover { background: var(--it-liquid-fill-mid); }
 
-/* ---------- 9. 吸底按钮组：没有底板，只负责定位 ---------- */
+/* ---------- 9. 操作按钮组：桌面吸底，手机位于两张卡片之间 ---------- */
 .dock {
   position: fixed;
   left: 0;
@@ -1140,15 +1140,40 @@ textarea.src::placeholder { color: var(--lg-ink-sub); }
   .btn-primary { padding: 8px 22px; font-size: 13px; }
   .toast { bottom: calc(var(--lg-mobile-tab-height) + 114px + var(--it-safe-bottom)); }
 
+  html:not(.it-desktop) main {
+    padding-bottom: calc(var(--lg-mobile-tab-height) + 24px + var(--it-safe-bottom));
+  }
+  html:not(.it-desktop) .panes {
+    grid-template-rows: minmax(0, 1fr) auto minmax(0, 1fr);
+  }
+  html:not(.it-desktop) .panes > .card:first-child { grid-row: 1; }
+  html:not(.it-desktop) .panes > .card:last-child { grid-row: 3; }
+  html:not(.it-desktop) .panes > .dock {
+    position: relative;
+    inset: auto;
+    grid-row: 2;
+    display: flex;
+    min-width: 0;
+    min-height: 48px;
+    padding: 0;
+    visibility: hidden;
+  }
+  html:not(.it-desktop) .panes > .dock.on { visibility: visible; }
+  html:not(.it-desktop) .panes > .dock.it-glass-preparing { visibility: hidden; }
+  html:not(.it-desktop) .dock > button { min-height: 48px; }
+
   /* The keyboard overlays the scene. Focusing an editor does not collapse
      navigation, change padding or resize the original/translated cards. */
 }
 
 @media (max-width: 760px) and (max-height: 720px) {
-  .pane { overflow-y: auto; }
+  .pane { overflow-x: hidden; overflow-y: auto; }
   .panes {
     flex: 0 0 auto;
     grid-template-rows: repeat(2, minmax(180px, auto));
+  }
+  html:not(.it-desktop) .panes {
+    grid-template-rows: minmax(180px, auto) auto minmax(180px, auto);
   }
 }
 

@@ -1396,7 +1396,7 @@
   }
 
   /* ---------------- 7. 一镜到底的模式切换 ----------------
-     顶栏、语言条和吸底操作固定。新页的玻璃卡壳从旧页的实际矩形接续，
+     顶栏和语言条固定。新页的玻璃卡壳与操作按钮从旧页的实际矩形接续，
      卡内内容按导航顺序交接；快速反向切换从当前帧继续，不先回到起点。 */
   var panes = { text: 'pane-text', syllable: 'pane-syllable', doc: 'pane-doc' };
   var shownTab = 'text';
@@ -1518,17 +1518,6 @@
     return buttons;
   }
 
-  function dockGeometryChanged(previous, next) {
-    var roles = Object.keys(next);
-    return Object.keys(previous).length !== roles.length || roles.some(function (role) {
-      var from = previous[role];
-      var to = next[role];
-      var track = motions.get(from);
-      return !from || (track && track.group === 'dock') || from.className !== to.className ||
-        from.disabled !== to.disabled || from.textContent !== to.textContent;
-    });
-  }
-
   function dockButtonRects(buttons) {
     var rects = {};
     Object.keys(buttons).forEach(function (role) {
@@ -1542,22 +1531,25 @@
       var from = previous[role];
       var to = next[role];
       var dx = from && from.width ? (from.left + from.right - to.left - to.right) / 2 : 0;
+      var dy = from && from.height ? (from.top + from.bottom - to.top - to.bottom) / 2 : 0;
       if (Math.abs(dx) < 0.5) dx = 0;
-      return { button: buttons[role], dx: dx,
+      if (Math.abs(dy) < 0.5) dy = 0;
+      return { button: buttons[role], dx: dx, dy: dy,
         left: to.left + Math.min(dx, 0), right: to.right + Math.max(dx, 0),
-        top: to.top, bottom: to.bottom };
+        top: to.top + Math.min(dy, 0), bottom: to.bottom + Math.max(dy, 0) };
     });
     // Check every swept border box against every other button, including a stationary Cancel.
     if (paths.some(function (path, index) {
-      return path.left < 0 || path.right > window.innerWidth || paths.some(function (other, i) {
+      return path.left < 0 || path.right > window.innerWidth || path.top < 0 ||
+        path.bottom > window.innerHeight || paths.some(function (other, i) {
         return i !== index && path.left < other.right && path.right > other.left &&
           path.top < other.bottom && path.bottom > other.top;
       });
     })) return;
     paths.forEach(function (path) {
-      if (!path.dx) return;
+      if (!path.dx && !path.dy) return;
       playMotion(path.button, [
-        { translate: path.dx + 'px 0px' },
+        { translate: path.dx + 'px ' + path.dy + 'px' },
         { translate: '0px 0px' }
       ], PANEL_DURATION, null, 'dock', false);
     });
@@ -1651,7 +1643,7 @@
         if (pane === shownTab) oldDockButtons = visibleDockButtons(dock);
         if (pane === name) newDockButtons = visibleDockButtons(dock);
       });
-      if (oldDockButtons && newDockButtons && dockGeometryChanged(oldDockButtons, newDockButtons)) {
+      if (oldDockButtons && newDockButtons) {
         oldDockRects = dockButtonRects(oldDockButtons);
       }
     }
@@ -2252,9 +2244,21 @@
     ids.forEach(function (id) { var button = $(id); if (button) button.disabled = !taskFor(mode).result.trim(); });
   }
   function taskCurrent(task) { return taskFor(task.mode).current === task; }
+  function dismissMobileKeyboard() {
+    if (Bridge.isDesktop || (!Bridge.isAndroid && !window.matchMedia('(max-width: 760px)').matches)) return;
+    var active = document.activeElement;
+    if (active && (active.isContentEditable || (active.matches && active.matches('textarea, input'))) && active.blur) {
+      active.blur();
+    }
+    document.documentElement.classList.remove('it-keyboard-open');
+    if (Bridge.isAndroid && window.NativeBridge && typeof window.NativeBridge.hideKeyboard === 'function') {
+      try { window.NativeBridge.hideKeyboard(); } catch (e) { /* Older shells still dismiss through DOM blur. */ }
+    }
+  }
   function beginTask(mode, button, out) {
     var state = taskFor(mode);
     if (state.current) { toast('当前模式正在翻译，请先取消'); return null; }
+    dismissMobileKeyboard();
     stopTaskDockMotion(button);
     state.result = '';
     resultButtons(mode);

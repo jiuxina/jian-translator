@@ -670,6 +670,15 @@ public class MainActivity extends Activity {
         }
 
         @JavascriptInterface
+        public void hideKeyboard() {
+            runOnUiThread(() -> {
+                if (isFinishing() || isDestroyed() || webView == null) return;
+                WindowCompat.getInsetsController(getWindow(), webView)
+                        .hide(WindowInsetsCompat.Type.ime());
+            });
+        }
+
+        @JavascriptInterface
         public String getSystemAppearance() {
             return MainActivity.this.getSystemAppearance();
         }

@@ -9,6 +9,7 @@ const checks = [
   'verify-version-consistency.mjs',
   'verify-updates.mjs',
   'verify-stream-writer.mjs',
+  'verify-mobile-actions.mjs',
   'verify-image-import.mjs',
   'verify-settings-preview.mjs',
   'verify-autostart-ui.mjs',

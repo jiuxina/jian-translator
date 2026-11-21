@@ -7,40 +7,61 @@ const source = new TextDecoder('utf-8', { fatal: true }).decode(
 function section(from, to) { return source.slice(source.indexOf(from), source.indexOf(to, source.indexOf(from))); }
 const helpers = source.includes('  /* ---------------- Translation tasks')
   ? section('  /* ---------------- Translation tasks', '  function runText()') : '';
-function fixture(initialWindow = {}) {
+function fixture(initialWindow = {}, options = {}) {
   const elements = new Map(), handlers = new Map(), pending = [], readers = [], copied = [], decodes = [], notices = [];
+  const keyboardEvents = [];
+  const browserWindow = { matchMedia: () => ({ matches: !!options.mobile }), ...initialWindow };
+  if (options.android) browserWindow.NativeBridge = options.nativeBridge || {
+    hideKeyboard() { keyboardEvents.push('native-hide'); },
+  };
   const el = (id) => {
     if (!elements.has(id)) elements.set(id, { id, value: '', textContent: '', dataset: {}, style: {}, hidden: false,
       classList: { add() {}, remove() {}, toggle() {} }, click() {} });
     return elements.get(id);
   };
-  const context = vm.createContext({ window: initialWindow, state: { model: { text: 'text', doc: 'doc', syllable: 'syl' },
+  const context = vm.createContext({ window: browserWindow, state: { model: { text: 'text', doc: 'doc', syllable: 'syl' },
     src: 'auto', tgt: 'zh', image: null, running: false, controller: null },
-    document: { createElement: () => ({ remove() {} }), body: { appendChild() {} } },
+    document: { activeElement: null, createElement: () => ({ remove() {} }), body: { appendChild() {} },
+      documentElement: { classList: { remove() {} } } },
     performance, AbortController, MAX_SRC: 8000, imageSeq: 0, imageImportRevision: 0, docEditRevision: 0, docImportSequence: 0,
     nativeImagePickPrefix: 'test', nativeImagePickSequence: 0,
     $: el, on: (target, type, handler) => handlers.set(target.id + ':' + type, handler),
     sessionStorage: { getItem: () => null, setItem() {}, removeItem() {} },
     readPendingTransfer: () => null, writePendingTransfer() {}, removePendingTransfer() {},
-    Bridge: { isMac: false, isAndroid: false }, setTimeout: (fn) => { fn(); return 0; }, clearTimeout() {},
+    Bridge: { isMac: false, isAndroid: !!options.android, isDesktop: !!options.desktop },
+    setTimeout: (fn) => { fn(); return 0; }, clearTimeout() {},
     toast: message => notices.push(message), switchTab() {}, refreshCount() {}, fmtSeconds: () => '1s',
     stopTaskDockMotion() {}, setBusy: (button, busy) => { button.disabled = busy; },
     setImage: (value) => { context.state.image = value; context.imageSeq++; context.imageImportRevision++; },
     shrinkImage: (image, done, fail) => decodes.push({ image, done, fail }),
     outText: (element, text) => { element.textContent = text; }, copyText: (text) => copied.push(text),
-    startWriter: (out) => ({ closed: false, push(text) { if (!this.closed) out.textContent += text; },
-      commit(text) { if (!this.closed) out.textContent = text; }, stop() { this.closed = true; } }),
+    startWriter: (out) => {
+      keyboardEvents.push('writer');
+      return { closed: false, push(text) { if (!this.closed) out.textContent += text; },
+        commit(text) { if (!this.closed) out.textContent = text; }, stop() { this.closed = true; } };
+    },
     stopActiveWriter() {}, basePayload: (model, prompt) => ({ model, prompt, messages: [{ content: prompt }] }),
     buildInstructionPrompt: (text) => text, buildImagePrompt: (text) => text,
     buildSyllablePrompt: (text) => text, plainPrompt: (text, src, tgt) => ({ text, src, tgt }), maxTokensFor: () => 2000,
-    chatStream: (payload, onDelta, signal, sourceText) => new Promise((resolve, reject) =>
-      pending.push({ payload, onDelta, signal, sourceText, resolve, reject })),
+    chatStream: (payload, onDelta, signal, sourceText) => new Promise((resolve, reject) => {
+      keyboardEvents.push('request');
+      pending.push({ payload, onDelta, signal, sourceText, resolve, reject });
+    }),
     FileReader: class { constructor() { readers.push(this); } readAsText() {} abort() {} },
   });
   vm.runInContext(helpers + '\n' + section('  function runText()', '  /* 展开和回收') + '\n' +
     section('  function runSyllable()', '  /* ---------------- 12.') +
     '\ninitTextPane(); initSyllablePane(); initDocPane();', context);
-  return { context, el, pending, readers, copied, decodes, notices,
+  return { context, el, pending, readers, copied, decodes, notices, keyboardEvents,
+    focus(id, editable = true) {
+      const element = el(id);
+      element.tagName = editable ? 'TEXTAREA' : 'BUTTON';
+      element.isContentEditable = editable === 'contenteditable';
+      element.matches = () => !!editable;
+      element.blur = () => { keyboardEvents.push('blur:' + id); context.document.activeElement = null; };
+      context.document.activeElement = element;
+      return element;
+    },
     event(id, type = 'click') { handlers.get(id + ':' + type).call(el(id), {}); } };
 }
 const flush = async () => { for (let i = 0; i < 10; i++) await Promise.resolve(); };
@@ -315,5 +336,59 @@ for (const mode of ['text', 'image', 'syllable']) {
   }
   assert.equal(test.el('out-doc').textContent, 'retry chunk 1\n\nretry chunk 2\n\nretry chunk 3');
   assert.equal(test.el('meta-doc').textContent, '3 块 · 完成');
+}
+
+for (const mode of ['text', 'image', 'syllable', 'doc']) {
+  const test = fixture({}, { mobile: true, android: true });
+  const sourceId = mode === 'syllable' ? 'syl-src' : mode === 'doc' ? 'doc-src' : 'src';
+  const buttonId = mode === 'syllable' ? 'btn-go-syllable' : mode === 'doc' ? 'btn-go-doc' : 'btn-go';
+  test.el(sourceId).value = 'Synthetic mobile source.';
+  if (mode === 'image') test.context.state.image = 'data:image/jpeg;base64,c3ludGhldGlj';
+  test.focus(sourceId);
+  test.event(buttonId);
+  assert.deepEqual(test.keyboardEvents.slice(0, 4), ['blur:' + sourceId, 'native-hide', 'writer', 'request'],
+    `${mode} dismisses the editor and Android IME before starting translation or output animation`);
+  assert.equal(test.el(sourceId).value, 'Synthetic mobile source.', `${mode} dismissal preserves source content`);
+  assert.equal(test.pending.length, 1);
+}
+{
+  const test = fixture({}, { mobile: true });
+  test.el('src').value = 'Mobile browser source'; test.focus('src'); test.event('btn-go');
+  assert.deepEqual(test.keyboardEvents.slice(0, 3), ['blur:src', 'writer', 'request'],
+    'A mobile browser dismisses the editor without requiring a native bridge');
+}
+{
+  const test = fixture({}, { android: true });
+  test.el('src').value = 'Android landscape source'; test.focus('btn-go', false); test.event('btn-go');
+  assert.deepEqual(test.keyboardEvents.slice(0, 3), ['native-hide', 'writer', 'request'],
+    'Android still hides the IME when a button already owns DOM focus or the viewport is wide');
+}
+for (const options of [{ desktop: true, mobile: true }, {}]) {
+  const test = fixture({}, options);
+  test.el('src').value = 'Desktop source'; test.focus('src'); test.event('btn-go');
+  assert.deepEqual(test.keyboardEvents, ['writer', 'request'], 'Desktop and wide web translation preserve editor focus');
+  assert.equal(test.context.document.activeElement, test.el('src'));
+}
+for (const nativeBridge of [{}, { hideKeyboard() { throw new Error('Synthetic old bridge failure'); } }]) {
+  const test = fixture({}, { mobile: true, android: true, nativeBridge });
+  test.el('src').value = 'Compatible bridge source'; test.focus('src'); test.event('btn-go');
+  assert.equal(test.pending.length, 1, 'An absent or failing optional hide-IME bridge cannot block translation');
+  assert.equal(test.keyboardEvents[0], 'blur:src');
+}
+for (const sourceId of ['src', 'syl-src', 'doc-src']) {
+  const test = fixture({}, { mobile: true, android: true });
+  test.focus(sourceId);
+  test.event(sourceId === 'src' ? 'btn-go' : sourceId === 'syl-src' ? 'btn-go-syllable' : 'btn-go-doc');
+  assert.deepEqual(test.keyboardEvents, [], 'Empty input validation keeps the editor open');
+  assert.equal(test.pending.length, 0);
+}
+{
+  const test = fixture({}, { mobile: true, android: true });
+  test.el('src').value = 'x'.repeat(8001); test.focus('src'); test.event('btn-go');
+  assert.deepEqual(test.keyboardEvents, [], 'Oversized input is rejected before keyboard dismissal');
+  test.el('src').value = 'Valid source'; test.event('btn-go');
+  test.keyboardEvents.length = 0; test.focus('src'); test.context.runText();
+  assert.deepEqual(test.keyboardEvents, [], 'An already-running task does not dismiss a newly focused editor');
+  assert.equal(test.pending.length, 1);
 }
 console.log('Translation task ownership and delayed import checks passed.');
