@@ -10,7 +10,7 @@ assert.match(source, /fn default_clipboard_shortcut\([\s\S]*?Shortcut::from_str\
   'Legacy settings select a clipboard shortcut distinct from existing bindings');
 assert.match(source, /if !popup_request_is_current\(generation\)\s*\{\s*return;\s*\}\s*if let Some\(window\) = show_app/,
   'A superseded shortcut cannot later reveal or focus the window');
-assert.match(source, /fn run_clipboard_translate\([\s\S]*?window\.show\(\)[\s\S]*?read_clipboard_content\(\)[\s\S]*?window\.eval\(&script\)/,
+assert.match(source, /fn run_clipboard_translate\([\s\S]*?window\.show\(\)[\s\S]*?read_clipboard_content\(\)[\s\S]*?window\.eval\(script\.as_str\(\)\)/,
   'The explicit shortcut reads image or text, reveals the main window and delivers through the webview');
 assert.match(source, /RegisterClipboardFormatW\(\[80u16, 78, 71, 0\]\.as_ptr\(\)\)/,
   'Windows reads the registered PNG format before standard bitmap fallback');
