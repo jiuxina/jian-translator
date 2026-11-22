@@ -2599,7 +2599,7 @@ fn read_clipboard_for_translation(app: AppHandle, id: u64, generation: u64) {
                             std::thread::sleep(Duration::from_millis(delay));
                         }
                         if popup_request_is_current(generation) {
-                            let _ = window.eval(&script);
+                            let _ = window.eval(script.as_str());
                         }
                     });
                 }

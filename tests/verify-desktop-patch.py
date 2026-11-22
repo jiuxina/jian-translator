@@ -200,6 +200,11 @@ class DesktopAutostartContractTests(unittest.TestCase):
 class DesktopStartupDefaultsTests(unittest.TestCase):
     ROOT = Path(__file__).resolve().parents[1]
 
+    def test_shared_clipboard_script_is_passed_as_a_string_slice(self):
+        source = (self.ROOT / "desktop" / "patch" / "setup.rs").read_text(encoding="utf-8")
+        self.assertIn("window.eval(script.as_str())", source)
+        self.assertNotIn("window.eval(&script)", source)
+
     def test_startup_toggles_default_to_off_and_build_does_not_force_tray_start(self):
         rust = (self.ROOT / "desktop" / "patch" / "setup.rs").read_text(encoding="utf-8")
         frontend = (self.ROOT / "web" / "app.js").read_text(encoding="utf-8")
